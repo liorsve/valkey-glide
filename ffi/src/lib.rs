@@ -10,6 +10,7 @@ use glide_core::errors;
 use glide_core::errors::RequestErrorType;
 use glide_core::request_type::RequestType;
 use glide_core::ConnectionRequest;
+use glide_core::client::{NodeAddress, TlsMode};
 use protobuf::Message;
 use redis::cluster_routing::{
     MultipleNodeRoutingInfo, Route, RoutingInfo, SingleNodeRoutingInfo, SlotAddr,
@@ -936,10 +937,11 @@ pub unsafe extern "C" fn command(
     };
 
     // Create the command outside of the task to ensure that the command arguments passed
-    // from "go" are still valid
+    // from the caller are still valid
     let mut cmd = command_type
         .get_command()
         .expect("Couldn't fetch command type");
+
     for command_arg in arg_vec {
         cmd.arg(command_arg);
     }
