@@ -377,8 +377,6 @@ fn create_client_internal(
     connection_request_bytes: &[u8],
     client_type: ClientType,
 ) -> Result<ClientAdapter, String> {
-    let request = connection_request::ConnectionRequest::parse_from_bytes(connection_request_bytes)
-        .map_err(|err| err.to_string())?;
     // TODO: optimize this using multiple threads instead of a single worker thread (e.g. by pinning each go thread to a rust thread)
     let runtime = Builder::new_multi_thread()
         .enable_all()
