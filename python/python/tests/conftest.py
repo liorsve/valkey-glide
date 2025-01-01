@@ -1,7 +1,7 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 
 import random
-from typing import AsyncGenerator, List, Optional, Union
+from typing import AsyncGenerator, Generator, List, Optional, Union
 
 import pytest
 from glide.config import (
@@ -17,6 +17,7 @@ from glide.config import (
 )
 from glide.exceptions import ClosingError
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
+from glide.glide_sync_client import GlideSync
 from glide.logger import Level as logLevel
 from glide.logger import Logger
 from glide.routes import AllNodes
@@ -228,6 +229,18 @@ async def glide_client(
     await test_teardown(request, cluster_mode, protocol)
     await client.close()
 
+@pytest.fixture(scope="function")
+def glide_sync_client(
+    request,
+    cluster_mode: bool,
+    protocol: ProtocolVersion,
+) -> Generator[GlideSync, None, None]:
+    "Get async socket client for tests"
+    client = create_sync_client(request, cluster_mode, protocol=protocol)
+    yield client
+    sync_test_teardown(request, cluster_mode, protocol)
+    client.close()
+
 
 @pytest.fixture(scope="function")
 async def management_client(
@@ -240,6 +253,64 @@ async def management_client(
     yield client
     await test_teardown(request, cluster_mode, protocol)
     await client.close()
+
+def create_client_config(
+    request,
+    cluster_mode: bool,
+    credentials: Optional[ServerCredentials] = None,
+    database_id: int = 0,
+    addresses: Optional[List[NodeAddress]] = None,
+    client_name: Optional[str] = None,
+    protocol: ProtocolVersion = ProtocolVersion.RESP3,
+    timeout: Optional[int] = 1000,
+    cluster_mode_pubsub: Optional[
+        GlideClusterClientConfiguration.PubSubSubscriptions
+    ] = None,
+    standalone_mode_pubsub: Optional[
+        GlideClientConfiguration.PubSubSubscriptions
+    ] = None,
+    inflight_requests_limit: Optional[int] = None,
+    read_from: ReadFrom = ReadFrom.PRIMARY,
+    client_az: Optional[str] = None,
+    valkey_cluster: Optional[ValkeyCluster] = None,
+) -> Union[GlideClusterClientConfiguration, GlideClientConfiguration]:
+    use_tls = request.config.getoption("--tls")
+    if cluster_mode:
+        valkey_cluster = valkey_cluster or pytest.valkey_cluster
+        assert type(valkey_cluster) is ValkeyCluster
+        assert database_id == 0
+        k = min(3, len(valkey_cluster.nodes_addr))
+        seed_nodes = random.sample(valkey_cluster.nodes_addr, k=k)
+        config = GlideClusterClientConfiguration(
+            addresses=seed_nodes if addresses is None else addresses,
+            use_tls=use_tls,
+            credentials=credentials,
+            client_name=client_name,
+            protocol=protocol,
+            request_timeout=timeout,
+            pubsub_subscriptions=cluster_mode_pubsub,
+            inflight_requests_limit=inflight_requests_limit,
+            read_from=read_from,
+            client_az=client_az,
+        )
+    else:
+        assert type(pytest.standalone_cluster) is ValkeyCluster
+        config = GlideClientConfiguration(
+            addresses=(
+                pytest.standalone_cluster.nodes_addr if addresses is None else addresses
+            ),
+            use_tls=use_tls,
+            credentials=credentials,
+            database_id=database_id,
+            client_name=client_name,
+            protocol=protocol,
+            request_timeout=timeout,
+            pubsub_subscriptions=standalone_mode_pubsub,
+            inflight_requests_limit=inflight_requests_limit,
+            read_from=read_from,
+            client_az=client_az,
+        )
+    return config
 
 
 @pytest.fixture(scope="function")
@@ -294,7 +365,21 @@ async def create_client(
     valkey_cluster: Optional[ValkeyCluster] = None,
 ) -> Union[GlideClient, GlideClusterClient]:
     # Create async socket client
-    use_tls = request.config.getoption("--tls")
+    config = create_client_config(
+        request, 
+        cluster_mode, 
+        credentials, 
+        database_id, 
+        addresses, 
+        client_name, 
+        protocol, 
+        timeout, 
+        cluster_mode_pubsub, 
+        standalone_mode_pubsub, 
+        inflight_requests_limit, 
+        read_from, 
+        client_az, 
+        valkey_cluster)
     if cluster_mode:
         valkey_cluster = valkey_cluster or pytest.valkey_cluster  # type: ignore
         assert type(valkey_cluster) is ValkeyCluster
@@ -335,10 +420,51 @@ async def create_client(
             reconnect_strategy=reconnect_strategy,
         )
         return await GlideClient.create(config)
+    
 
 
 USERNAME = "username"
 INITIAL_PASSWORD = "initial_password"
+
+
+def create_sync_client(
+    request,
+    cluster_mode: bool,
+    credentials: Optional[ServerCredentials] = None,
+    database_id: int = 0,
+    addresses: Optional[List[NodeAddress]] = None,
+    client_name: Optional[str] = None,
+    protocol: ProtocolVersion = ProtocolVersion.RESP3,
+    timeout: Optional[int] = 1000,
+    cluster_mode_pubsub: Optional[
+        GlideClusterClientConfiguration.PubSubSubscriptions
+    ] = None,
+    standalone_mode_pubsub: Optional[
+        GlideClientConfiguration.PubSubSubscriptions
+    ] = None,
+    inflight_requests_limit: Optional[int] = None,
+    read_from: ReadFrom = ReadFrom.PRIMARY,
+    client_az: Optional[str] = None,
+    valkey_cluster: Optional[ValkeyCluster] = None,
+) -> GlideSync:
+    # Create sync client
+    config = create_client_config(
+        request, 
+        cluster_mode, 
+        credentials, 
+        database_id, 
+        addresses, 
+        client_name, 
+        protocol, 
+        timeout, 
+        cluster_mode_pubsub, 
+        standalone_mode_pubsub, 
+        inflight_requests_limit, 
+        read_from, 
+        client_az, 
+        valkey_cluster)
+    return GlideSync()
+
 NEW_PASSWORD = "new_secure_password"
 WRONG_PASSWORD = "wrong_password"
 
@@ -355,7 +481,27 @@ async def auth_client(client: TGlideClient, password: str, username: str = "defa
         )
 
 
-async def config_set_new_password(client: TGlideClient, password: str):
+def sync_auth_client(client: TGlideClient, password):
+    """
+    Authenticates the given TGlideClient server connected.
+    """
+    if isinstance(client, GlideClient):
+        client.custom_command(["AUTH", password])
+    elif isinstance(client, GlideClusterClient):
+        client.custom_command(["AUTH", password], route=AllNodes())
+
+
+def sync_config_set_new_password(client: TGlideClient, password):
+    """
+    Sets a new password for the given TGlideClient server connected.
+    This function updates the server to require a new password.
+    """
+    if isinstance(client, GlideClient):
+        client.config_set({"requirepass": password})
+    elif isinstance(client, GlideClusterClient):
+        client.config_set({"requirepass": password}, route=AllNodes())
+
+async def config_set_new_password(client: TGlideClient, password):
     """
     Sets a new password for the given TGlideClient server connected.
     This function updates the server to require a new password.
@@ -365,6 +511,17 @@ async def config_set_new_password(client: TGlideClient, password: str):
     elif isinstance(client, GlideClusterClient):
         await client.config_set({"requirepass": password}, route=AllNodes())
 
+
+def sync_kill_connections(client: TGlideClient):
+    """
+    Kills all connections to the given TGlideClient server connected.
+    """
+    if isinstance(client, GlideClient):
+        client.custom_command(["CLIENT", "KILL", "TYPE", "normal"])
+    elif isinstance(client, GlideClusterClient):
+        client.custom_command(
+            ["CLIENT", "KILL", "TYPE", "normal"], route=AllNodes()
+        )
 
 async def kill_connections(client: TGlideClient):
     """
@@ -414,6 +571,46 @@ async def test_teardown(request, cluster_mode: bool, protocol: ProtocolVersion):
                 await client.custom_command(["FLUSHALL"])
             finally:
                 await client.close()
+        else:
+            raise e
+
+
+def sync_test_teardown(request, cluster_mode: bool, protocol: ProtocolVersion):
+    """
+    Perform teardown tasks such as flushing all data from the cluster.
+
+    If authentication is required, attempt to connect with the known password,
+    reset it back to empty, and proceed with teardown.
+    """
+    credentials = None
+    try:
+        # Try connecting without credentials
+        client = create_sync_client(
+            request, cluster_mode, protocol=protocol, timeout=2000
+        )
+        client.custom_command(["FLUSHALL"])
+        client.close()
+    except ClosingError as e:
+        # Check if the error is due to authentication
+        if "NOAUTH" in str(e):
+            # Use the known password to authenticate
+            credentials = ServerCredentials(password=NEW_PASSWORD)
+            client = create_sync_client(
+                request,
+                cluster_mode,
+                protocol=protocol,
+                timeout=2000,
+                credentials=credentials,
+            )
+            try:
+                sync_auth_client(client, NEW_PASSWORD)
+                # Reset the server password back to empty
+                sync_config_set_new_password(client, "")
+                client.update_connection_password(None)
+                # Perform the teardown
+                client.custom_command(["FLUSHALL"])
+            finally:
+                client.close()
         else:
             raise e
 
