@@ -111,7 +111,6 @@ from tests.utils.utils import (
 )
 
 
-
 class TestGlideClients:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
@@ -307,7 +306,6 @@ class TestGlideClients:
         assert "total_connections" in stats
         assert "total_clients" in stats
         assert len(stats) == 2
-
 
 
 class TestCommands:
@@ -9693,7 +9691,6 @@ class TestCommandsUnitTests:
         assert is_single_response(None, None)
 
 
-
 class TestClusterRoutes:
     def cluster_route_custom_command_multi_nodes(
         self,
@@ -10305,7 +10302,6 @@ def script_kill_tests(
     assert "No scripts in execution right now" in str(e)
 
     test_sync_client.close()
-
 
 
 class TestScripts:
