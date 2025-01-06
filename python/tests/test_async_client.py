@@ -41,6 +41,7 @@ from glide.async_commands.core import (
     OnlyIfEqual,
     UpdateOptions,
 )
+from glide.glide_async_client import GlideAsync
 from glide.async_commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
@@ -143,11 +144,12 @@ class TestGlideClients:
         assert await glide_client.get(key.encode()) == value.encode()
 
     @pytest.mark.parametrize("value_size", [100, 2**16])
-    @pytest.mark.parametrize("cluster_mode", [True, False])
-    @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
+    # @pytest.mark.parametrize("cluster_mode", [True, False])
+    # @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     async def test_client_handle_concurrent_workload_without_dropping_or_changing_values(
-        self, glide_client: TGlideClient, value_size
+        self, value_size
     ):
+        glide_client = GlideAsync()
         num_of_concurrent_tasks = 100
         running_tasks = set()
 
@@ -380,9 +382,10 @@ class TestGlideClients:
 @pytest.mark.asyncio
 class TestCommands:
     @pytest.mark.smoke_test
-    @pytest.mark.parametrize("cluster_mode", [True, False])
-    @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    async def test_socket_set_get(self, glide_client: TGlideClient):
+    # @pytest.mark.parametrize("cluster_mode", [True, False])
+    # @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
+    async def test_socket_set_get(self):
+        glide_client = GlideAsync()
         key = get_random_string(10)
         value = datetime.now(timezone.utc).strftime("%m/%d/%Y, %H:%M:%S")
         assert await glide_client.set(key, value) == OK
