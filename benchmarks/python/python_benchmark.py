@@ -16,6 +16,9 @@ from typing import List
 import numpy as np
 import redis.asyncio as redispy  # type: ignore
 from glide import (
+    GlideClientConfiguration,
+    GlideClusterClientConfiguration,
+    GlideAsync,
     GlideClient,
     GlideClientConfiguration,
     GlideClusterClient,
@@ -197,7 +200,12 @@ def latency_results(prefix, latencies):
 
 
 async def create_clients(client_count, action):
-    return [await action() for _ in range(client_count)]
+    try:
+        return [await action() for _ in range(client_count)]
+    except Exception as e:
+        print(e)
+        return [action() for _ in range(client_count)]
+
 
 
 async def run_clients(
@@ -270,7 +278,7 @@ async def main(
         clients = await create_clients(
             client_count,
             lambda: client_class(
-                host=host, port=port, decode_responses=True, ssl=use_tls
+                host=host, port=port, decode_responses=False, ssl=use_tls
             ),
         )
 
@@ -285,7 +293,10 @@ async def main(
         )
 
         for client in clients:
-            await client.aclose()
+            try:
+                await client.aclose()
+            except Exception:
+                await client.close()
 
     if clients_to_run == "all" or clients_to_run == "glide":
         # Glide Socket
@@ -305,7 +316,28 @@ async def main(
         )
         await run_clients(
             clients,
-            "glide",
+            "glide_socket",
+            event_loop_name,
+            total_commands,
+            num_of_concurrent_tasks,
+            data_size,
+            is_cluster,
+        )
+    if clients_to_run == "all" or clients_to_run == "glide":
+        # Glide Socket
+        client_class = GlideAsync
+        config = GlideClusterClientConfiguration(
+            [NodeAddress(host=host, port=port)], use_tls=use_tls
+        ) if is_cluster else GlideClientConfiguration(
+            [NodeAddress(host=host, port=port)], use_tls=use_tls
+        )
+        clients = await create_clients(
+            client_count,
+            lambda: client_class(config),
+        )
+        await run_clients(
+            clients,
+            "glide_ffi",
             event_loop_name,
             total_commands,
             num_of_concurrent_tasks,
@@ -315,6 +347,7 @@ async def main(
 
 
 def number_of_iterations(num_of_concurrent_tasks):
+    return 100000
     return min(max(100000, num_of_concurrent_tasks * 10000), 5000000)
 
 

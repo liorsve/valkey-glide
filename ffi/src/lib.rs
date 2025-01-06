@@ -10,7 +10,6 @@ use glide_core::errors;
 use glide_core::errors::RequestErrorType;
 use glide_core::request_type::RequestType;
 use glide_core::ConnectionRequest;
-use glide_core::client::{NodeAddress, TlsMode};
 use protobuf::Message;
 use redis::cluster_routing::{
     MultipleNodeRoutingInfo, Route, RoutingInfo, SingleNodeRoutingInfo, SlotAddr,
@@ -150,7 +149,12 @@ struct CommandExecutionCore {
 }
 
 fn create_client_internal(
+    connection_request_bytes: &[u8],
+    success_callback: SuccessCallback,
+    failure_callback: FailureCallback,
 ) -> Result<ClientAdapter, String> {
+    let request = connection_request::ConnectionRequest::parse_from_bytes(connection_request_bytes)
+        .map_err(|err| err.to_string())?;
     // TODO: optimize this using multiple threads instead of a single worker thread (e.g. by pinning each go thread to a rust thread)
     let runtime = Builder::new_multi_thread()
         .enable_all()
@@ -161,14 +165,8 @@ fn create_client_internal(
             let redis_error = err.into();
             errors::error_message(&redis_error)
         })?;
-    let addresses = vec![NodeAddress { host: "localhost".to_string(), port: 6379}];
-    let use_tls = true;
     let client = runtime
-        .block_on(GlideClient::new(ConnectionRequest {addresses, tls_mode: if use_tls {
-            Some(TlsMode::SecureTls)
-        } else {
-            Some(TlsMode::NoTls)
-        }, cluster_mode_enabled: true, ..Default::default()}, None))
+        .block_on(GlideClient::new(ConnectionRequest::from(request), None))
         .map_err(|err| err.to_string())?;
     let core = Arc::new(CommandExecutionCore {
         success_callback,
@@ -196,10 +194,15 @@ fn create_client_internal(
 /// * Both the `success_callback` and `failure_callback` function pointers need to live while the client is open/active. The caller is responsible for freeing both callbacks.
 // TODO: Consider making this async
 #[no_mangle]
-pub unsafe extern "C" fn create_client() -> *const ConnectionResponse {
-    // let request_bytes =
-    //     unsafe { std::slice::from_raw_parts(connection_request_bytes, connection_request_len) };
-    let response = match create_client_internal() {
+pub unsafe extern "C" fn create_client(
+    connection_request_bytes: *const u8,
+    connection_request_len: usize,
+    success_callback: SuccessCallback,
+    failure_callback: FailureCallback,
+) -> *const ConnectionResponse {
+    let request_bytes =
+        unsafe { std::slice::from_raw_parts(connection_request_bytes, connection_request_len) };
+    let response = match create_client_internal(request_bytes, success_callback, failure_callback) {
         Err(err) => ConnectionResponse {
             conn_ptr: std::ptr::null(),
             connection_error_message: CString::into_raw(
@@ -545,11 +548,10 @@ pub unsafe extern "C" fn command(
     };
 
     // Create the command outside of the task to ensure that the command arguments passed
-    // from the caller are still valid
+    // from "go" are still valid
     let mut cmd = command_type
         .get_command()
         .expect("Couldn't fetch command type");
-
     for command_arg in arg_vec {
         cmd.arg(command_arg);
     }
@@ -920,22 +922,4 @@ pub unsafe extern "C" fn update_connection_password(
             };
         }
     });
-
-    match result {
-        Ok(value) => {
-            // Convert the value to a CommandResponse
-            match valkey_value_to_command_response(value) {
-                Ok(command_response) => Box::into_raw(Box::new(command_response)), // Return a pointer to the CommandResponse
-                Err(err) => {
-                    eprintln!("Error converting value to CommandResponse: {:?}", err);
-                    std::ptr::null_mut()
-                }
-            }
-        }
-        Err(err) => {
-            // Handle the error case
-            eprintln!("Error executing command: {:?}", err);
-            std::ptr::null_mut()
-        }
-    }
 }
