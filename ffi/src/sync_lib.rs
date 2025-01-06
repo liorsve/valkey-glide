@@ -259,6 +259,7 @@ fn create_client_internal(
 /// * Both the `success_callback` and `failure_callback` function pointers need to live while the client is open/active. The caller is responsible for freeing both callbacks.
 // TODO: Consider making this async
 #[no_mangle]
+<<<<<<< HEAD
 pub unsafe extern "C" fn create_client(
     connection_request_bytes: *const u8,
     connection_request_len: usize,
@@ -271,6 +272,15 @@ pub unsafe extern "C" fn create_client(
 =======
     client_type: *const ClientType,
 ) -> *const ConnectionResponse {
+=======
+pub unsafe extern "C" fn create_client() -> *const ConnectionResponse {
+    // let request_bytes =
+    //     unsafe { std::slice::from_raw_parts(connection_request_bytes, connection_request_len) };
+    let response = match create_client_internal() {
+        Err(err) => ConnectionResponse {
+            conn_ptr: std::ptr::null(),
+            connection_error_message: CString::into_raw(
+>>>>>>> d2c244f2 (Python POC: added async API using CFFI)
                 CString::new(err).expect("Couldn't convert error message to CString"),
             ),
         },
@@ -595,6 +605,7 @@ pub unsafe extern "C" fn command(
     arg_count: c_ulong,
     args: *const usize,
     args_len: *const c_ulong,
+<<<<<<< HEAD
     route_bytes: *const u8,
     route_bytes_len: usize,
 <<<<<<< HEAD:ffi/src/sync_lib.rs
@@ -618,10 +629,29 @@ pub unsafe extern "C" fn command(
     let mut cmd = command_type
         .get_command()
         .expect("Couldn't fetch command type");
+=======
+) -> *mut CommandResponse {
+    let client_adapter =
+        unsafe { Box::leak(Box::from_raw(client_adapter_ptr as *mut ClientAdapter)) };
+
+    // Ensure the arguments are converted properly
+    let arg_vec =
+        unsafe { convert_double_pointer_to_vec(args as *const *const c_void, arg_count, args_len) };
+
+    let mut client_clone = client_adapter.client.clone();
+
+    // Create the command outside of the task to ensure that the command arguments passed
+    // from the caller are still valid
+    let mut cmd = command_type
+        .get_command()
+        .expect("Couldn't fetch command type");
+
+>>>>>>> d2c244f2 (Python POC: added async API using CFFI)
     for command_arg in arg_vec {
         cmd.arg(command_arg);
     }
 
+<<<<<<< HEAD
     let r_bytes = unsafe { std::slice::from_raw_parts(route_bytes, route_bytes_len) };
 
     let route = Routes::parse_from_bytes(r_bytes).unwrap();
@@ -868,3 +898,28 @@ fn get_slot_addr(slot_type: &protobuf::EnumOrUnknown<SlotTypes>) -> SlotAddr {
         })
         .expect("Received unexpected slot id type")
 }
+=======
+    // Block on the async task to execute the command
+    let result = client_adapter.runtime.block_on(async move {
+        client_clone.send_command(&cmd, None).await
+    });
+
+    match result {
+        Ok(value) => {
+            // Convert the value to a CommandResponse
+            match valkey_value_to_command_response(value) {
+                Ok(command_response) => Box::into_raw(Box::new(command_response)), // Return a pointer to the CommandResponse
+                Err(err) => {
+                    eprintln!("Error converting value to CommandResponse: {:?}", err);
+                    std::ptr::null_mut()
+                }
+            }
+        }
+        Err(err) => {
+            // Handle the error case
+            eprintln!("Error executing command: {:?}", err);
+            std::ptr::null_mut()
+        }
+    }
+}
+>>>>>>> d2c244f2 (Python POC: added async API using CFFI)
