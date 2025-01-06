@@ -123,6 +123,7 @@ def create_clusters(tls, load_module, cluster_endpoints, standalone_endpoints):
     """
     Create Valkey clusters based on the provided options.
     """
+    return
     if cluster_endpoints or standalone_endpoints:
         # Endpoints were passed by the caller, not creating clusters internally
         if cluster_endpoints:

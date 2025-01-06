@@ -10,7 +10,6 @@ use glide_core::errors;
 use glide_core::errors::RequestErrorType;
 use glide_core::request_type::RequestType;
 use glide_core::ConnectionRequest;
-use glide_core::client::{NodeAddress, TlsMode};
 use protobuf::Message;
 use redis::cluster_routing::{
     MultipleNodeRoutingInfo, Route, RoutingInfo, SingleNodeRoutingInfo, SlotAddr,
@@ -377,6 +376,8 @@ fn create_client_internal(
     connection_request_bytes: &[u8],
     client_type: ClientType,
 ) -> Result<ClientAdapter, String> {
+    let request = connection_request::ConnectionRequest::parse_from_bytes(connection_request_bytes)
+        .map_err(|err| err.to_string())?;
     // TODO: optimize this using multiple threads instead of a single worker thread (e.g. by pinning each go thread to a rust thread)
     let runtime = Builder::new_multi_thread()
         .enable_all()
@@ -387,14 +388,8 @@ fn create_client_internal(
             let redis_error = err.into();
             errors::error_message(&redis_error)
         })?;
-    let addresses = vec![NodeAddress { host: "localhost".to_string(), port: 6379}];
-    let use_tls = true;
     let client = runtime
-        .block_on(GlideClient::new(ConnectionRequest {addresses, tls_mode: if use_tls {
-            Some(TlsMode::SecureTls)
-        } else {
-            Some(TlsMode::NoTls)
-        }, cluster_mode_enabled: true, ..Default::default()}, None))
+        .block_on(GlideClient::new(ConnectionRequest::from(request), None))
         .map_err(|err| err.to_string())?;
     let core = Arc::new(CommandExecutionCore {
         client,
@@ -773,11 +768,10 @@ pub unsafe extern "C" fn command(
     };
 
     // Create the command outside of the task to ensure that the command arguments passed
-    // from the caller are still valid
+    // from "go" are still valid
     let mut cmd = command_type
         .get_command()
         .expect("Couldn't fetch command type");
-
     for command_arg in arg_vec {
         cmd.arg(command_arg);
     }
