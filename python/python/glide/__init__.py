@@ -154,6 +154,7 @@ from glide.exceptions import (
 )
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
 from glide.logger import Level as LogLevel
+from glide.glide_async_client import GlideAsync
 from glide.logger import Logger
 from glide.routes import (
     AllNodes,
@@ -171,6 +172,7 @@ PubSubMsg = CoreCommands.PubSubMsg
 
 __all__ = [
     # Client
+    "GlideAsync",
     "GlideSync",
     "GlideClient",
     "GlideClusterClient",
