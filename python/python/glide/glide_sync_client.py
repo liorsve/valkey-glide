@@ -1,4 +1,5 @@
 from cffi import FFI
+from glide import GlideClusterClientConfiguration
 from glide.protobuf.command_request_pb2 import Command, CommandRequest, RequestType
 from typing import List, Union, Optional
 from glide.sync_commands.core import CoreCommands
@@ -7,10 +8,12 @@ from glide.routes import Route
 
 
 class GlideSync(CoreCommands):        
-    def __init__(self):
+    def __init__(self, config):
         self._init_ffi()
         # Call the `create_client` function
-        client_response_ptr = self.lib.create_client()
+        conn_req = config._create_a_protobuf_conn_request(cluster_mode=type(config) == GlideClusterClientConfiguration)
+        conn_req_bytes = conn_req.SerializeToString()
+        client_response_ptr = self.lib.create_client(conn_req_bytes, len(conn_req_bytes))
         # Handle the connection response
         if client_response_ptr != self.ffi.NULL:
             client_response = self.ffi.cast("ConnectionResponse*", client_response_ptr)
@@ -51,7 +54,7 @@ class GlideSync(CoreCommands):
             const char* connection_error_message;
         } ConnectionResponse;
 
-        const ConnectionResponse* create_client();
+        const ConnectionResponse* create_client(const uint8_t* connection_request_bytes, size_t connection_request_len);
         void free_command_response(CommandResponse* response);
         void free_connection_response(ConnectionResponse* response);
 
@@ -63,11 +66,10 @@ class GlideSync(CoreCommands):
             const size_t *args,
             const unsigned long *args_len
         );
-
         """)
 
         # Load the shared library (adjust the path to your compiled Rust library)
-        self.lib = self.ffi.dlopen("/home/ubuntu/glide-for-redis/go/target/release/libglide_rs.so")
+        self.lib = self.ffi.dlopen("/home/ubuntu/glide-for-redis/go/target/debug/libglide_rs.so")
         
     def _handle_response(self, message):
         if message == self.ffi.NULL:
