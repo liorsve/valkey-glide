@@ -42,7 +42,7 @@ from glide.async_commands.core import (
     OnlyIfEqual,
     UpdateOptions,
 )
-from glide.glide_async_client import GlideAsync
+from glide.glide_async_ffi_client import GlideAsync
 from glide.async_commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
