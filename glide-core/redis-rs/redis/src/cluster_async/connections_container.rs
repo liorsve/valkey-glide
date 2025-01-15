@@ -674,6 +674,10 @@ where
         }
     }
 
+    // pub(crate) fn get_node(&self, address: &String) -> Option<&ClusterNode<Connection>> {
+    //     self.connection_map.get(address)
+    // }
+
     pub(crate) fn len(&self) -> usize {
         self.connection_map.len()
     }
