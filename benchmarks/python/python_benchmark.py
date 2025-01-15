@@ -273,7 +273,7 @@ async def main(
     use_tls,
     is_cluster,
 ):
-    if clients_to_run == "all":
+    if clients_to_run == "all" or clients_to_run == "redispy":
         client_class = redispy.RedisCluster if is_cluster else redispy.Redis
         clients = await create_clients(
             client_count,
@@ -323,7 +323,7 @@ async def main(
             data_size,
             is_cluster,
         )
-    if clients_to_run == "all" or clients_to_run == "glide":
+    if clients_to_run == "all" or clients_to_run == "glide_ffi":
         # Glide Socket
         client_class = GlideAsync
         config = GlideClusterClientConfiguration(
@@ -347,7 +347,7 @@ async def main(
 
 
 def number_of_iterations(num_of_concurrent_tasks):
-    return 100000
+    return 100000000
     return min(max(100000, num_of_concurrent_tasks * 10000), 5000000)
 
 

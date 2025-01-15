@@ -14,8 +14,8 @@ with open(output_file_name, "w+") as output_file:
         "language",
         "client",
         "is_cluster",
-        "num_of_tasks",
         "data_size",
+        "num_of_threads",
         "client_count",
         "tps",
         "get_non_existing_p50_latency",
@@ -43,10 +43,11 @@ with open(output_file_name, "w+") as output_file:
 
             json_file_name = os.path.basename(json_file_full_path)
 
-            languages = ["csharp", "node", "python", "rust", "java", "go"]
-            language = next(
-                (language for language in languages if language in json_file_name), None
-            )
+            # languages = ["csharp", "node", "python", "rust", "java", "go"]
+            # language = next(
+            #     (language for language in languages if language in json_file_name), None
+            # )
+            language = "python"
 
             if not language:
                 raise Exception(f"Unknown language for {json_file_name}")
