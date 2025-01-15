@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Union, cast
 
 import pytest
+from glide.glide_client_sync_uds import UDSGlideClientSync
 from glide import ClosingError, RequestError, Script
 from glide.async_commands.bitmap import (
     BitFieldGet,

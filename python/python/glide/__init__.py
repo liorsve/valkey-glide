@@ -172,6 +172,8 @@ PubSubMsg = CoreCommands.PubSubMsg
 
 __all__ = [
     # Client
+    "UDSGlideClientSync",
+    "UDSGlideClusterClientSync",
     "GlideAsync",
     "GlideSync",
     "GlideClient",

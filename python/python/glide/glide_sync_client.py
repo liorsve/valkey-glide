@@ -1,6 +1,5 @@
 from cffi import FFI
 from glide.protobuf.command_request_pb2 import Command, CommandRequest, RequestType
-<<<<<<< HEAD
 from typing import List, Union, Optional, cast
 from glide.sync_commands.core import CoreCommands, InfoSection
 from glide.constants import DEFAULT_READ_BYTES_SIZE, OK, TEncodable, TRequest, TResult
@@ -24,51 +23,25 @@ class GlideSync(CoreCommands):
             "_type": self.ffi.cast("ClientTypeEnum", FFIClientTypeEnum.Sync),
         })
         client_response_ptr = self.lib.create_client(conn_req_bytes, len(conn_req_bytes), client_type) 
-=======
-from typing import List, Union, Optional
-from glide.sync_commands.core import CoreCommands
-from glide.constants import DEFAULT_READ_BYTES_SIZE, OK, TEncodable, TRequest, TResult
-from glide.routes import Route
-
-
-class GlideSync(CoreCommands):        
-    def __init__(self):
-        self._init_ffi()
-        # Call the `create_client` function
-        client_response_ptr = self.lib.create_client()
->>>>>>> 634c7994 (More changes for the sync py client)
         # Handle the connection response
         if client_response_ptr != self.ffi.NULL:
             client_response = self.ffi.cast("ConnectionResponse*", client_response_ptr)
             if client_response.conn_ptr != self.ffi.NULL:
-<<<<<<< HEAD
                 self.core_client = client_response.conn_ptr
             else:
                 error_message = self.ffi.string(client_response.connection_error_message).decode('utf-8') if client_response.connection_error_message != self.ffi.NULL else "Unknown error"
                 raise ClosingError(error_message)
-=======
-                print("Client created successfully.")
-                self.core_client = client_response.conn_ptr
-            else:
-                error_message = self.ffi.string(client_response.connection_error_message).decode('utf-8') if client_response.connection_error_message != self.ffi.NULL else "Unknown error"
-                print(f"Failed to create client. Error: {error_message}")
->>>>>>> 634c7994 (More changes for the sync py client)
 
             # Free the connection response to avoid memory leaks
             self.lib.free_connection_response(client_response_ptr)
         else:
-<<<<<<< HEAD
             raise ClosingError("Failed to create client, response pointer is NULL.")
-=======
-            print("Failed to create client, response pointer is NULL.")
->>>>>>> 634c7994 (More changes for the sync py client)
 
     def _init_ffi(self):
         self.ffi = FFI()
 
         # Define the CommandResponse struct and related types
         self.ffi.cdef("""
-<<<<<<< HEAD
             typedef struct {
                 int response_type;
                 long int_value;
@@ -147,58 +120,15 @@ class GlideSync(CoreCommands):
             void free_error_message(char* error_message);
             void free_command_result(CommandResult* command_result_ptr);
             CommandResult* command(const void* client_adapter_ptr, uintptr_t channel, int command_type, unsigned long arg_count, const size_t *args, const unsigned long* args_len, const unsigned char* route_bytes, size_t route_bytes_len);
-=======
-        typedef struct CommandResponse {
-            int response_type;
-            long int_value;
-            double float_value;
-            bool bool_value;
-            char* string_value;
-            long string_value_len;
-            struct CommandResponse* array_value;
-            long array_value_len;
-            struct CommandResponse* map_key;
-            struct CommandResponse* map_value;
-            struct CommandResponse* sets_value;
-            long sets_value_len;
-        } CommandResponse;
-
-        typedef struct ConnectionResponse {
-            const void* conn_ptr;
-            const char* connection_error_message;
-        } ConnectionResponse;
-
-        const ConnectionResponse* create_client();
-        void free_command_response(CommandResponse* response);
-        void free_connection_response(ConnectionResponse* response);
-
-        CommandResponse* command(
-            const void *client_adapter_ptr,
-            size_t channel,
-            int command_type,
-            unsigned long arg_count,
-            const size_t *args,
-            const unsigned long *args_len
-        );
->>>>>>> 634c7994 (More changes for the sync py client)
 
         """)
 
         # Load the shared library (adjust the path to your compiled Rust library)
-<<<<<<< HEAD
         self.lib = self.ffi.dlopen("/home/ubuntu/glide-for-redis/go/target/debug/libglide_rs.so")
         
     def _handle_response(self, message):
         if message == self.ffi.NULL:
             raise RequestError("Received NULL message.")
-=======
-        self.lib = self.ffi.dlopen("/home/ubuntu/glide-for-redis/go/target/release/libglide_rs.so")
-        
-    def _handle_response(self, message):
-        if message == self.ffi.NULL:
-            print("Received NULL message.")
-            return None
->>>>>>> 634c7994 (More changes for the sync py client)
 
         # Identify the type of the message
         message_type = self.ffi.typeof(message).cname
@@ -223,12 +153,8 @@ class GlideSync(CoreCommands):
                     string_value = self.ffi.buffer(msg.string_value, msg.string_value_len)[:]
                     return string_value
                 except Exception as e:
-<<<<<<< HEAD
                     # TODO: Add memory cleanup in case of failures
                     raise RequestError(f"Error decoding string value: {e}")
-=======
-                    print(f"Error decoding string value: {e}")
->>>>>>> 634c7994 (More changes for the sync py client)
             elif msg.response_type == 5:  # Array
                 array = []
                 for i in range(msg.array_value_len):
@@ -250,19 +176,11 @@ class GlideSync(CoreCommands):
                     result_set.add(self._handle_response(element))
                 return result_set
             else:
-<<<<<<< HEAD
                 raise RequestError(f"Unhandled response type = {msg.response_type}")
         else:
             raise RequestError(f"Unexpected message type = {message_type}")
   
         
-=======
-                print(f"Unhandled response type = {msg.response_type}")
-                return None
-        else:
-            print(f"Unexpected message type: {message_type}")
-            return None    
->>>>>>> 634c7994 (More changes for the sync py client)
 
     def _to_c_strings(self, args):
         """Convert Python arguments to C-compatible pointers and lengths."""
@@ -285,12 +203,15 @@ class GlideSync(CoreCommands):
             c_strings.append(self.ffi.cast("size_t", self.ffi.from_buffer(arg_bytes)))
             string_lengths.append(len(arg_bytes))
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 
             # Debugging
             print(f"arg={arg}, arg_bytes={list(arg_bytes)}, len={len(arg_bytes)}, c_str={c_strings[-1]}")
 
 >>>>>>> 634c7994 (More changes for the sync py client)
+=======
+>>>>>>> 6d461351 (tmp commit async client)
         # Return C-compatible arrays and keep buffers alive
         return (
             self.ffi.new("size_t[]", c_strings),

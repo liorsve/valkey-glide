@@ -128,95 +128,15 @@ pub struct ConnectionResponse {
     conn_ptr: *const c_void,
     connection_error_message: *const c_char,
 }
-<<<<<<< HEAD
 
-    // Take ownership of the CommandResult
-    let command_result = unsafe { Box::from_raw(command_result_ptr) };
-
-    // Free the response if it exists
-    if !command_result.response.is_null() {
-        let response = unsafe { &*command_result.response };
-
-        match response.response_type {
-            ResponseType::String => {
-                // Skip freeing string_value; ownership is delegated to Python
-            }
-            ResponseType::Array => {
-                // Free the array struct itself, but not the items in the array
-                if !response.array_value.is_null() {
-                    let len = response.array_value_len as usize;
-                    unsafe {
-                        drop(Vec::from_raw_parts(response.array_value, len, len));
-                    }
-                }
-            }
-            ResponseType::Map => {
-                // Free the map struct itself (map_key/map_value), but not the items in the map
-                if !response.map_key.is_null() {
-                    let len = response.array_value_len as usize;
-                    unsafe {
-                        drop(Vec::from_raw_parts(response.map_key, len, len));
-                    }
-                }
-                if !response.map_value.is_null() {
-                    let len = response.array_value_len as usize;
-                    unsafe {
-                        drop(Vec::from_raw_parts(response.map_value, len, len));
-                    }
-                }
-            }
-            ResponseType::Sets => {
-                // Free the sets struct itself, but not the items in the set
-                if !response.sets_value.is_null() {
-                    let len = response.sets_value_len as usize;
-                    unsafe {
-                        drop(Vec::from_raw_parts(response.sets_value, len, len));
-                    }
-                }
-            }
-            _ => {
-                // Free the full response for other types
-                unsafe {
-                    free_command_response(command_result.response);
-                }
-            }
-        }
-    }
-=======
->>>>>>> 6d461351 (tmp commit async client)
-
-    // Free the command error if it exists
-    if !command_result.command_error.is_null() {
-        let command_error = unsafe { Box::from_raw(command_result.command_error) };
-        if !command_error.command_error_message.is_null() {
-            unsafe {
-                free_error_message(command_error.command_error_message as *mut c_char);
-            }
-        }
-        drop(command_error);
-    }
-
-    // Finally, free the CommandResult itself
-    drop(command_result);
-}
-/// An async `GlideClient` adapter.
+/// A `GlideClient` adapter.
 // TODO: Remove allow(dead_code) once connection logic is implemented
 #[allow(dead_code)]
-struct ClientAdapter {
+pub struct ClientAdapter {
     client: GlideClient,
     success_callback: SuccessCallback,
     failure_callback: FailureCallback,
     runtime: Runtime,
-}
-
-#[repr(C)]
-#[derive(Clone)]
-pub enum ClientType {
-    Async {
-        success_callback: SuccessCallback,
-        failure_callback: FailureCallback,
-    },
-    Sync,
 }
 
 fn create_client_internal(
@@ -244,6 +164,9 @@ fn create_client_internal(
         success_callback,
         failure_callback,
         runtime,
+    })
+}
+
 /// Creates a new `ClientAdapter` with a new `GlideClient` configured using a Protobuf `ConnectionRequest`.
 ///
 /// The returned `ConnectionResponse` will only be freed by calling [`free_connection_response`].
@@ -262,26 +185,6 @@ fn create_client_internal(
 /// * Both the `success_callback` and `failure_callback` function pointers need to live while the client is open/active. The caller is responsible for freeing both callbacks.
 // TODO: Consider making this async
 #[no_mangle]
-<<<<<<< HEAD
-<<<<<<< HEAD
-pub unsafe extern "C" fn create_client(
-    connection_request_bytes: *const u8,
-    connection_request_len: usize,
-<<<<<<< HEAD:ffi/src/sync_lib.rs
-    success_callback: SuccessCallback,
-    failure_callback: FailureCallback,
-    let request_bytes =
-        unsafe { std::slice::from_raw_parts(connection_request_bytes, connection_request_len) };
-    let response = match create_client_internal(request_bytes, success_callback, failure_callback) {
-=======
-    client_type: *const ClientType,
-) -> *const ConnectionResponse {
-=======
-pub unsafe extern "C" fn create_client() -> *const ConnectionResponse {
-    // let request_bytes =
-    //     unsafe { std::slice::from_raw_parts(connection_request_bytes, connection_request_len) };
-    let response = match create_client_internal() {
-=======
 pub unsafe extern "C" fn create_client(
     connection_request_bytes: *const u8,
     connection_request_len: usize,
@@ -291,11 +194,9 @@ pub unsafe extern "C" fn create_client(
     let request_bytes =
         unsafe { std::slice::from_raw_parts(connection_request_bytes, connection_request_len) };
     let response = match create_client_internal(request_bytes, success_callback, failure_callback) {
->>>>>>> 6d461351 (tmp commit async client)
         Err(err) => ConnectionResponse {
             conn_ptr: std::ptr::null(),
             connection_error_message: CString::into_raw(
->>>>>>> d2c244f2 (Python POC: added async API using CFFI)
                 CString::new(err).expect("Couldn't convert error message to CString"),
             ),
         },
@@ -620,38 +521,9 @@ pub unsafe extern "C" fn command(
     arg_count: c_ulong,
     args: *const usize,
     args_len: *const c_ulong,
-<<<<<<< HEAD
-<<<<<<< HEAD
-    route_bytes: *const u8,
-    route_bytes_len: usize,
-<<<<<<< HEAD:ffi/src/sync_lib.rs
-) {
-=======
-) -> *mut CommandResult {
->>>>>>> d453358a (Changes: 1. Combined lib.rs file for async and sync clients. 2. Py Sync client now supports errors. 3. More test fixes):go/src/lib.rs
-    let client_adapter =
-        unsafe { Box::leak(Box::from_raw(client_adapter_ptr as *mut ClientAdapter)) };
-    // The safety of this needs to be ensured by the calling code. Cannot dispose of the pointer before
-    // all operations have completed.
-    let ptr_address = client_adapter_ptr as usize;
-
-    let arg_vec =
-        unsafe { convert_double_pointer_to_vec(args as *const *const c_void, arg_count, args_len) };
-
-    let client_clone = client_adapter.client.clone();
-
-    // Create the command outside of the task to ensure that the command arguments passed
-    // from "go" are still valid
-    let mut cmd = command_type
-        .get_command()
-        .expect("Couldn't fetch command type");
-=======
-) -> *mut CommandResponse {
-=======
     route_bytes: *const u8,
     route_bytes_len: usize,
 ) {
->>>>>>> 6d461351 (tmp commit async client)
     let client_adapter =
         unsafe { Box::leak(Box::from_raw(client_adapter_ptr as *mut ClientAdapter)) };
     // The safety of this needs to be ensured by the calling code. Cannot dispose of the pointer before
@@ -668,271 +540,11 @@ pub unsafe extern "C" fn command(
     let mut cmd = command_type
         .get_command()
         .expect("Couldn't fetch command type");
-<<<<<<< HEAD
-
->>>>>>> d2c244f2 (Python POC: added async API using CFFI)
-=======
->>>>>>> 6d461351 (tmp commit async client)
     for command_arg in arg_vec {
         cmd.arg(command_arg);
     }
 
-<<<<<<< HEAD
-<<<<<<< HEAD
     let r_bytes = unsafe { std::slice::from_raw_parts(route_bytes, route_bytes_len) };
-
-    let route = Routes::parse_from_bytes(r_bytes).unwrap();
-
-<<<<<<< HEAD:ffi/src/sync_lib.rs
-    client_adapter.runtime.spawn(async move {
-        let result = client_clone
-            .send_command(&cmd, get_route(route, Some(&cmd)))
-            .await;
-        let client_adapter = unsafe { Box::leak(Box::from_raw(ptr_address as *mut ClientAdapter)) };
-        let value = match result {
-            Ok(value) => value,
-            Err(err) => {
-                let message = errors::error_message(&err);
-                let error_type = errors::error_type(&err);
-
-                let c_err_str = CString::into_raw(
-                    CString::new(message).expect("Couldn't convert error message to CString"),
-                );
-                unsafe { (client_adapter.failure_callback)(channel, c_err_str, error_type) };
-                return;
-            }
-        };
-
-        let result: RedisResult<CommandResponse> = valkey_value_to_command_response(value);
-
-        unsafe {
-            match result {
-                Ok(message) => {
-                    (client_adapter.success_callback)(channel, Box::into_raw(Box::new(message)))
-                }
-                Err(err) => {
-                    let message = errors::error_message(&err);
-                    let error_type = errors::error_type(&err);
-
-                    let c_err_str = CString::into_raw(
-                        CString::new(message).expect("Couldn't convert error message to CString"),
-                    );
-                    (client_adapter.failure_callback)(channel, c_err_str, error_type);
-                }
-            };
-        }
-    });
-}
-
-fn get_route(route: Routes, cmd: Option<&Cmd>) -> Option<RoutingInfo> {
-    use glide_core::command_request::routes::Value;
-    let route = route.value?;
-    let get_response_policy = |cmd: Option<&Cmd>| {
-        cmd.and_then(|cmd| {
-            cmd.command()
-                .and_then(|cmd| ResponsePolicy::for_command(&cmd))
-        })
-    };
-    match route {
-        Value::SimpleRoutes(simple_route) => {
-            let simple_route = simple_route.enum_value().unwrap();
-            match simple_route {
-                SimpleRoutes::AllNodes => Some(RoutingInfo::MultiNode((
-                    MultipleNodeRoutingInfo::AllNodes,
-                    get_response_policy(cmd),
-                ))),
-                SimpleRoutes::AllPrimaries => Some(RoutingInfo::MultiNode((
-                    MultipleNodeRoutingInfo::AllMasters,
-                    get_response_policy(cmd),
-                ))),
-                SimpleRoutes::Random => {
-                    Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::Random))
-                }
-            }
-        }
-        Value::SlotKeyRoute(slot_key_route) => Some(RoutingInfo::SingleNode(
-            SingleNodeRoutingInfo::SpecificNode(Route::new(
-                redis::cluster_topology::get_slot(slot_key_route.slot_key.as_bytes()),
-                get_slot_addr(&slot_key_route.slot_type),
-            )),
-        )),
-        Value::SlotIdRoute(slot_id_route) => Some(RoutingInfo::SingleNode(
-            SingleNodeRoutingInfo::SpecificNode(Route::new(
-                slot_id_route.slot_id as u16,
-                get_slot_addr(&slot_id_route.slot_type),
-            )),
-        )),
-        Value::ByAddressRoute(by_address_route) => match u16::try_from(by_address_route.port) {
-            Ok(port) => Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::ByAddress {
-                host: by_address_route.host.to_string(),
-                port,
-            })),
-            Err(_) => {
-                // TODO: Handle error propagation.
-                None
-            }
-        },
-        _ => panic!("unknown route type"),
-    }
-}
-
-=======
-    let execute_command = move |mut client: GlideClient| async move {
-        client
-            .send_command(&cmd, get_route(route, Some(&cmd)))
-            .await
-    };
-
-    let handle_result = move |result: Result<_, _>,
-                              success: Option<SuccessCallback>,
-                              failure: Option<FailureCallback>| {
-        match result {
-            Ok(value) => match valkey_value_to_command_response(value) {
-                Ok(command_response) => {
-                    if let Some(success_callback) = success {
-                        unsafe {
-                            (success_callback)(channel, Box::into_raw(Box::new(command_response)));
-                        }
-                    } else {
-                        return Box::into_raw(Box::new(CommandResult {
-                            response: Box::into_raw(Box::new(command_response)),
-                            command_error: std::ptr::null_mut(),
-                        }));
-                    }
-                }
-                Err(err) => {
-                    if let Some(failure_callback) = failure {
-                        let (c_err_str, error_type) = to_c_error(err);
-                        unsafe { (failure_callback)(channel, c_err_str, error_type) };
-                    } else {
-                        eprintln!("Error converting value to CommandResponse: {:?}", err);
-                        return create_error_result(err);
-                    }
-                }
-            },
-            Err(err) => {
-                if let Some(failure_callback) = failure {
-                    let (c_err_str, error_type) = to_c_error(err);
-                    unsafe { (failure_callback)(channel, c_err_str, error_type) };
-                } else {
-                    eprintln!("Error executing command: {:?}", err);
-                    return create_error_result(err);
-                }
-            }
-        };
-        std::ptr::null_mut()
-    };
-
-    match client_adapter.client_type {
-        ClientType::Async {
-            success_callback,
-            failure_callback,
-        } => {
-            client_adapter.runtime.spawn(async move {
-                let result = execute_command(client_clone).await;
-                handle_result(result, Some(success_callback), Some(failure_callback));
-            });
-            std::ptr::null_mut()
-        }
-        ClientType::Sync => {
-            let result = client_adapter
-                .runtime
-                .block_on(async move { execute_command(client_clone).await });
-            handle_result(result, None, None)
-        }
-    }
-}
-
-fn create_error_result(err: RedisError) -> *mut CommandResult {
-    let (c_err_str, error_type) = to_c_error(err);
-    Box::into_raw(Box::new(CommandResult {
-        response: std::ptr::null_mut(),
-        command_error: Box::into_raw(Box::new(CommandError {
-            command_error_message: c_err_str,
-            command_error_type: error_type,
-        })),
-    }))
-}
-fn to_c_error(err: RedisError) -> (*const c_char, RequestErrorType) {
-    let message = errors::error_message(&err);
-    let error_type = errors::error_type(&err);
-
-    let c_err_str = CString::into_raw(
-        CString::new(message).expect("Couldn't convert error message to CString"),
-    );
-    (c_err_str, error_type)
-}
-
-fn get_route(route: Routes, cmd: Option<&Cmd>) -> Option<RoutingInfo> {
-    use glide_core::command_request::routes::Value;
-    let route = route.value?;
-    let get_response_policy = |cmd: Option<&Cmd>| {
-        cmd.and_then(|cmd| {
-            cmd.command()
-                .and_then(|cmd| ResponsePolicy::for_command(&cmd))
-        })
-    };
-    match route {
-        Value::SimpleRoutes(simple_route) => {
-            let simple_route = simple_route.enum_value().unwrap();
-            match simple_route {
-                SimpleRoutes::AllNodes => Some(RoutingInfo::MultiNode((
-                    MultipleNodeRoutingInfo::AllNodes,
-                    get_response_policy(cmd),
-                ))),
-                SimpleRoutes::AllPrimaries => Some(RoutingInfo::MultiNode((
-                    MultipleNodeRoutingInfo::AllMasters,
-                    get_response_policy(cmd),
-                ))),
-                SimpleRoutes::Random => {
-                    Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::Random))
-                }
-            }
-        }
-        Value::SlotKeyRoute(slot_key_route) => Some(RoutingInfo::SingleNode(
-            SingleNodeRoutingInfo::SpecificNode(Route::new(
-                redis::cluster_topology::get_slot(slot_key_route.slot_key.as_bytes()),
-                get_slot_addr(&slot_key_route.slot_type),
-            )),
-        )),
-        Value::SlotIdRoute(slot_id_route) => Some(RoutingInfo::SingleNode(
-            SingleNodeRoutingInfo::SpecificNode(Route::new(
-                slot_id_route.slot_id as u16,
-                get_slot_addr(&slot_id_route.slot_type),
-            )),
-        )),
-        Value::ByAddressRoute(by_address_route) => match u16::try_from(by_address_route.port) {
-            Ok(port) => Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::ByAddress {
-                host: by_address_route.host.to_string(),
-                port,
-            })),
-            Err(_) => {
-                // TODO: Handle error propagation.
-                None
-            }
-        },
-        _ => panic!("unknown route type"),
-    }
-}
-
->>>>>>> d453358a (Changes: 1. Combined lib.rs file for async and sync clients. 2. Py Sync client now supports errors. 3. More test fixes):go/src/lib.rs
-fn get_slot_addr(slot_type: &protobuf::EnumOrUnknown<SlotTypes>) -> SlotAddr {
-    slot_type
-        .enum_value()
-        .map(|slot_type| match slot_type {
-            SlotTypes::Primary => SlotAddr::Master,
-            SlotTypes::Replica => SlotAddr::ReplicaRequired,
-        })
-        .expect("Received unexpected slot id type")
-}
-=======
-    // Block on the async task to execute the command
-    let result = client_adapter.runtime.block_on(async move {
-        client_clone.send_command(&cmd, None).await
-    });
-=======
-    let r_bytes = unsafe { std::slice::from_raw_parts(route_bytes, route_bytes_len) };
->>>>>>> 6d461351 (tmp commit async client)
 
     let route = Routes::parse_from_bytes(r_bytes).unwrap();
 
@@ -1027,9 +639,6 @@ fn get_route(route: Routes, cmd: Option<&Cmd>) -> Option<RoutingInfo> {
         _ => panic!("unknown route type"),
     }
 }
-<<<<<<< HEAD
->>>>>>> d2c244f2 (Python POC: added async API using CFFI)
-=======
 
 fn get_slot_addr(slot_type: &protobuf::EnumOrUnknown<SlotTypes>) -> SlotAddr {
     slot_type
@@ -1040,4 +649,3 @@ fn get_slot_addr(slot_type: &protobuf::EnumOrUnknown<SlotTypes>) -> SlotAddr {
         })
         .expect("Received unexpected slot id type")
 }
->>>>>>> 6d461351 (tmp commit async client)
