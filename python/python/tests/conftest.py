@@ -123,7 +123,7 @@ def create_clusters(tls, load_module, cluster_endpoints, standalone_endpoints):
     """
     Create Valkey clusters based on the provided options.
     """
-    return
+    # return
     if cluster_endpoints or standalone_endpoints:
         # Endpoints were passed by the caller, not creating clusters internally
         if cluster_endpoints:
@@ -464,7 +464,7 @@ def create_sync_client(
         read_from, 
         client_az, 
         valkey_cluster)
-    return GlideSync()
+    return GlideSync(config)
 
 NEW_PASSWORD = "new_secure_password"
 WRONG_PASSWORD = "wrong_password"
