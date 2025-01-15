@@ -6,6 +6,8 @@ import functools
 import json
 import math
 import random
+from threading import Thread, Lock
+import threading
 import time
 from datetime import datetime, timezone
 from enum import Enum
@@ -16,6 +18,10 @@ from typing import List
 import numpy as np
 import redis as redispy  # type: ignore
 from glide import (
+    UDSGlideClusterClientSync,
+    UDSGlideClientSync,
+    GlideClusterClientConfiguration,
+    GlideClientConfiguration,
     GlideSync,
     Logger,
     LogLevel,
@@ -46,7 +52,7 @@ arguments_parser.add_argument(
     help="List of number of concurrent tasks to run",
     nargs="+",
     required=False,
-    default=("1", "10", "100", "1000"),
+    default=("1", "10", "100"),
 )
 arguments_parser.add_argument(
     "--clients", help="Which clients should run", required=False, default="all"
@@ -94,6 +100,9 @@ SIZE_SET_KEYSPACE = 3000000  # 3 million
 started_tasks_counter = 0
 running_tasks = set()
 bench_json_results: List[str] = []
+# Define locks for thread-safe access
+counter_lock = Lock()
+latencies_lock = Lock()
 
 
 def truncate_decimal(number: float, digits: int = 3) -> float:
@@ -145,42 +154,63 @@ def timer(func):
 
     return wrapper
 
+# Global variables
+started_tasks_counter = 0
+
 @timer
-def execute_commands(clients, total_commands, data_size, action_latencies):
+def create_and_run_concurrent_tasks(
+    clients, total_commands, num_of_concurrent_threads, data_size, action_latencies
+):
+    """
+    Create and run concurrent tasks using threads.
+    """
+    threads = []
     global started_tasks_counter
-    while started_tasks_counter < total_commands:
-        started_tasks_counter += 1
+    started_tasks_counter = 0
+    for i in range(num_of_concurrent_threads):
+        thread = Thread(
+            target=execute_commands,
+            args=(clients, total_commands, data_size, action_latencies),
+            name=f"Worker-{i}"
+        )
+        threads.append(thread)
+        thread.start()
+    
+    for thread in threads:
+        thread.join()
+
+def execute_commands(clients, total_commands, data_size, action_latencies):
+    """
+    Execute commands in a thread-safe manner.
+    """
+    global started_tasks_counter
+    while True:
+        # Safely increment the counter
+        with counter_lock:
+            if started_tasks_counter >= total_commands:
+                break
+            task_index = started_tasks_counter
+            started_tasks_counter += 1
+
         chosen_action = choose_action()
-        client = clients[started_tasks_counter % len(clients)]
+        client = clients[task_index % len(clients)]
         tic = time.perf_counter()
+
         if chosen_action == ChosenAction.GET_EXISTING:
             res = client.get(generate_key_set())
         elif chosen_action == ChosenAction.GET_NON_EXISTING:
             res = client.get(generate_key_get())
         elif chosen_action == ChosenAction.SET:
             res = client.set(generate_key_set(), generate_value(data_size))
+
         toc = time.perf_counter()
         execution_time_milli = (toc - tic) * 1000
-        action_latencies[chosen_action].append(truncate_decimal(execution_time_milli))
+
+        # Safely append latency data
+        with latencies_lock:
+            action_latencies[chosen_action].append(truncate_decimal(execution_time_milli))
+    print(f"thread {threading.current_thread().name} finished")
     return True
-
-
-@timer
-def create_and_run_concurrent_tasks(
-    clients, total_commands, num_of_concurrent_tasks, data_size, action_latencies
-):
-    global started_tasks_counter
-    global get_latency
-    global set_latency
-    started_tasks_counter = 0
-    for _ in range(num_of_concurrent_tasks):
-        task = asyncio.create_task(
-            execute_commands(clients, total_commands, data_size, action_latencies)
-        )
-        running_tasks.add(task)
-        task.add_done_callback(running_tasks.discard)
-    asyncio.gather(*(list(running_tasks)))
-
 
 def latency_results(prefix, latencies):
     result = {}
@@ -203,10 +233,11 @@ def run_clients(
     total_commands,
     data_size,
     is_cluster,
+    num_of_concurrent_threads
 ):
     now = datetime.now(timezone.utc).strftime("%H:%M:%S")
     print(
-        f"Starting {client_name} data size: {data_size}"
+        f"Starting {client_name} data size: {data_size} number of threads: {num_of_concurrent_threads}"
         f"client count: {len(clients)} {now}"
     )
     action_latencies = {
@@ -214,8 +245,7 @@ def run_clients(
         ChosenAction.GET_EXISTING: list(),
         ChosenAction.SET: list(),
     }
-    
-    time = execute_commands(clients, total_commands, data_size, action_latencies)
+    time = create_and_run_concurrent_tasks(clients, total_commands, num_of_concurrent_threads, data_size, action_latencies)
 
     tps = int(started_tasks_counter / time)
     get_non_existing_latencies = action_latencies[ChosenAction.GET_NON_EXISTING]
@@ -235,6 +265,7 @@ def run_clients(
         **{
             "client": client_name,
             "data_size": data_size,
+            "num_of_threads": num_of_concurrent_threads,
             "tps": tps,
             "client_count": len(clients),
             "is_cluster": is_cluster,
@@ -261,7 +292,7 @@ def main(
         clients = create_clients(
             client_count,
             lambda: client_class(
-                host=host, port=port, decode_responses=False, ssl=use_tls
+                host=host, port=port, decode_responses=False, ssl=use_tls, max_connections=100
             ),
         )
 
@@ -271,12 +302,13 @@ def main(
             total_commands,
             data_size,
             is_cluster,
+            num_of_concurrent_threads
         )
 
         for client in clients:
             client.close()
 
-    if clients_to_run == "all" or clients_to_run == "glide":
+    if clients_to_run == "all" or clients_to_run == "glide_ffi":
         # Glide Socket
         # client_class = GlideClusterClient if is_cluster else GlideClient
         # config = GlideClusterClientConfiguration(
@@ -291,15 +323,39 @@ def main(
         )
         run_clients(
             clients,
-            "glide_sync",
+            "glide_sync_ffi",
             total_commands,
             data_size,
             is_cluster,
+            num_of_concurrent_threads
         )
 
 
-def number_of_iterations(num_of_concurrent_tasks):
-    return min(max(100000, num_of_concurrent_tasks * 10000), 5000000)
+    if clients_to_run == "all" or clients_to_run == "glide_uds":
+        # Glide Socket
+        client_class = UDSGlideClusterClientSync if is_cluster else UDSGlideClientSync
+        config = GlideClusterClientConfiguration(
+            [NodeAddress(host=host, port=port)], use_tls=use_tls
+        ) if is_cluster else GlideClientConfiguration(
+            [NodeAddress(host=host, port=port)], use_tls=use_tls
+        )
+        clients = create_clients(
+            client_count,
+            # lambda: client_class.create(config),
+            lambda: client_class.create(config),
+        )
+        run_clients(
+            clients,
+            "glide_sync_uds",
+            total_commands,
+            data_size,
+            is_cluster,
+            num_of_concurrent_threads
+        )
+
+
+def number_of_iterations(num_of_concurrent_threads):
+    return min(max(100000, num_of_concurrent_threads * 10000), 1000000)
 
 
 if __name__ == "__main__":
@@ -317,12 +373,16 @@ if __name__ == "__main__":
     Logger.set_logger_config(LogLevel.INFO, Path(args.resultsFile).stem)
 
     product_of_arguments = [
-        (data_size, int(number_of_clients))
+        (data_size, int(num_of_concurrent_threads), int(number_of_clients))
+        for num_of_concurrent_threads in concurrent_tasks
         for number_of_clients in client_count
+        if int(number_of_clients) <= int(num_of_concurrent_threads)
     ]
 
-    for data_size, number_of_clients in product_of_arguments:
-        iterations = 100000
+    for data_size, num_of_concurrent_threads, number_of_clients in product_of_arguments:
+        iterations = (
+            1000 if args.minimal else number_of_iterations(num_of_concurrent_threads)
+        )
         main(
             iterations,
             data_size,

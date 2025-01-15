@@ -851,7 +851,8 @@ pub fn get_socket_path() -> String {
 pub fn start_socket_listener_internal<InitCallback>(
     init_callback: InitCallback,
     socket_path: Option<String>,
-) where
+) -> String
+where
     InitCallback: FnOnce(Result<String, String>) + Send + Clone + 'static,
 {
     static INITIALIZED_SOCKETS: Lazy<RwLock<HashSet<String>>> =
@@ -866,7 +867,7 @@ pub fn start_socket_listener_internal<InitCallback>(
             .expect("Failed to acquire sockets db read guard");
         if initialized_sockets.contains(&socket_path) {
             init_callback(Ok(socket_path.clone()));
-            return;
+            return socket_path;
         }
     }
 
@@ -876,7 +877,7 @@ pub fn start_socket_listener_internal<InitCallback>(
         .expect("Failed to acquire sockets db write guard");
     if sockets_write_guard.contains(&socket_path) {
         init_callback(Ok(socket_path.clone()));
-        return;
+        return socket_path;
     }
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -959,9 +960,10 @@ pub fn start_socket_listener_internal<InitCallback>(
     // wait for thread initialization signaling, callback invocation is done in the thread
     let _ = rx.recv().map(|res| {
         if res {
-            sockets_write_guard.insert(socket_path);
+            sockets_write_guard.insert(socket_path.clone());
         }
     });
+    socket_path
 }
 
 /// Creates a new thread with a main loop task listening on the socket for new connections.
@@ -969,9 +971,9 @@ pub fn start_socket_listener_internal<InitCallback>(
 ///
 /// # Arguments
 /// * `init_callback` - called when the socket listener fails to initialize, with the reason for the failure.
-pub fn start_socket_listener<InitCallback>(init_callback: InitCallback)
+pub fn start_socket_listener<InitCallback>(init_callback: InitCallback) -> String
 where
     InitCallback: FnOnce(Result<String, String>) + Send + Clone + 'static,
 {
-    start_socket_listener_internal(init_callback, None);
+    start_socket_listener_internal(init_callback, None)
 }

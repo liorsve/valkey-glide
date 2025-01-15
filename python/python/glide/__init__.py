@@ -168,11 +168,13 @@ from glide.routes import (
 )
 from glide.glide_sync_client import GlideSync
 from .glide import ClusterScanCursor, Script
-
+from glide.glide_client_sync_uds import UDSGlideClientSync, UDSGlideClusterClientSync
 PubSubMsg = CoreCommands.PubSubMsg
 
 __all__ = [
     # Client
+    "UDSGlideClientSync",
+    "UDSGlideClusterClientSync",
     "GlideAsync",
     "GlideSync",
     "GlideClient",
