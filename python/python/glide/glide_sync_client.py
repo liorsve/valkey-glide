@@ -145,10 +145,6 @@ class GlideSync(CoreCommands):
             buffers.append(arg_bytes)  # Keep the byte buffer alive
             c_strings.append(self.ffi.cast("size_t", self.ffi.from_buffer(arg_bytes)))
             string_lengths.append(len(arg_bytes))
-
-            # Debugging
-            print(f"arg={arg}, arg_bytes={list(arg_bytes)}, len={len(arg_bytes)}, c_str={c_strings[-1]}")
-
         # Return C-compatible arrays and keep buffers alive
         return (
             self.ffi.new("size_t[]", c_strings),

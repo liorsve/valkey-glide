@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Union, cast
 
 import pytest
+from glide.glide_client_sync_uds import UDSGlideClientSync
 from glide import ClosingError, RequestError, Script
 from glide.async_commands.bitmap import (
     BitFieldGet,
@@ -71,7 +72,16 @@ from glide.async_commands.stream import (
     TrimByMinId,
 )
 from glide.async_commands.transaction import ClusterTransaction, Transaction
-from glide.config import BackoffStrategy, ProtocolVersion, ServerCredentials
+from glide.config import (
+    GlideClientConfiguration,
+    GlideClusterClientConfiguration,
+    ProtocolVersion,
+    ServerCredentials,
+    NodeAddress,
+    BackoffStrategy,
+    ProtocolVersion,
+    ServerCredentials
+)
 from glide.constants import OK, TEncodable, TFunctionStatsSingleNodeResponse, TResult
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
 from glide.routes import (
@@ -104,6 +114,10 @@ from tests.utils.utils import (
 
 
 @pytest.mark.asyncio
+def test_sync_uds_client():
+    config = GlideClientConfiguration([NodeAddress("localhost", 6379)])
+    client = UDSGlideClientSync.create(config)
+    client.set("foo", "bar")
 class TestGlideClients:
     @pytest.mark.skip_if_version_below("7.2.0")
     @pytest.mark.parametrize("cluster_mode", [True, False])

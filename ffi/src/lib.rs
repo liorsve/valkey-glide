@@ -2,6 +2,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 use glide_core::client::Client as GlideClient;
+use glide_core::client::{NodeAddress, TlsMode};
 use glide_core::cluster_scan_container::get_cluster_scan_cursor;
 use glide_core::command_request::SimpleRoutes;
 use glide_core::command_request::{Routes, SlotTypes};
@@ -388,8 +389,26 @@ fn create_client_internal(
             let redis_error = err.into();
             errors::error_message(&redis_error)
         })?;
+    let addresses = vec![NodeAddress {
+        host: "clustercfg.barshaul-babushka-cluster-test-tls-1.ez432c.use1.cache.amazonaws.com"
+            .to_string(),
+        port: 6379,
+    }];
+    let use_tls = true;
     let client = runtime
-        .block_on(GlideClient::new(ConnectionRequest::from(request), None))
+        .block_on(GlideClient::new(
+            ConnectionRequest {
+                addresses,
+                tls_mode: if use_tls {
+                    Some(TlsMode::SecureTls)
+                } else {
+                    Some(TlsMode::NoTls)
+                },
+                cluster_mode_enabled: true,
+                ..Default::default()
+            },
+            None,
+        ))
         .map_err(|err| err.to_string())?;
     let core = Arc::new(CommandExecutionCore {
         client,
@@ -768,10 +787,11 @@ pub unsafe extern "C" fn command(
     };
 
     // Create the command outside of the task to ensure that the command arguments passed
-    // from "go" are still valid
+    // from the caller are still valid
     let mut cmd = command_type
         .get_command()
         .expect("Couldn't fetch command type");
+
     for command_arg in arg_vec {
         cmd.arg(command_arg);
     }
@@ -850,55 +870,22 @@ fn to_c_error(err: RedisError) -> (*const c_char, RequestErrorType) {
     (c_err_str, error_type)
 }
 
-fn get_route(route: Routes, cmd: Option<&Cmd>) -> Option<RoutingInfo> {
-    use glide_core::command_request::routes::Value;
-    let route = route.value?;
-    let get_response_policy = |cmd: Option<&Cmd>| {
-        cmd.and_then(|cmd| {
-            cmd.command()
-                .and_then(|cmd| ResponsePolicy::for_command(&cmd))
-        })
-    };
-    match route {
-        Value::SimpleRoutes(simple_route) => {
-            let simple_route = simple_route.enum_value().unwrap();
-            match simple_route {
-                SimpleRoutes::AllNodes => Some(RoutingInfo::MultiNode((
-                    MultipleNodeRoutingInfo::AllNodes,
-                    get_response_policy(cmd),
-                ))),
-                SimpleRoutes::AllPrimaries => Some(RoutingInfo::MultiNode((
-                    MultipleNodeRoutingInfo::AllMasters,
-                    get_response_policy(cmd),
-                ))),
-                SimpleRoutes::Random => {
-                    Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::Random))
+    match result {
+        Ok(value) => {
+            // Convert the value to a CommandResponse
+            match valkey_value_to_command_response(value) {
+                Ok(command_response) => Box::into_raw(Box::new(command_response)), // Return a pointer to the CommandResponse
+                Err(err) => {
+                    eprintln!("Error converting value to CommandResponse: {:?}", err);
+                    std::ptr::null_mut()
                 }
             }
         }
-        Value::SlotKeyRoute(slot_key_route) => Some(RoutingInfo::SingleNode(
-            SingleNodeRoutingInfo::SpecificNode(Route::new(
-                redis::cluster_topology::get_slot(slot_key_route.slot_key.as_bytes()),
-                get_slot_addr(&slot_key_route.slot_type),
-            )),
-        )),
-        Value::SlotIdRoute(slot_id_route) => Some(RoutingInfo::SingleNode(
-            SingleNodeRoutingInfo::SpecificNode(Route::new(
-                slot_id_route.slot_id as u16,
-                get_slot_addr(&slot_id_route.slot_type),
-            )),
-        )),
-        Value::ByAddressRoute(by_address_route) => match u16::try_from(by_address_route.port) {
-            Ok(port) => Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::ByAddress {
-                host: by_address_route.host.to_string(),
-                port,
-            })),
-            Err(_) => {
-                // TODO: Handle error propagation.
-                None
-            }
-        },
-        _ => panic!("unknown route type"),
+        Err(err) => {
+            // Handle the error case
+            eprintln!("Error executing command: {:?}", err);
+            std::ptr::null_mut()
+        }
     }
 }
 

@@ -1,0 +1,7 @@
+language,client,is_cluster,data_size,num_of_threads,client_count,tps,get_non_existing_p50_latency,get_non_existing_p90_latency,get_non_existing_p99_latency,get_non_existing_average_latency,get_non_existing_std_dev,get_existing_p50_latency,get_existing_p90_latency,get_existing_p99_latency,get_existing_average_latency,get_existing_std_dev,set_p50_latency,set_p90_latency,set_p99_latency,set_average_latency,set_std_dev
+python,redispy,True,100,1,1,4114,0.198,0.326,0.188,0.224,0.075,0.227,0.333,0.19,0.242,0.073,0.211,0.335,0.2,0.236,0.071
+python,glide_sync_ffi,True,100,1,1,4499,0.189,0.251,0.183,0.205,0.065,0.21,0.293,0.187,0.222,0.069,0.201,0.261,0.194,0.217,0.067
+python,redispy,True,100,10,1,7012,1.028,1.716,0.577,1.167,4.2,1.346,2.47,0.683,1.565,2.559,1.036,1.706,0.579,1.146,3.228
+python,glide_sync_ffi,True,100,10,1,22416,0.42,0.502,0.367,0.432,0.133,0.427,0.51,0.374,0.439,0.136,0.426,0.505,0.373,0.439,0.161
+python,redispy,True,100,100,1,5725,17.069,17.571,16.628,17.205,9.509,17.178,17.812,16.693,17.434,14.318,17.082,17.58,16.644,17.274,12.662
+python,glide_sync_ffi,True,100,100,1,20928,4.736,8.938,0.358,4.792,2.481,4.738,8.923,0.366,4.745,2.506,4.741,8.937,0.363,4.775,2.492

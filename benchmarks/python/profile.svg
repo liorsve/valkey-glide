@@ -1,0 +1,491 @@
+<?xml version="1.0" standalone="no"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg version="1.1" width="1200" height="362" onload="init(evt)" viewBox="0 0 1200 362" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:fg="http://github.com/jonhoo/inferno"><!--Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples.--><!--NOTES: --><defs><linearGradient id="background" y1="0" y2="1" x1="0" x2="0"><stop stop-color="#eeeeee" offset="5%"/><stop stop-color="#eeeeb0" offset="95%"/></linearGradient></defs><style type="text/css">
+text { font-family:monospace; font-size:12px }
+#title { text-anchor:middle; font-size:17px; }
+#matched { text-anchor:end; }
+#search { text-anchor:end; opacity:0.1; cursor:pointer; }
+#search:hover, #search.show { opacity:1; }
+#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+#unzoom { cursor:pointer; }
+#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+.hide { display:none; }
+.parent { opacity:0.5; }
+</style><script type="text/ecmascript"><![CDATA[
+        var nametype = 'Function:';
+        var fontsize = 12;
+        var fontwidth = 0.59;
+        var xpad = 10;
+        var inverted = true;
+        var searchcolor = 'rgb(230,0,230)';
+        var fluiddrawing = true;
+        var truncate_text_right = false;
+    ]]><![CDATA["use strict";
+var details, searchbtn, unzoombtn, matchedtxt, svg, searching, frames, known_font_width;
+function init(evt) {
+    details = document.getElementById("details").firstChild;
+    searchbtn = document.getElementById("search");
+    unzoombtn = document.getElementById("unzoom");
+    matchedtxt = document.getElementById("matched");
+    svg = document.getElementsByTagName("svg")[0];
+    frames = document.getElementById("frames");
+    known_font_width = get_monospace_width(frames);
+    total_samples = parseInt(frames.attributes.total_samples.value);
+    searching = 0;
+
+    // Use GET parameters to restore a flamegraph's state.
+    var restore_state = function() {
+        var params = get_params();
+        if (params.x && params.y)
+            zoom(find_group(document.querySelector('[*|x="' + params.x + '"][y="' + params.y + '"]')));
+        if (params.s)
+            search(params.s);
+    };
+
+    if (fluiddrawing) {
+        // Make width dynamic so the SVG fits its parent's width.
+        svg.removeAttribute("width");
+        // Edge requires us to have a viewBox that gets updated with size changes.
+        var isEdge = /Edge\/\d./i.test(navigator.userAgent);
+        if (!isEdge) {
+            svg.removeAttribute("viewBox");
+        }
+        var update_for_width_change = function() {
+            if (isEdge) {
+                svg.attributes.viewBox.value = "0 0 " + svg.width.baseVal.value + " " + svg.height.baseVal.value;
+            }
+
+            // Keep consistent padding on left and right of frames container.
+            frames.attributes.width.value = svg.width.baseVal.value - xpad * 2;
+
+            // Text truncation needs to be adjusted for the current width.
+            update_text_for_elements(frames.children);
+
+            // Keep search elements at a fixed distance from right edge.
+            var svgWidth = svg.width.baseVal.value;
+            searchbtn.attributes.x.value = svgWidth - xpad;
+            matchedtxt.attributes.x.value = svgWidth - xpad;
+        };
+        window.addEventListener('resize', function() {
+            update_for_width_change();
+        });
+        // This needs to be done asynchronously for Safari to work.
+        setTimeout(function() {
+            unzoom();
+            update_for_width_change();
+            restore_state();
+        }, 0);
+    } else {
+        restore_state();
+    }
+}
+// event listeners
+window.addEventListener("click", function(e) {
+    var target = find_group(e.target);
+    if (target) {
+        if (target.nodeName == "a") {
+            if (e.ctrlKey === false) return;
+            e.preventDefault();
+        }
+        if (target.classList.contains("parent")) unzoom();
+        zoom(target);
+
+        // set parameters for zoom state
+        var el = target.querySelector("rect");
+        if (el && el.attributes && el.attributes.y && el.attributes["fg:x"]) {
+            var params = get_params()
+            params.x = el.attributes["fg:x"].value;
+            params.y = el.attributes.y.value;
+            history.replaceState(null, null, parse_params(params));
+        }
+    }
+    else if (e.target.id == "unzoom") {
+        unzoom();
+
+        // remove zoom state
+        var params = get_params();
+        if (params.x) delete params.x;
+        if (params.y) delete params.y;
+        history.replaceState(null, null, parse_params(params));
+    }
+    else if (e.target.id == "search") search_prompt();
+}, false)
+// mouse-over for info
+// show
+window.addEventListener("mouseover", function(e) {
+    var target = find_group(e.target);
+    if (target) details.nodeValue = nametype + " " + g_to_text(target);
+}, false)
+// clear
+window.addEventListener("mouseout", function(e) {
+    var target = find_group(e.target);
+    if (target) details.nodeValue = ' ';
+}, false)
+// ctrl-F for search
+window.addEventListener("keydown",function (e) {
+    if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+        e.preventDefault();
+        search_prompt();
+    }
+}, false)
+// functions
+function get_params() {
+    var params = {};
+    var paramsarr = window.location.search.substr(1).split('&');
+    for (var i = 0; i < paramsarr.length; ++i) {
+        var tmp = paramsarr[i].split("=");
+        if (!tmp[0] || !tmp[1]) continue;
+        params[tmp[0]]  = decodeURIComponent(tmp[1]);
+    }
+    return params;
+}
+function parse_params(params) {
+    var uri = "?";
+    for (var key in params) {
+        uri += key + '=' + encodeURIComponent(params[key]) + '&';
+    }
+    if (uri.slice(-1) == "&")
+        uri = uri.substring(0, uri.length - 1);
+    if (uri == '?')
+        uri = window.location.href.split('?')[0];
+    return uri;
+}
+function find_child(node, selector) {
+    var children = node.querySelectorAll(selector);
+    if (children.length) return children[0];
+    return;
+}
+function find_group(node) {
+    var parent = node.parentElement;
+    if (!parent) return;
+    if (parent.id == "frames") return node;
+    return find_group(parent);
+}
+function orig_save(e, attr, val) {
+    if (e.attributes["fg:orig_" + attr] != undefined) return;
+    if (e.attributes[attr] == undefined) return;
+    if (val == undefined) val = e.attributes[attr].value;
+    e.setAttribute("fg:orig_" + attr, val);
+}
+function orig_load(e, attr) {
+    if (e.attributes["fg:orig_"+attr] == undefined) return;
+    e.attributes[attr].value = e.attributes["fg:orig_" + attr].value;
+    e.removeAttribute("fg:orig_" + attr);
+}
+function g_to_text(e) {
+    var text = find_child(e, "title").firstChild.nodeValue;
+    return (text)
+}
+function g_to_func(e) {
+    var func = g_to_text(e);
+    // if there's any manipulation we want to do to the function
+    // name before it's searched, do it here before returning.
+    return (func);
+}
+function get_monospace_width(frames) {
+    // Given the id="frames" element, return the width of text characters if
+    // this is a monospace font, otherwise return 0.
+    text = find_child(frames.children[0], "text");
+    originalContent = text.textContent;
+    text.textContent = "!";
+    bangWidth = text.getComputedTextLength();
+    text.textContent = "W";
+    wWidth = text.getComputedTextLength();
+    text.textContent = originalContent;
+    if (bangWidth === wWidth) {
+        return bangWidth;
+    } else {
+        return 0;
+    }
+}
+function update_text_for_elements(elements) {
+    // In order to render quickly in the browser, you want to do one pass of
+    // reading attributes, and one pass of mutating attributes. See
+    // https://web.dev/avoid-large-complex-layouts-and-layout-thrashing/ for details.
+
+    // Fall back to inefficient calculation, if we're variable-width font.
+    // TODO This should be optimized somehow too.
+    if (known_font_width === 0) {
+        for (var i = 0; i < elements.length; i++) {
+            update_text(elements[i]);
+        }
+        return;
+    }
+
+    var textElemNewAttributes = [];
+    for (var i = 0; i < elements.length; i++) {
+        var e = elements[i];
+        var r = find_child(e, "rect");
+        var t = find_child(e, "text");
+        var w = parseFloat(r.attributes.width.value) * frames.attributes.width.value / 100 - 3;
+        var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+        var newX = format_percent((parseFloat(r.attributes.x.value) + (100 * 3 / frames.attributes.width.value)));
+
+        // Smaller than this size won't fit anything
+        if (w < 2 * known_font_width) {
+            textElemNewAttributes.push([newX, ""]);
+            continue;
+        }
+
+        // Fit in full text width
+        if (txt.length * known_font_width < w) {
+            textElemNewAttributes.push([newX, txt]);
+            continue;
+        }
+
+        var substringLength = Math.floor(w / known_font_width) - 2;
+        if (truncate_text_right) {
+            // Truncate the right side of the text.
+            textElemNewAttributes.push([newX, txt.substring(0, substringLength) + ".."]);
+            continue;
+        } else {
+            // Truncate the left side of the text.
+            textElemNewAttributes.push([newX, ".." + txt.substring(txt.length - substringLength, txt.length)]);
+            continue;
+        }
+    }
+
+    console.assert(textElemNewAttributes.length === elements.length, "Resize failed, please file a bug at https://github.com/jonhoo/inferno/");
+
+    // Now that we know new textContent, set it all in one go so we don't refresh a bazillion times.
+    for (var i = 0; i < elements.length; i++) {
+        var e = elements[i];
+        var values = textElemNewAttributes[i];
+        var t = find_child(e, "text");
+        t.attributes.x.value = values[0];
+        t.textContent = values[1];
+    }
+}
+
+function update_text(e) {
+    var r = find_child(e, "rect");
+    var t = find_child(e, "text");
+    var w = parseFloat(r.attributes.width.value) * frames.attributes.width.value / 100 - 3;
+    var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+    t.attributes.x.value = format_percent((parseFloat(r.attributes.x.value) + (100 * 3 / frames.attributes.width.value)));
+
+    // Smaller than this size won't fit anything
+    if (w < 2 * fontsize * fontwidth) {
+        t.textContent = "";
+        return;
+    }
+    t.textContent = txt;
+    // Fit in full text width
+    if (t.getComputedTextLength() < w)
+        return;
+    if (truncate_text_right) {
+        // Truncate the right side of the text.
+        for (var x = txt.length - 2; x > 0; x--) {
+            if (t.getSubStringLength(0, x + 2) <= w) {
+                t.textContent = txt.substring(0, x) + "..";
+                return;
+            }
+        }
+    } else {
+        // Truncate the left side of the text.
+        for (var x = 2; x < txt.length; x++) {
+            if (t.getSubStringLength(x - 2, txt.length) <= w) {
+                t.textContent = ".." + txt.substring(x, txt.length);
+                return;
+            }
+        }
+    }
+    t.textContent = "";
+}
+// zoom
+function zoom_reset(e) {
+    if (e.tagName == "rect") {
+        e.attributes.x.value = format_percent(100 * parseInt(e.attributes["fg:x"].value) / total_samples);
+        e.attributes.width.value = format_percent(100 * parseInt(e.attributes["fg:w"].value) / total_samples);
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_reset(c[i]);
+    }
+}
+function zoom_child(e, x, zoomed_width_samples) {
+    if (e.tagName == "text") {
+        var parent_x = parseFloat(find_child(e.parentNode, "rect[x]").attributes.x.value);
+        e.attributes.x.value = format_percent(parent_x + (100 * 3 / frames.attributes.width.value));
+    } else if (e.tagName == "rect") {
+        e.attributes.x.value = format_percent(100 * (parseInt(e.attributes["fg:x"].value) - x) / zoomed_width_samples);
+        e.attributes.width.value = format_percent(100 * parseInt(e.attributes["fg:w"].value) / zoomed_width_samples);
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_child(c[i], x, zoomed_width_samples);
+    }
+}
+function zoom_parent(e) {
+    if (e.attributes) {
+        if (e.attributes.x != undefined) {
+            e.attributes.x.value = "0.0%";
+        }
+        if (e.attributes.width != undefined) {
+            e.attributes.width.value = "100.0%";
+        }
+    }
+    if (e.childNodes == undefined) return;
+    for(var i = 0, c = e.childNodes; i < c.length; i++) {
+        zoom_parent(c[i]);
+    }
+}
+function zoom(node) {
+    var attr = find_child(node, "rect").attributes;
+    var width = parseInt(attr["fg:w"].value);
+    var xmin = parseInt(attr["fg:x"].value);
+    var xmax = xmin + width;
+    var ymin = parseFloat(attr.y.value);
+    unzoombtn.classList.remove("hide");
+    var el = frames.children;
+    var to_update_text = [];
+    for (var i = 0; i < el.length; i++) {
+        var e = el[i];
+        var a = find_child(e, "rect").attributes;
+        var ex = parseInt(a["fg:x"].value);
+        var ew = parseInt(a["fg:w"].value);
+        // Is it an ancestor
+        if (!inverted) {
+            var upstack = parseFloat(a.y.value) > ymin;
+        } else {
+            var upstack = parseFloat(a.y.value) < ymin;
+        }
+        if (upstack) {
+            // Direct ancestor
+            if (ex <= xmin && (ex+ew) >= xmax) {
+                e.classList.add("parent");
+                zoom_parent(e);
+                to_update_text.push(e);
+            }
+            // not in current path
+            else
+                e.classList.add("hide");
+        }
+        // Children maybe
+        else {
+            // no common path
+            if (ex < xmin || ex >= xmax) {
+                e.classList.add("hide");
+            }
+            else {
+                zoom_child(e, xmin, width);
+                to_update_text.push(e);
+            }
+        }
+    }
+    update_text_for_elements(to_update_text);
+}
+function unzoom() {
+    unzoombtn.classList.add("hide");
+    var el = frames.children;
+    for(var i = 0; i < el.length; i++) {
+        el[i].classList.remove("parent");
+        el[i].classList.remove("hide");
+        zoom_reset(el[i]);
+    }
+    update_text_for_elements(el);
+}
+// search
+function reset_search() {
+    var el = document.querySelectorAll("#frames rect");
+    for (var i = 0; i < el.length; i++) {
+        orig_load(el[i], "fill")
+    }
+    var params = get_params();
+    delete params.s;
+    history.replaceState(null, null, parse_params(params));
+}
+function search_prompt() {
+    if (!searching) {
+        var term = prompt("Enter a search term (regexp " +
+            "allowed, eg: ^ext4_)", "");
+        if (term != null) {
+            search(term)
+        }
+    } else {
+        reset_search();
+        searching = 0;
+        searchbtn.classList.remove("show");
+        searchbtn.firstChild.nodeValue = "Search"
+        matchedtxt.classList.add("hide");
+        matchedtxt.firstChild.nodeValue = ""
+    }
+}
+function search(term) {
+    var re = new RegExp(term);
+    var el = frames.children;
+    var matches = new Object();
+    var maxwidth = 0;
+    for (var i = 0; i < el.length; i++) {
+        var e = el[i];
+        // Skip over frames which are either not visible, or below the zoomed-to frame
+        if (e.classList.contains("hide") || e.classList.contains("parent")) {
+            continue;
+        }
+        var func = g_to_func(e);
+        var rect = find_child(e, "rect");
+        if (func == null || rect == null)
+            continue;
+        // Save max width. Only works as we have a root frame
+        var w = parseInt(rect.attributes["fg:w"].value);
+        if (w > maxwidth)
+            maxwidth = w;
+        if (func.match(re)) {
+            // highlight
+            var x = parseInt(rect.attributes["fg:x"].value);
+            orig_save(rect, "fill");
+            rect.attributes.fill.value = searchcolor;
+            // remember matches
+            if (matches[x] == undefined) {
+                matches[x] = w;
+            } else {
+                if (w > matches[x]) {
+                    // overwrite with parent
+                    matches[x] = w;
+                }
+            }
+            searching = 1;
+        }
+    }
+    if (!searching)
+        return;
+    var params = get_params();
+    params.s = term;
+    history.replaceState(null, null, parse_params(params));
+
+    searchbtn.classList.add("show");
+    searchbtn.firstChild.nodeValue = "Reset Search";
+    // calculate percent matched, excluding vertical overlap
+    var count = 0;
+    var lastx = -1;
+    var lastw = 0;
+    var keys = Array();
+    for (k in matches) {
+        if (matches.hasOwnProperty(k))
+            keys.push(k);
+    }
+    // sort the matched frames by their x location
+    // ascending, then width descending
+    keys.sort(function(a, b){
+        return a - b;
+    });
+    // Step through frames saving only the biggest bottom-up frames
+    // thanks to the sort order. This relies on the tree property
+    // where children are always smaller than their parents.
+    for (var k in keys) {
+        var x = parseInt(keys[k]);
+        var w = matches[keys[k]];
+        if (x >= lastx + lastw) {
+            count += w;
+            lastx = x;
+            lastw = w;
+        }
+    }
+    // display matched percent
+    matchedtxt.classList.remove("hide");
+    var pct = 100 * count / maxwidth;
+    if (pct != 100) pct = pct.toFixed(1);
+    matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+}
+function format_percent(n) {
+    return n.toFixed(4) + "%";
+}
+]]></script><rect x="0" y="0" width="100%" height="362" fill="url(#background)"/><text id="title" fill="rgb(0,0,0)" x="50.0000%" y="24.00">py-spy record -o profile.svg --pid 3786940</text><text id="details" fill="rgb(0,0,0)" x="10" y="40.00"> </text><text id="unzoom" class="hide" fill="rgb(0,0,0)" x="10" y="24.00">Reset Zoom</text><text id="search" fill="rgb(0,0,0)" x="1190" y="24.00">Search</text><text id="matched" fill="rgb(0,0,0)" x="1190" y="351.00"> </text><svg id="frames" x="10" width="1180" total_samples="4539"><g><title>_run_once (asyncio/base_events.py:1893) (8 samples, 0.18%)</title><rect x="0.0220%" y="132" width="0.1763%" height="15" fill="rgb(227,0,7)" fg:x="1" fg:w="8"/><text x="0.2720%" y="142.50"></text></g><g><title>_remove (_weakrefset.py:40) (8 samples, 0.18%)</title><rect x="2.2472%" y="148" width="0.1763%" height="15" fill="rgb(217,0,24)" fg:x="102" fg:w="8"/><text x="2.4972%" y="158.50"></text></g><g><title>_remove (_weakrefset.py:42) (6 samples, 0.13%)</title><rect x="2.4675%" y="148" width="0.1322%" height="15" fill="rgb(221,193,54)" fg:x="112" fg:w="6"/><text x="2.7175%" y="158.50"></text></g><g><title>_run_once (asyncio/base_events.py:1894) (125 samples, 2.75%)</title><rect x="0.1983%" y="132" width="2.7539%" height="15" fill="rgb(248,212,6)" fg:x="9" fg:w="125"/><text x="0.4483%" y="142.50">_r..</text></g><g><title>_remove (_weakrefset.py:45) (16 samples, 0.35%)</title><rect x="2.5997%" y="148" width="0.3525%" height="15" fill="rgb(208,68,35)" fg:x="118" fg:w="16"/><text x="2.8497%" y="158.50"></text></g><g><title>_run_once (asyncio/base_events.py:1897) (5 samples, 0.11%)</title><rect x="3.0403%" y="132" width="0.1102%" height="15" fill="rgb(232,128,0)" fg:x="138" fg:w="5"/><text x="3.2903%" y="142.50"></text></g><g><title>_read_ready__data_received (asyncio/selector_events.py:862) (43 samples, 0.95%)</title><rect x="8.1956%" y="180" width="0.9473%" height="15" fill="rgb(207,160,47)" fg:x="372" fg:w="43"/><text x="8.4456%" y="190.50"></text></g><g><title>_read_ready (asyncio/selector_events.py:819) (46 samples, 1.01%)</title><rect x="8.1956%" y="164" width="1.0134%" height="15" fill="rgb(228,23,34)" fg:x="372" fg:w="46"/><text x="8.4456%" y="174.50"></text></g><g><title>_reader_loop (glide/glide_client.py:521) (6 samples, 0.13%)</title><rect x="9.2531%" y="164" width="0.1322%" height="15" fill="rgb(218,30,26)" fg:x="420" fg:w="6"/><text x="9.5031%" y="174.50"></text></g><g><title>_varint_decoder (glide/protobuf_codec.py:31) (43 samples, 0.95%)</title><rect x="10.6191%" y="212" width="0.9473%" height="15" fill="rgb(220,122,19)" fg:x="482" fg:w="43"/><text x="10.8691%" y="222.50"></text></g><g><title>_decode_varint_32 (glide/protobuf_codec.py:17) (54 samples, 1.19%)</title><rect x="10.3988%" y="196" width="1.1897%" height="15" fill="rgb(250,228,42)" fg:x="472" fg:w="54"/><text x="10.6488%" y="206.50"></text></g><g><title>decode_varint (glide/protobuf_codec.py:35) (10 samples, 0.22%)</title><rect x="11.7867%" y="212" width="0.2203%" height="15" fill="rgb(240,193,28)" fg:x="535" fg:w="10"/><text x="12.0367%" y="222.50"></text></g><g><title>decode_varint (glide/protobuf_codec.py:36) (26 samples, 0.57%)</title><rect x="12.0071%" y="212" width="0.5728%" height="15" fill="rgb(216,20,37)" fg:x="545" fg:w="26"/><text x="12.2571%" y="222.50"></text></g><g><title>decode_varint (glide/protobuf_codec.py:38) (8 samples, 0.18%)</title><rect x="12.6239%" y="212" width="0.1763%" height="15" fill="rgb(206,188,39)" fg:x="573" fg:w="8"/><text x="12.8739%" y="222.50"></text></g><g><title>decode_varint (glide/protobuf_codec.py:39) (10 samples, 0.22%)</title><rect x="12.8002%" y="212" width="0.2203%" height="15" fill="rgb(217,207,13)" fg:x="581" fg:w="10"/><text x="13.0502%" y="222.50"></text></g><g><title>decode_varint (glide/protobuf_codec.py:40) (7 samples, 0.15%)</title><rect x="13.0205%" y="212" width="0.1542%" height="15" fill="rgb(231,73,38)" fg:x="591" fg:w="7"/><text x="13.2705%" y="222.50"></text></g><g><title>decode_delimited (glide/protobuf_codec.py:83) (146 samples, 3.22%)</title><rect x="10.0022%" y="180" width="3.2166%" height="15" fill="rgb(225,20,46)" fg:x="454" fg:w="146"/><text x="10.2522%" y="190.50">dec..</text></g><g><title>_decode_varint_32 (glide/protobuf_codec.py:18) (74 samples, 1.63%)</title><rect x="11.5885%" y="196" width="1.6303%" height="15" fill="rgb(210,31,41)" fg:x="526" fg:w="74"/><text x="11.8385%" y="206.50"></text></g><g><title>decode_delimited (glide/protobuf_codec.py:89) (6 samples, 0.13%)</title><rect x="13.2188%" y="180" width="0.1322%" height="15" fill="rgb(221,200,47)" fg:x="600" fg:w="6"/><text x="13.4688%" y="190.50"></text></g><g><title>decode_delimited (glide/protobuf_codec.py:90) (11 samples, 0.24%)</title><rect x="13.3510%" y="180" width="0.2423%" height="15" fill="rgb(226,26,5)" fg:x="606" fg:w="11"/><text x="13.6010%" y="190.50"></text></g><g><title>decode_delimited (glide/protobuf_codec.py:94) (12 samples, 0.26%)</title><rect x="13.5933%" y="180" width="0.2644%" height="15" fill="rgb(249,33,26)" fg:x="617" fg:w="12"/><text x="13.8433%" y="190.50"></text></g><g><title>decode_delimited (glide/protobuf_codec.py:95) (8 samples, 0.18%)</title><rect x="13.8577%" y="180" width="0.1763%" height="15" fill="rgb(235,183,28)" fg:x="629" fg:w="8"/><text x="14.1077%" y="190.50"></text></g><g><title>decode_delimited (glide/protobuf_codec.py:96) (24 samples, 0.53%)</title><rect x="14.0339%" y="180" width="0.5288%" height="15" fill="rgb(221,5,38)" fg:x="637" fg:w="24"/><text x="14.2839%" y="190.50"></text></g><g><title>decode_delimited (glide/protobuf_codec.py:97) (24 samples, 0.53%)</title><rect x="14.5627%" y="180" width="0.5288%" height="15" fill="rgb(247,18,42)" fg:x="661" fg:w="24"/><text x="14.8127%" y="190.50"></text></g><g><title>_reader_loop (glide/glide_client.py:523) (261 samples, 5.75%)</title><rect x="9.3853%" y="164" width="5.7502%" height="15" fill="rgb(241,131,45)" fg:x="426" fg:w="261"/><text x="9.6353%" y="174.50">_reader..</text></g><g><title>_reader_loop (glide/glide_client.py:524) (6 samples, 0.13%)</title><rect x="15.1355%" y="164" width="0.1322%" height="15" fill="rgb(249,31,29)" fg:x="687" fg:w="6"/><text x="15.3855%" y="174.50"></text></g><g><title>_reader_loop (glide/glide_client.py:530) (9 samples, 0.20%)</title><rect x="15.3117%" y="164" width="0.1983%" height="15" fill="rgb(225,111,53)" fg:x="695" fg:w="9"/><text x="15.5617%" y="174.50"></text></g><g><title>_reader_loop (glide/glide_client.py:531) (9 samples, 0.20%)</title><rect x="15.5100%" y="164" width="0.1983%" height="15" fill="rgb(238,160,17)" fg:x="704" fg:w="9"/><text x="15.7600%" y="174.50"></text></g><g><title>_process_response (glide/glide_client.py:463) (24 samples, 0.53%)</title><rect x="16.2150%" y="180" width="0.5288%" height="15" fill="rgb(214,148,48)" fg:x="736" fg:w="24"/><text x="16.4650%" y="190.50"></text></g><g><title>_process_response (glide/glide_client.py:464) (22 samples, 0.48%)</title><rect x="16.7438%" y="180" width="0.4847%" height="15" fill="rgb(232,36,49)" fg:x="760" fg:w="22"/><text x="16.9938%" y="190.50"></text></g><g><title>_process_response (glide/glide_client.py:475) (19 samples, 0.42%)</title><rect x="17.2285%" y="180" width="0.4186%" height="15" fill="rgb(209,103,24)" fg:x="782" fg:w="19"/><text x="17.4785%" y="190.50"></text></g><g><title>_process_response (glide/glide_client.py:476) (11 samples, 0.24%)</title><rect x="17.6471%" y="180" width="0.2423%" height="15" fill="rgb(229,88,8)" fg:x="801" fg:w="11"/><text x="17.8971%" y="190.50"></text></g><g><title>_process_response (glide/glide_client.py:479) (12 samples, 0.26%)</title><rect x="17.8894%" y="180" width="0.2644%" height="15" fill="rgb(213,181,19)" fg:x="812" fg:w="12"/><text x="18.1394%" y="190.50"></text></g><g><title>__init__ (asyncio/events.py:40) (12 samples, 0.26%)</title><rect x="21.5907%" y="228" width="0.2644%" height="15" fill="rgb(254,191,54)" fg:x="980" fg:w="12"/><text x="21.8407%" y="238.50"></text></g><g><title>_call_soon (asyncio/base_events.py:773) (43 samples, 0.95%)</title><rect x="20.9297%" y="212" width="0.9473%" height="15" fill="rgb(241,83,37)" fg:x="950" fg:w="43"/><text x="21.1797%" y="222.50"></text></g><g><title>_call_soon (asyncio/base_events.py:776) (6 samples, 0.13%)</title><rect x="21.9211%" y="212" width="0.1322%" height="15" fill="rgb(233,36,39)" fg:x="995" fg:w="6"/><text x="22.1711%" y="222.50"></text></g><g><title>_process_response (glide/glide_client.py:480) (178 samples, 3.92%)</title><rect x="18.1538%" y="180" width="3.9216%" height="15" fill="rgb(226,3,54)" fg:x="824" fg:w="178"/><text x="18.4038%" y="190.50">_pro..</text></g><g><title>call_soon (asyncio/base_events.py:757) (57 samples, 1.26%)</title><rect x="20.8196%" y="196" width="1.2558%" height="15" fill="rgb(245,192,40)" fg:x="945" fg:w="57"/><text x="21.0696%" y="206.50"></text></g><g><title>_call_soon (asyncio/base_events.py:773) (11 samples, 0.24%)</title><rect x="22.3177%" y="212" width="0.2423%" height="15" fill="rgb(238,167,29)" fg:x="1013" fg:w="11"/><text x="22.5677%" y="222.50"></text></g><g><title>call_soon (asyncio/base_events.py:757) (17 samples, 0.37%)</title><rect x="22.2957%" y="196" width="0.3745%" height="15" fill="rgb(232,182,51)" fg:x="1012" fg:w="17"/><text x="22.5457%" y="206.50"></text></g><g><title>_call_soon (asyncio/base_events.py:776) (5 samples, 0.11%)</title><rect x="22.5600%" y="212" width="0.1102%" height="15" fill="rgb(231,60,39)" fg:x="1024" fg:w="5"/><text x="22.8100%" y="222.50"></text></g><g><title>_process_response (glide/glide_client.py:482) (25 samples, 0.55%)</title><rect x="22.1414%" y="180" width="0.5508%" height="15" fill="rgb(208,69,12)" fg:x="1005" fg:w="25"/><text x="22.3914%" y="190.50"></text></g><g><title>_call_soon (asyncio/base_events.py:773) (8 samples, 0.18%)</title><rect x="22.8905%" y="212" width="0.1763%" height="15" fill="rgb(235,93,37)" fg:x="1039" fg:w="8"/><text x="23.1405%" y="222.50"></text></g><g><title>call_soon (asyncio/base_events.py:757) (9 samples, 0.20%)</title><rect x="22.8905%" y="196" width="0.1983%" height="15" fill="rgb(213,116,39)" fg:x="1039" fg:w="9"/><text x="23.1405%" y="206.50"></text></g><g><title>_reader_loop (glide/glide_client.py:534) (336 samples, 7.40%)</title><rect x="15.7083%" y="164" width="7.4025%" height="15" fill="rgb(222,207,29)" fg:x="713" fg:w="336"/><text x="15.9583%" y="174.50">_reader_lo..</text></g><g><title>_process_response (glide/glide_client.py:484) (19 samples, 0.42%)</title><rect x="22.6922%" y="180" width="0.4186%" height="15" fill="rgb(206,96,30)" fg:x="1030" fg:w="19"/><text x="22.9422%" y="190.50"></text></g><g><title>_write_or_buffer_request (glide/glide_client.py:190) (14 samples, 0.31%)</title><rect x="23.1108%" y="164" width="0.3084%" height="15" fill="rgb(218,138,4)" fg:x="1049" fg:w="14"/><text x="23.3608%" y="174.50"></text></g><g><title>_write_or_buffer_request (glide/glide_client.py:191) (13 samples, 0.29%)</title><rect x="23.4193%" y="164" width="0.2864%" height="15" fill="rgb(250,191,14)" fg:x="1063" fg:w="13"/><text x="23.6693%" y="174.50"></text></g><g><title>_write_or_buffer_request (glide/glide_client.py:193) (24 samples, 0.53%)</title><rect x="23.7057%" y="164" width="0.5288%" height="15" fill="rgb(239,60,40)" fg:x="1076" fg:w="24"/><text x="23.9557%" y="174.50"></text></g><g><title>_write_buffered_requests_to_socket (glide/glide_client.py:201) (5 samples, 0.11%)</title><rect x="24.9394%" y="180" width="0.1102%" height="15" fill="rgb(206,27,48)" fg:x="1132" fg:w="5"/><text x="25.1894%" y="190.50"></text></g><g><title>_write_buffered_requests_to_socket (glide/glide_client.py:202) (12 samples, 0.26%)</title><rect x="25.0496%" y="180" width="0.2644%" height="15" fill="rgb(225,35,8)" fg:x="1137" fg:w="12"/><text x="25.2996%" y="190.50"></text></g><g><title>_write_buffered_requests_to_socket (glide/glide_client.py:203) (6 samples, 0.13%)</title><rect x="25.3139%" y="180" width="0.1322%" height="15" fill="rgb(250,213,24)" fg:x="1149" fg:w="6"/><text x="25.5639%" y="190.50"></text></g><g><title>encode_delimited (glide/protobuf_codec.py:102) (54 samples, 1.19%)</title><rect x="25.8427%" y="196" width="1.1897%" height="15" fill="rgb(247,123,22)" fg:x="1173" fg:w="54"/><text x="26.0927%" y="206.50"></text></g><g><title>_varint_encoder (glide/protobuf_codec.py:52) (25 samples, 0.55%)</title><rect x="27.8696%" y="228" width="0.5508%" height="15" fill="rgb(231,138,38)" fg:x="1265" fg:w="25"/><text x="28.1196%" y="238.50"></text></g><g><title>_varint_bytes (glide/protobuf_codec.py:70) (43 samples, 0.95%)</title><rect x="27.6933%" y="212" width="0.9473%" height="15" fill="rgb(231,145,46)" fg:x="1257" fg:w="43"/><text x="27.9433%" y="222.50"></text></g><g><title>_varint_encoder (glide/protobuf_codec.py:54) (10 samples, 0.22%)</title><rect x="28.4204%" y="228" width="0.2203%" height="15" fill="rgb(251,118,11)" fg:x="1290" fg:w="10"/><text x="28.6704%" y="238.50"></text></g><g><title>encode_varint (glide/protobuf_codec.py:55) (13 samples, 0.29%)</title><rect x="28.8830%" y="228" width="0.2864%" height="15" fill="rgb(217,147,25)" fg:x="1311" fg:w="13"/><text x="29.1330%" y="238.50"></text></g><g><title>_varint_bytes (glide/protobuf_codec.py:71) (34 samples, 0.75%)</title><rect x="28.6407%" y="212" width="0.7491%" height="15" fill="rgb(247,81,37)" fg:x="1300" fg:w="34"/><text x="28.8907%" y="222.50"></text></g><g><title>encode_varint (glide/protobuf_codec.py:61) (7 samples, 0.15%)</title><rect x="29.2355%" y="228" width="0.1542%" height="15" fill="rgb(209,12,38)" fg:x="1327" fg:w="7"/><text x="29.4855%" y="238.50"></text></g><g><title>encode_delimited (glide/protobuf_codec.py:103) (112 samples, 2.47%)</title><rect x="27.0324%" y="196" width="2.4675%" height="15" fill="rgb(227,1,9)" fg:x="1227" fg:w="112"/><text x="27.2824%" y="206.50">en..</text></g><g><title>_varint_bytes (glide/protobuf_codec.py:72) (5 samples, 0.11%)</title><rect x="29.3897%" y="212" width="0.1102%" height="15" fill="rgb(248,47,43)" fg:x="1334" fg:w="5"/><text x="29.6397%" y="222.50"></text></g><g><title>encode_delimited (glide/protobuf_codec.py:104) (11 samples, 0.24%)</title><rect x="29.4999%" y="196" width="0.2423%" height="15" fill="rgb(221,10,30)" fg:x="1339" fg:w="11"/><text x="29.7499%" y="206.50"></text></g><g><title>_write_buffered_requests_to_socket (glide/glide_client.py:204) (211 samples, 4.65%)</title><rect x="25.4461%" y="180" width="4.6486%" height="15" fill="rgb(210,229,1)" fg:x="1155" fg:w="211"/><text x="25.6961%" y="190.50">_writ..</text></g><g><title>encode_delimited (glide/protobuf_codec.py:105) (16 samples, 0.35%)</title><rect x="29.7422%" y="196" width="0.3525%" height="15" fill="rgb(222,148,37)" fg:x="1350" fg:w="16"/><text x="29.9922%" y="206.50"></text></g><g><title>write (asyncio/selector_events.py:905) (20 samples, 0.44%)</title><rect x="30.4032%" y="212" width="0.4406%" height="15" fill="rgb(234,67,33)" fg:x="1380" fg:w="20"/><text x="30.6532%" y="222.50"></text></g><g><title>write (asyncio/selector_events.py:910) (5 samples, 0.11%)</title><rect x="30.9319%" y="212" width="0.1102%" height="15" fill="rgb(247,98,35)" fg:x="1404" fg:w="5"/><text x="31.1819%" y="222.50"></text></g><g><title>_write_buffered_requests_to_socket (glide/glide_client.py:205) (540 samples, 11.90%)</title><rect x="30.0947%" y="180" width="11.8969%" height="15" fill="rgb(247,138,52)" fg:x="1366" fg:w="540"/><text x="30.3447%" y="190.50">_write_buffered_re..</text></g><g><title>write (asyncio/streams.py:325) (535 samples, 11.79%)</title><rect x="30.2049%" y="196" width="11.7867%" height="15" fill="rgb(213,79,30)" fg:x="1371" fg:w="535"/><text x="30.4549%" y="206.50">write (asyncio/st..</text></g><g><title>write (asyncio/selector_events.py:924) (491 samples, 10.82%)</title><rect x="31.1743%" y="212" width="10.8174%" height="15" fill="rgb(246,177,23)" fg:x="1415" fg:w="491"/><text x="31.4243%" y="222.50">write (asyncio/s..</text></g><g><title>drain (asyncio/streams.py:360) (10 samples, 0.22%)</title><rect x="42.1238%" y="196" width="0.2203%" height="15" fill="rgb(230,62,27)" fg:x="1912" fg:w="10"/><text x="42.3738%" y="206.50"></text></g><g><title>_write_or_buffer_request (glide/glide_client.py:194) (844 samples, 18.59%)</title><rect x="24.2344%" y="164" width="18.5944%" height="15" fill="rgb(216,154,8)" fg:x="1100" fg:w="844"/><text x="24.4844%" y="174.50">_write_or_buffer_request (gli..</text></g><g><title>_write_buffered_requests_to_socket (glide/glide_client.py:206) (38 samples, 0.84%)</title><rect x="41.9916%" y="180" width="0.8372%" height="15" fill="rgb(244,35,45)" fg:x="1906" fg:w="38"/><text x="42.2416%" y="190.50"></text></g><g><title>drain (asyncio/streams.py:371) (22 samples, 0.48%)</title><rect x="42.3441%" y="196" width="0.4847%" height="15" fill="rgb(251,115,12)" fg:x="1922" fg:w="22"/><text x="42.5941%" y="206.50"></text></g><g><title>_write_or_buffer_request (glide/glide_client.py:197) (6 samples, 0.13%)</title><rect x="42.8288%" y="164" width="0.1322%" height="15" fill="rgb(240,54,50)" fg:x="1944" fg:w="6"/><text x="43.0788%" y="174.50"></text></g><g><title>execute_commands (python_benchmark.py:155) (7 samples, 0.15%)</title><rect x="42.9610%" y="164" width="0.1542%" height="15" fill="rgb(233,84,52)" fg:x="1950" fg:w="7"/><text x="43.2110%" y="174.50"></text></g><g><title>execute_commands (python_benchmark.py:156) (5 samples, 0.11%)</title><rect x="43.1152%" y="164" width="0.1102%" height="15" fill="rgb(207,117,47)" fg:x="1957" fg:w="5"/><text x="43.3652%" y="174.50"></text></g><g><title>choose_action (python_benchmark.py:121) (13 samples, 0.29%)</title><rect x="43.3796%" y="180" width="0.2864%" height="15" fill="rgb(249,43,39)" fg:x="1969" fg:w="13"/><text x="43.6296%" y="190.50"></text></g><g><title>choose_action (python_benchmark.py:123) (5 samples, 0.11%)</title><rect x="43.7541%" y="180" width="0.1102%" height="15" fill="rgb(209,38,44)" fg:x="1986" fg:w="5"/><text x="44.0041%" y="190.50"></text></g><g><title>execute_commands (python_benchmark.py:157) (40 samples, 0.88%)</title><rect x="43.2254%" y="164" width="0.8813%" height="15" fill="rgb(236,212,23)" fg:x="1962" fg:w="40"/><text x="43.4754%" y="174.50"></text></g><g><title>choose_action (python_benchmark.py:125) (8 samples, 0.18%)</title><rect x="43.9304%" y="180" width="0.1763%" height="15" fill="rgb(242,79,21)" fg:x="1994" fg:w="8"/><text x="44.1804%" y="190.50"></text></g><g><title>execute_commands (python_benchmark.py:158) (20 samples, 0.44%)</title><rect x="44.1066%" y="164" width="0.4406%" height="15" fill="rgb(211,96,35)" fg:x="2002" fg:w="20"/><text x="44.3566%" y="174.50"></text></g><g><title>execute_commands (python_benchmark.py:159) (12 samples, 0.26%)</title><rect x="44.5473%" y="164" width="0.2644%" height="15" fill="rgb(253,215,40)" fg:x="2022" fg:w="12"/><text x="44.7973%" y="174.50"></text></g><g><title>execute_commands (python_benchmark.py:160) (15 samples, 0.33%)</title><rect x="44.8116%" y="164" width="0.3305%" height="15" fill="rgb(211,81,21)" fg:x="2034" fg:w="15"/><text x="45.0616%" y="174.50"></text></g><g><title>randrange (random.py:303) (7 samples, 0.15%)</title><rect x="47.1029%" y="212" width="0.1542%" height="15" fill="rgb(208,190,38)" fg:x="2138" fg:w="7"/><text x="47.3529%" y="222.50"></text></g><g><title>_randbelow_with_getrandbits (random.py:247) (5 samples, 0.11%)</title><rect x="48.1604%" y="228" width="0.1102%" height="15" fill="rgb(235,213,38)" fg:x="2186" fg:w="5"/><text x="48.4104%" y="238.50"></text></g><g><title>generate_key_set (python_benchmark.py:113) (105 samples, 2.31%)</title><rect x="46.0234%" y="180" width="2.3133%" height="15" fill="rgb(237,122,38)" fg:x="2089" fg:w="105"/><text x="46.2734%" y="190.50">g..</text></g><g><title>randint (random.py:370) (70 samples, 1.54%)</title><rect x="46.7944%" y="196" width="1.5422%" height="15" fill="rgb(244,218,35)" fg:x="2124" fg:w="70"/><text x="47.0444%" y="206.50"></text></g><g><title>randrange (random.py:352) (33 samples, 0.73%)</title><rect x="47.6096%" y="212" width="0.7270%" height="15" fill="rgb(240,68,47)" fg:x="2161" fg:w="33"/><text x="47.8596%" y="222.50"></text></g><g><title>__getattr__ (protobuf/internal/enum_type_wrapper.py:97) (32 samples, 0.71%)</title><rect x="51.3109%" y="196" width="0.7050%" height="15" fill="rgb(210,16,53)" fg:x="2329" fg:w="32"/><text x="51.5609%" y="206.50"></text></g><g><title>__getattr__ (protobuf/internal/enum_type_wrapper.py:99) (30 samples, 0.66%)</title><rect x="52.0820%" y="196" width="0.6609%" height="15" fill="rgb(235,124,12)" fg:x="2364" fg:w="30"/><text x="52.3320%" y="206.50"></text></g><g><title>_execute_command (glide/glide_client.py:253) (6 samples, 0.13%)</title><rect x="52.7429%" y="196" width="0.1322%" height="15" fill="rgb(224,169,11)" fg:x="2394" fg:w="6"/><text x="52.9929%" y="206.50"></text></g><g><title>_execute_command (glide/glide_client.py:257) (21 samples, 0.46%)</title><rect x="52.8751%" y="196" width="0.4627%" height="15" fill="rgb(250,166,2)" fg:x="2400" fg:w="21"/><text x="53.1251%" y="206.50"></text></g><g><title>_execute_command (glide/glide_client.py:258) (13 samples, 0.29%)</title><rect x="53.3377%" y="196" width="0.2864%" height="15" fill="rgb(242,216,29)" fg:x="2421" fg:w="13"/><text x="53.5877%" y="206.50"></text></g><g><title>_get_callback_index (glide/glide_client.py:457) (5 samples, 0.11%)</title><rect x="53.5140%" y="212" width="0.1102%" height="15" fill="rgb(230,116,27)" fg:x="2429" fg:w="5"/><text x="53.7640%" y="222.50"></text></g><g><title>_execute_command (glide/glide_client.py:259) (38 samples, 0.84%)</title><rect x="53.6241%" y="196" width="0.8372%" height="15" fill="rgb(228,99,48)" fg:x="2434" fg:w="38"/><text x="53.8741%" y="206.50"></text></g><g><title>&lt;listcomp&gt; (glide/glide_client.py:260) (5 samples, 0.11%)</title><rect x="56.2018%" y="212" width="0.1102%" height="15" fill="rgb(253,11,6)" fg:x="2551" fg:w="5"/><text x="56.4518%" y="222.50"></text></g><g><title>_execute_command (glide/glide_client.py:260) (108 samples, 2.38%)</title><rect x="54.4613%" y="196" width="2.3794%" height="15" fill="rgb(247,143,39)" fg:x="2472" fg:w="108"/><text x="54.7113%" y="206.50">_e..</text></g><g><title>&lt;listcomp&gt; (glide/glide_client.py:261) (24 samples, 0.53%)</title><rect x="56.3120%" y="212" width="0.5288%" height="15" fill="rgb(236,97,10)" fg:x="2556" fg:w="24"/><text x="56.5620%" y="222.50"></text></g><g><title>_encode_arg (glide/glide_client.py:218) (5 samples, 0.11%)</title><rect x="58.7574%" y="228" width="0.1102%" height="15" fill="rgb(233,208,19)" fg:x="2667" fg:w="5"/><text x="59.0074%" y="238.50"></text></g><g><title>_encode_and_sum_size (glide/glide_client.py:242) (30 samples, 0.66%)</title><rect x="58.5812%" y="212" width="0.6609%" height="15" fill="rgb(216,164,2)" fg:x="2659" fg:w="30"/><text x="58.8312%" y="222.50"></text></g><g><title>_encode_arg (glide/glide_client.py:220) (17 samples, 0.37%)</title><rect x="58.8676%" y="228" width="0.3745%" height="15" fill="rgb(220,129,5)" fg:x="2672" fg:w="17"/><text x="59.1176%" y="238.50"></text></g><g><title>_encode_and_sum_size (glide/glide_client.py:243) (7 samples, 0.15%)</title><rect x="59.2421%" y="212" width="0.1542%" height="15" fill="rgb(242,17,10)" fg:x="2689" fg:w="7"/><text x="59.4921%" y="222.50"></text></g><g><title>_encode_and_sum_size (glide/glide_client.py:244) (31 samples, 0.68%)</title><rect x="59.3963%" y="212" width="0.6830%" height="15" fill="rgb(242,107,0)" fg:x="2696" fg:w="31"/><text x="59.6463%" y="222.50"></text></g><g><title>_execute_command (glide/glide_client.py:264) (145 samples, 3.19%)</title><rect x="56.9068%" y="196" width="3.1945%" height="15" fill="rgb(251,28,31)" fg:x="2583" fg:w="145"/><text x="57.1568%" y="206.50">_ex..</text></g><g><title>_execute_command (glide/glide_client.py:266) (69 samples, 1.52%)</title><rect x="60.1674%" y="196" width="1.5202%" height="15" fill="rgb(233,223,10)" fg:x="2731" fg:w="69"/><text x="60.4174%" y="206.50"></text></g><g><title>set_protobuf_route (glide/routes.py:96) (6 samples, 0.13%)</title><rect x="61.8859%" y="212" width="0.1322%" height="15" fill="rgb(215,21,27)" fg:x="2809" fg:w="6"/><text x="62.1359%" y="222.50"></text></g><g><title>_execute_command (glide/glide_client.py:271) (15 samples, 0.33%)</title><rect x="61.7096%" y="196" width="0.3305%" height="15" fill="rgb(232,23,21)" fg:x="2801" fg:w="15"/><text x="61.9596%" y="206.50"></text></g><g><title>_write_request_await_response (glide/glide_client.py:450) (107 samples, 2.36%)</title><rect x="62.6790%" y="212" width="2.3573%" height="15" fill="rgb(244,5,23)" fg:x="2845" fg:w="107"/><text x="62.9290%" y="222.50">_..</text></g><g><title>_get_future (glide/glide_client.py:171) (96 samples, 2.12%)</title><rect x="62.9213%" y="228" width="2.1150%" height="15" fill="rgb(226,81,46)" fg:x="2856" fg:w="96"/><text x="63.1713%" y="238.50">_..</text></g><g><title>create_task (asyncio/tasks.py:336) (100 samples, 2.20%)</title><rect x="65.3448%" y="244" width="2.2031%" height="15" fill="rgb(247,70,30)" fg:x="2966" fg:w="100"/><text x="65.5948%" y="254.50">c..</text></g><g><title>add (_weakrefset.py:89) (12 samples, 0.26%)</title><rect x="72.2846%" y="276" width="0.2644%" height="15" fill="rgb(212,68,19)" fg:x="3281" fg:w="12"/><text x="72.5346%" y="286.50"></text></g><g><title>call_soon (asyncio/base_events.py:753) (12 samples, 0.26%)</title><rect x="72.5490%" y="276" width="0.2644%" height="15" fill="rgb(240,187,13)" fg:x="3293" fg:w="12"/><text x="72.7990%" y="286.50"></text></g><g><title>_check_closed (asyncio/base_events.py:514) (5 samples, 0.11%)</title><rect x="72.7032%" y="292" width="0.1102%" height="15" fill="rgb(223,113,26)" fg:x="3300" fg:w="5"/><text x="72.9532%" y="302.50"></text></g><g><title>__init__ (asyncio/events.py:40) (18 samples, 0.40%)</title><rect x="74.5759%" y="308" width="0.3966%" height="15" fill="rgb(206,192,2)" fg:x="3385" fg:w="18"/><text x="74.8259%" y="318.50"></text></g><g><title>get_debug (asyncio/base_events.py:1928) (5 samples, 0.11%)</title><rect x="74.8623%" y="324" width="0.1102%" height="15" fill="rgb(241,108,4)" fg:x="3398" fg:w="5"/><text x="75.1123%" y="334.50"></text></g><g><title>_call_soon (asyncio/base_events.py:773) (95 samples, 2.09%)</title><rect x="72.9676%" y="292" width="2.0930%" height="15" fill="rgb(247,173,49)" fg:x="3312" fg:w="95"/><text x="73.2176%" y="302.50">_..</text></g><g><title>_call_soon (asyncio/base_events.py:776) (11 samples, 0.24%)</title><rect x="75.0826%" y="292" width="0.2423%" height="15" fill="rgb(224,114,35)" fg:x="3408" fg:w="11"/><text x="75.3326%" y="302.50"></text></g><g><title>call_soon (asyncio/base_events.py:757) (117 samples, 2.58%)</title><rect x="72.8354%" y="276" width="2.5777%" height="15" fill="rgb(245,159,27)" fg:x="3306" fg:w="117"/><text x="73.0854%" y="286.50">ca..</text></g><g><title>create_task (asyncio/base_events.py:438) (360 samples, 7.93%)</title><rect x="67.5479%" y="260" width="7.9313%" height="15" fill="rgb(245,172,44)" fg:x="3066" fg:w="360"/><text x="67.7979%" y="270.50">create_task..</text></g><g><title>create_task (asyncio/base_events.py:439) (5 samples, 0.11%)</title><rect x="75.4792%" y="260" width="0.1102%" height="15" fill="rgb(236,23,11)" fg:x="3426" fg:w="5"/><text x="75.7292%" y="270.50"></text></g><g><title>create_task (asyncio/tasks.py:337) (367 samples, 8.09%)</title><rect x="67.5479%" y="244" width="8.0855%" height="15" fill="rgb(205,117,38)" fg:x="3066" fg:w="367"/><text x="67.7979%" y="254.50">create_task..</text></g><g><title>create_task (asyncio/tasks.py:338) (11 samples, 0.24%)</title><rect x="75.6334%" y="244" width="0.2423%" height="15" fill="rgb(237,72,25)" fg:x="3433" fg:w="11"/><text x="75.8834%" y="254.50"></text></g><g><title>_write_request_await_response (glide/glide_client.py:451) (493 samples, 10.86%)</title><rect x="65.0364%" y="212" width="10.8614%" height="15" fill="rgb(244,70,9)" fg:x="2952" fg:w="493"/><text x="65.2864%" y="222.50">_write_request_a..</text></g><g><title>_create_write_task (glide/glide_client.py:187) (491 samples, 10.82%)</title><rect x="65.0804%" y="228" width="10.8174%" height="15" fill="rgb(217,125,39)" fg:x="2954" fg:w="491"/><text x="65.3304%" y="238.50">_create_write_ta..</text></g><g><title>_write_request_await_response (glide/glide_client.py:452) (16 samples, 0.35%)</title><rect x="75.8978%" y="212" width="0.3525%" height="15" fill="rgb(235,36,10)" fg:x="3445" fg:w="16"/><text x="76.1478%" y="222.50"></text></g><g><title>_execute_command (glide/glide_client.py:272) (654 samples, 14.41%)</title><rect x="62.0401%" y="196" width="14.4085%" height="15" fill="rgb(251,123,47)" fg:x="2816" fg:w="654"/><text x="62.2901%" y="206.50">_execute_command (glid..</text></g><g><title>_write_request_await_response (glide/glide_client.py:453) (9 samples, 0.20%)</title><rect x="76.2503%" y="212" width="0.1983%" height="15" fill="rgb(221,13,13)" fg:x="3461" fg:w="9"/><text x="76.5003%" y="222.50"></text></g><g><title>execute_commands (python_benchmark.py:161) (1,436 samples, 31.64%)</title><rect x="45.1421%" y="164" width="31.6369%" height="15" fill="rgb(238,131,9)" fg:x="2049" fg:w="1436"/><text x="45.3921%" y="174.50">execute_commands (python_benchmark.py:161)</text></g><g><title>get (glide/async_commands/core.py:498) (1,287 samples, 28.35%)</title><rect x="48.4248%" y="180" width="28.3543%" height="15" fill="rgb(211,50,8)" fg:x="2198" fg:w="1287"/><text x="48.6748%" y="190.50">get (glide/async_commands/core.py:498)</text></g><g><title>inner (typing.py:309) (13 samples, 0.29%)</title><rect x="76.4926%" y="196" width="0.2864%" height="15" fill="rgb(245,182,24)" fg:x="3472" fg:w="13"/><text x="76.7426%" y="206.50"></text></g><g><title>generate_key_get (python_benchmark.py:117) (28 samples, 0.62%)</title><rect x="77.0434%" y="180" width="0.6169%" height="15" fill="rgb(242,14,37)" fg:x="3497" fg:w="28"/><text x="77.2934%" y="190.50"></text></g><g><title>randint (random.py:370) (21 samples, 0.46%)</title><rect x="77.1976%" y="196" width="0.4627%" height="15" fill="rgb(246,228,12)" fg:x="3504" fg:w="21"/><text x="77.4476%" y="206.50"></text></g><g><title>randrange (random.py:352) (10 samples, 0.22%)</title><rect x="77.4400%" y="212" width="0.2203%" height="15" fill="rgb(213,55,15)" fg:x="3515" fg:w="10"/><text x="77.6900%" y="222.50"></text></g><g><title>__getattr__ (protobuf/internal/enum_type_wrapper.py:97) (10 samples, 0.22%)</title><rect x="78.4093%" y="196" width="0.2203%" height="15" fill="rgb(209,9,3)" fg:x="3559" fg:w="10"/><text x="78.6593%" y="206.50"></text></g><g><title>_execute_command (glide/glide_client.py:259) (8 samples, 0.18%)</title><rect x="78.8720%" y="196" width="0.1763%" height="15" fill="rgb(230,59,30)" fg:x="3580" fg:w="8"/><text x="79.1220%" y="206.50"></text></g><g><title>_execute_command (glide/glide_client.py:260) (28 samples, 0.62%)</title><rect x="79.0482%" y="196" width="0.6169%" height="15" fill="rgb(209,121,21)" fg:x="3588" fg:w="28"/><text x="79.2982%" y="206.50"></text></g><g><title>&lt;listcomp&gt; (glide/glide_client.py:261) (6 samples, 0.13%)</title><rect x="79.5329%" y="212" width="0.1322%" height="15" fill="rgb(220,109,13)" fg:x="3610" fg:w="6"/><text x="79.7829%" y="222.50"></text></g><g><title>_encode_and_sum_size (glide/glide_client.py:242) (7 samples, 0.15%)</title><rect x="80.2379%" y="212" width="0.1542%" height="15" fill="rgb(232,18,1)" fg:x="3642" fg:w="7"/><text x="80.4879%" y="222.50"></text></g><g><title>_encode_arg (glide/glide_client.py:220) (5 samples, 0.11%)</title><rect x="80.2820%" y="228" width="0.1102%" height="15" fill="rgb(215,41,42)" fg:x="3644" fg:w="5"/><text x="80.5320%" y="238.50"></text></g><g><title>_encode_and_sum_size (glide/glide_client.py:244) (7 samples, 0.15%)</title><rect x="80.4142%" y="212" width="0.1542%" height="15" fill="rgb(224,123,36)" fg:x="3650" fg:w="7"/><text x="80.6642%" y="222.50"></text></g><g><title>_execute_command (glide/glide_client.py:264) (41 samples, 0.90%)</title><rect x="79.6872%" y="196" width="0.9033%" height="15" fill="rgb(240,125,3)" fg:x="3617" fg:w="41"/><text x="79.9372%" y="206.50"></text></g><g><title>_execute_command (glide/glide_client.py:266) (14 samples, 0.31%)</title><rect x="80.6125%" y="196" width="0.3084%" height="15" fill="rgb(205,98,50)" fg:x="3659" fg:w="14"/><text x="80.8625%" y="206.50"></text></g><g><title>_write_request_await_response (glide/glide_client.py:450) (42 samples, 0.93%)</title><rect x="81.2073%" y="212" width="0.9253%" height="15" fill="rgb(205,185,37)" fg:x="3686" fg:w="42"/><text x="81.4573%" y="222.50"></text></g><g><title>_get_future (glide/glide_client.py:171) (33 samples, 0.73%)</title><rect x="81.4056%" y="228" width="0.7270%" height="15" fill="rgb(238,207,15)" fg:x="3695" fg:w="33"/><text x="81.6556%" y="238.50"></text></g><g><title>create_task (asyncio/tasks.py:336) (29 samples, 0.64%)</title><rect x="82.1987%" y="244" width="0.6389%" height="15" fill="rgb(213,199,42)" fg:x="3731" fg:w="29"/><text x="82.4487%" y="254.50"></text></g><g><title>add (_weakrefset.py:89) (6 samples, 0.13%)</title><rect x="83.8951%" y="276" width="0.1322%" height="15" fill="rgb(235,201,11)" fg:x="3808" fg:w="6"/><text x="84.1451%" y="286.50"></text></g><g><title>_call_soon (asyncio/base_events.py:773) (24 samples, 0.53%)</title><rect x="84.0934%" y="292" width="0.5288%" height="15" fill="rgb(207,46,11)" fg:x="3817" fg:w="24"/><text x="84.3434%" y="302.50"></text></g><g><title>call_soon (asyncio/base_events.py:757) (25 samples, 0.55%)</title><rect x="84.0934%" y="276" width="0.5508%" height="15" fill="rgb(241,35,35)" fg:x="3817" fg:w="25"/><text x="84.3434%" y="286.50"></text></g><g><title>create_task (asyncio/tasks.py:337) (83 samples, 1.83%)</title><rect x="82.8376%" y="244" width="1.8286%" height="15" fill="rgb(243,32,47)" fg:x="3760" fg:w="83"/><text x="83.0876%" y="254.50">c..</text></g><g><title>create_task (asyncio/base_events.py:438) (82 samples, 1.81%)</title><rect x="82.8597%" y="260" width="1.8066%" height="15" fill="rgb(247,202,23)" fg:x="3761" fg:w="82"/><text x="83.1097%" y="270.50">c..</text></g><g><title>_write_request_await_response (glide/glide_client.py:451) (116 samples, 2.56%)</title><rect x="82.1326%" y="212" width="2.5556%" height="15" fill="rgb(219,102,11)" fg:x="3728" fg:w="116"/><text x="82.3826%" y="222.50">_w..</text></g><g><title>_create_write_task (glide/glide_client.py:187) (116 samples, 2.56%)</title><rect x="82.1326%" y="228" width="2.5556%" height="15" fill="rgb(243,110,44)" fg:x="3728" fg:w="116"/><text x="82.3826%" y="238.50">_c..</text></g><g><title>_execute_command (glide/glide_client.py:272) (171 samples, 3.77%)</title><rect x="80.9650%" y="196" width="3.7673%" height="15" fill="rgb(222,74,54)" fg:x="3675" fg:w="171"/><text x="81.2150%" y="206.50">_exe..</text></g><g><title>execute_commands (python_benchmark.py:163) (363 samples, 8.00%)</title><rect x="76.8451%" y="164" width="7.9974%" height="15" fill="rgb(216,99,12)" fg:x="3488" fg:w="363"/><text x="77.0951%" y="174.50">execute_com..</text></g><g><title>get (glide/async_commands/core.py:498) (325 samples, 7.16%)</title><rect x="77.6823%" y="180" width="7.1602%" height="15" fill="rgb(226,22,26)" fg:x="3526" fg:w="325"/><text x="77.9323%" y="190.50">get (glide..</text></g><g><title>inner (typing.py:309) (5 samples, 0.11%)</title><rect x="84.7323%" y="196" width="0.1102%" height="15" fill="rgb(217,163,10)" fg:x="3846" fg:w="5"/><text x="84.9823%" y="206.50"></text></g><g><title>generate_key_set (python_benchmark.py:113) (42 samples, 0.93%)</title><rect x="85.2170%" y="180" width="0.9253%" height="15" fill="rgb(213,25,53)" fg:x="3868" fg:w="42"/><text x="85.4670%" y="190.50"></text></g><g><title>randint (random.py:370) (30 samples, 0.66%)</title><rect x="85.4814%" y="196" width="0.6609%" height="15" fill="rgb(252,105,26)" fg:x="3880" fg:w="30"/><text x="85.7314%" y="206.50"></text></g><g><title>randrange (random.py:352) (16 samples, 0.35%)</title><rect x="85.7898%" y="212" width="0.3525%" height="15" fill="rgb(220,39,43)" fg:x="3894" fg:w="16"/><text x="86.0398%" y="222.50"></text></g><g><title>_randbelow_with_getrandbits (random.py:247) (5 samples, 0.11%)</title><rect x="86.0322%" y="228" width="0.1102%" height="15" fill="rgb(229,68,48)" fg:x="3905" fg:w="5"/><text x="86.2822%" y="238.50"></text></g><g><title>__getattr__ (protobuf/internal/enum_type_wrapper.py:97) (16 samples, 0.35%)</title><rect x="87.4201%" y="196" width="0.3525%" height="15" fill="rgb(252,8,32)" fg:x="3968" fg:w="16"/><text x="87.6701%" y="206.50"></text></g><g><title>__getattr__ (protobuf/internal/enum_type_wrapper.py:99) (8 samples, 0.18%)</title><rect x="87.7726%" y="196" width="0.1763%" height="15" fill="rgb(223,20,43)" fg:x="3984" fg:w="8"/><text x="88.0226%" y="206.50"></text></g><g><title>_execute_command (glide/glide_client.py:257) (8 samples, 0.18%)</title><rect x="87.9489%" y="196" width="0.1763%" height="15" fill="rgb(229,81,49)" fg:x="3992" fg:w="8"/><text x="88.1989%" y="206.50"></text></g><g><title>_execute_command (glide/glide_client.py:259) (12 samples, 0.26%)</title><rect x="88.2133%" y="196" width="0.2644%" height="15" fill="rgb(236,28,36)" fg:x="4004" fg:w="12"/><text x="88.4633%" y="206.50"></text></g><g><title>&lt;listcomp&gt; (glide/glide_client.py:260) (5 samples, 0.11%)</title><rect x="89.3369%" y="212" width="0.1102%" height="15" fill="rgb(249,185,26)" fg:x="4055" fg:w="5"/><text x="89.5869%" y="222.50"></text></g><g><title>_execute_command (glide/glide_client.py:260) (65 samples, 1.43%)</title><rect x="88.4776%" y="196" width="1.4320%" height="15" fill="rgb(249,174,33)" fg:x="4016" fg:w="65"/><text x="88.7276%" y="206.50"></text></g><g><title>&lt;listcomp&gt; (glide/glide_client.py:261) (21 samples, 0.46%)</title><rect x="89.4470%" y="212" width="0.4627%" height="15" fill="rgb(233,201,37)" fg:x="4060" fg:w="21"/><text x="89.6970%" y="222.50"></text></g><g><title>_encode_and_sum_size (glide/glide_client.py:242) (15 samples, 0.33%)</title><rect x="90.5926%" y="212" width="0.3305%" height="15" fill="rgb(221,78,26)" fg:x="4112" fg:w="15"/><text x="90.8426%" y="222.50"></text></g><g><title>_encode_arg (glide/glide_client.py:220) (7 samples, 0.15%)</title><rect x="90.7689%" y="228" width="0.1542%" height="15" fill="rgb(250,127,30)" fg:x="4120" fg:w="7"/><text x="91.0189%" y="238.50"></text></g><g><title>_encode_and_sum_size (glide/glide_client.py:244) (20 samples, 0.44%)</title><rect x="91.0112%" y="212" width="0.4406%" height="15" fill="rgb(230,49,44)" fg:x="4131" fg:w="20"/><text x="91.2612%" y="222.50"></text></g><g><title>_execute_command (glide/glide_client.py:264) (74 samples, 1.63%)</title><rect x="89.9097%" y="196" width="1.6303%" height="15" fill="rgb(229,67,23)" fg:x="4081" fg:w="74"/><text x="90.1597%" y="206.50"></text></g><g><title>_execute_command (glide/glide_client.py:266) (20 samples, 0.44%)</title><rect x="91.5400%" y="196" width="0.4406%" height="15" fill="rgb(249,83,47)" fg:x="4155" fg:w="20"/><text x="91.7900%" y="206.50"></text></g><g><title>_write_request_await_response (glide/glide_client.py:450) (34 samples, 0.75%)</title><rect x="92.2450%" y="212" width="0.7491%" height="15" fill="rgb(215,43,3)" fg:x="4187" fg:w="34"/><text x="92.4950%" y="222.50"></text></g><g><title>_get_future (glide/glide_client.py:171) (29 samples, 0.64%)</title><rect x="92.3551%" y="228" width="0.6389%" height="15" fill="rgb(238,154,13)" fg:x="4192" fg:w="29"/><text x="92.6051%" y="238.50"></text></g><g><title>create_task (asyncio/tasks.py:336) (34 samples, 0.75%)</title><rect x="93.1483%" y="244" width="0.7491%" height="15" fill="rgb(219,56,2)" fg:x="4228" fg:w="34"/><text x="93.3983%" y="254.50"></text></g><g><title>add (_weakrefset.py:89) (5 samples, 0.11%)</title><rect x="95.3734%" y="276" width="0.1102%" height="15" fill="rgb(233,0,4)" fg:x="4329" fg:w="5"/><text x="95.6234%" y="286.50"></text></g><g><title>_call_soon (asyncio/base_events.py:773) (23 samples, 0.51%)</title><rect x="95.5056%" y="292" width="0.5067%" height="15" fill="rgb(235,30,7)" fg:x="4335" fg:w="23"/><text x="95.7556%" y="302.50"></text></g><g><title>call_soon (asyncio/base_events.py:757) (27 samples, 0.59%)</title><rect x="95.5056%" y="276" width="0.5948%" height="15" fill="rgb(250,79,13)" fg:x="4335" fg:w="27"/><text x="95.7556%" y="286.50"></text></g><g><title>create_task (asyncio/base_events.py:438) (101 samples, 2.23%)</title><rect x="93.8973%" y="260" width="2.2252%" height="15" fill="rgb(211,146,34)" fg:x="4262" fg:w="101"/><text x="94.1473%" y="270.50">c..</text></g><g><title>create_task (asyncio/tasks.py:337) (103 samples, 2.27%)</title><rect x="93.8973%" y="244" width="2.2692%" height="15" fill="rgb(228,22,38)" fg:x="4262" fg:w="103"/><text x="94.1473%" y="254.50">c..</text></g><g><title>_write_request_await_response (glide/glide_client.py:451) (148 samples, 3.26%)</title><rect x="92.9941%" y="212" width="3.2606%" height="15" fill="rgb(235,168,5)" fg:x="4221" fg:w="148"/><text x="93.2441%" y="222.50">_wr..</text></g><g><title>_create_write_task (glide/glide_client.py:187) (147 samples, 3.24%)</title><rect x="93.0161%" y="228" width="3.2386%" height="15" fill="rgb(221,155,16)" fg:x="4222" fg:w="147"/><text x="93.2661%" y="238.50">_cr..</text></g><g><title>_write_request_await_response (glide/glide_client.py:452) (7 samples, 0.15%)</title><rect x="96.2547%" y="212" width="0.1542%" height="15" fill="rgb(215,215,53)" fg:x="4369" fg:w="7"/><text x="96.5047%" y="222.50"></text></g><g><title>_execute_command (glide/glide_client.py:272) (202 samples, 4.45%)</title><rect x="92.0247%" y="196" width="4.4503%" height="15" fill="rgb(223,4,10)" fg:x="4177" fg:w="202"/><text x="92.2747%" y="206.50">_exec..</text></g><g><title>execute_commands (python_benchmark.py:165) (528 samples, 11.63%)</title><rect x="84.9086%" y="164" width="11.6325%" height="15" fill="rgb(234,103,6)" fg:x="3854" fg:w="528"/><text x="85.1586%" y="174.50">execute_commands ..</text></g><g><title>set (glide/async_commands/core.py:480) (469 samples, 10.33%)</title><rect x="86.2084%" y="180" width="10.3327%" height="15" fill="rgb(227,97,0)" fg:x="3913" fg:w="469"/><text x="86.4584%" y="190.50">set (glide/asyn..</text></g><g><title>execute_commands (python_benchmark.py:166) (11 samples, 0.24%)</title><rect x="96.5411%" y="164" width="0.2423%" height="15" fill="rgb(234,150,53)" fg:x="4382" fg:w="11"/><text x="96.7911%" y="174.50"></text></g><g><title>execute_commands (python_benchmark.py:167) (10 samples, 0.22%)</title><rect x="96.7834%" y="164" width="0.2203%" height="15" fill="rgb(228,201,54)" fg:x="4393" fg:w="10"/><text x="97.0334%" y="174.50"></text></g><g><title>__hash__ (enum.py:784) (15 samples, 0.33%)</title><rect x="98.1053%" y="180" width="0.3305%" height="15" fill="rgb(222,22,37)" fg:x="4453" fg:w="15"/><text x="98.3553%" y="190.50"></text></g><g><title>truncate_decimal (python_benchmark.py:104) (39 samples, 0.86%)</title><rect x="98.4358%" y="180" width="0.8592%" height="15" fill="rgb(237,53,32)" fg:x="4468" fg:w="39"/><text x="98.6858%" y="190.50"></text></g><g><title>execute_commands (python_benchmark.py:168) (128 samples, 2.82%)</title><rect x="97.0037%" y="164" width="2.8200%" height="15" fill="rgb(233,25,53)" fg:x="4403" fg:w="128"/><text x="97.2537%" y="174.50">ex..</text></g><g><title>truncate_decimal (python_benchmark.py:105) (24 samples, 0.53%)</title><rect x="99.2950%" y="180" width="0.5288%" height="15" fill="rgb(210,40,34)" fg:x="4507" fg:w="24"/><text x="99.5450%" y="190.50"></text></g><g><title>_run (asyncio/events.py:80) (4,372 samples, 96.32%)</title><rect x="3.5250%" y="148" width="96.3208%" height="15" fill="rgb(241,220,44)" fg:x="160" fg:w="4372"/><text x="3.7750%" y="158.50">_run (asyncio/events.py:80)</text></g><g><title>_run_once (asyncio/base_events.py:1909) (4,394 samples, 96.81%)</title><rect x="3.1505%" y="132" width="96.8055%" height="15" fill="rgb(235,28,35)" fg:x="143" fg:w="4394"/><text x="3.4005%" y="142.50">_run_once (asyncio/base_events.py:1909)</text></g><g><title>_run (asyncio/events.py:95) (5 samples, 0.11%)</title><rect x="99.8458%" y="148" width="0.1102%" height="15" fill="rgb(210,56,17)" fg:x="4532" fg:w="5"/><text x="100.0958%" y="158.50"></text></g><g><title>all (4,539 samples, 100%)</title><rect x="0.0000%" y="52" width="100.0000%" height="15" fill="rgb(224,130,29)" fg:x="0" fg:w="4539"/><text x="0.2500%" y="62.50"></text></g><g><title>&lt;module&gt; (python_benchmark.py:373) (4,539 samples, 100.00%)</title><rect x="0.0000%" y="68" width="100.0000%" height="15" fill="rgb(235,212,8)" fg:x="0" fg:w="4539"/><text x="0.2500%" y="78.50">&lt;module&gt; (python_benchmark.py:373)</text></g><g><title>run (asyncio/runners.py:44) (4,539 samples, 100.00%)</title><rect x="0.0000%" y="84" width="100.0000%" height="15" fill="rgb(223,33,50)" fg:x="0" fg:w="4539"/><text x="0.2500%" y="94.50">run (asyncio/runners.py:44)</text></g><g><title>run_until_complete (asyncio/base_events.py:636) (4,539 samples, 100.00%)</title><rect x="0.0000%" y="100" width="100.0000%" height="15" fill="rgb(219,149,13)" fg:x="0" fg:w="4539"/><text x="0.2500%" y="110.50">run_until_complete (asyncio/base_events.py:636)</text></g><g><title>run_forever (asyncio/base_events.py:603) (4,539 samples, 100.00%)</title><rect x="0.0000%" y="116" width="100.0000%" height="15" fill="rgb(250,156,29)" fg:x="0" fg:w="4539"/><text x="0.2500%" y="126.50">run_forever (asyncio/base_events.py:603)</text></g></svg></svg>
