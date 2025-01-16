@@ -95,12 +95,18 @@ func createClient(config clientConfiguration) (*baseClient, error) {
 
 	byteCount := len(msg)
 	requestBytes := C.CBytes(msg)
+	clientType = C.ClientType{
+		_type: C.ClientType_Async,
+		async: C.AsyncClient{
+			success_callback: (C.SuccessCallback)(unsafe.Pointer(C.successCallback)),
+			failure_callback: (C.FailureCallback)(unsafe.Pointer(C.failureCallback)),
+		},
+	}
 	cResponse := (*C.struct_ConnectionResponse)(
 		C.create_client(
 			(*C.uchar)(requestBytes),
 			C.uintptr_t(byteCount),
-			(C.SuccessCallback)(unsafe.Pointer(C.successCallback)),
-			(C.FailureCallback)(unsafe.Pointer(C.failureCallback)),
+			clientType,
 		),
 	)
 	defer C.free_connection_response(cResponse)

@@ -14,7 +14,7 @@ use redis::cluster_routing::{
     MultipleNodeRoutingInfo, Route, RoutingInfo, SingleNodeRoutingInfo, SlotAddr,
 };
 use redis::cluster_routing::{ResponsePolicy, Routable};
-use redis::{Cmd, RedisResult, Value};
+use redis::{Cmd, RedisError, RedisResult, Value};
 use std::slice::from_raw_parts;
 use std::{
     ffi::{c_void, CString},
@@ -129,20 +129,113 @@ pub struct ConnectionResponse {
     connection_error_message: *const c_char,
 }
 
-/// A `GlideClient` adapter.
+#[repr(C)]
+pub struct CommandError {
+    command_error_message: *const c_char,
+    command_error_type: RequestErrorType,
+}
+
+#[repr(C)]
+pub struct CommandResult {
+    response: *mut CommandResponse,
+    command_error: *mut CommandError,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn free_command_result(command_result_ptr: *mut CommandResult) { // TODO: Check for memory leaks
+    if command_result_ptr.is_null() {
+        return;
+    }
+
+    // Take ownership of the CommandResult
+    let command_result = unsafe { Box::from_raw(command_result_ptr) };
+
+    // Free the response if it exists
+    if !command_result.response.is_null() {
+        let response = unsafe { &*command_result.response };
+
+        match response.response_type {
+            ResponseType::String => {
+                // Skip freeing string_value; ownership is delegated to Python
+            }
+            ResponseType::Array => {
+                // Free the array struct itself, but not the items in the array
+                if !response.array_value.is_null() {
+                    let len = response.array_value_len as usize;
+                    unsafe {
+                        drop(Vec::from_raw_parts(response.array_value, len, len));
+                    }
+                }
+            }
+            ResponseType::Map => {
+                // Free the map struct itself (map_key/map_value), but not the items in the map
+                if !response.map_key.is_null() {
+                    let len = response.array_value_len as usize;
+                    unsafe {
+                        drop(Vec::from_raw_parts(response.map_key, len, len));
+                    }
+                }
+                if !response.map_value.is_null() {
+                    let len = response.array_value_len as usize;
+                    unsafe {
+                        drop(Vec::from_raw_parts(response.map_value, len, len));
+                    }
+                }
+            }
+            ResponseType::Sets => {
+                // Free the sets struct itself, but not the items in the set
+                if !response.sets_value.is_null() {
+                    let len = response.sets_value_len as usize;
+                    unsafe {
+                        drop(Vec::from_raw_parts(response.sets_value, len, len));
+                    }
+                }
+            }
+            _ => {
+                // Free the full response for other types
+                unsafe {
+                    free_command_response(command_result.response);
+                }
+            }
+        }
+    }
+
+    // Free the command error if it exists
+    if !command_result.command_error.is_null() {
+        let command_error = unsafe { Box::from_raw(command_result.command_error) };
+        if !command_error.command_error_message.is_null() {
+            unsafe {
+                free_error_message(command_error.command_error_message as *mut c_char);
+            }
+        }
+        drop(command_error);
+    }
+
+    // Finally, free the CommandResult itself
+    drop(command_result);
+}
+/// An async `GlideClient` adapter.
 // TODO: Remove allow(dead_code) once connection logic is implemented
 #[allow(dead_code)]
-pub struct ClientAdapter {
+struct ClientAdapter {
     client: GlideClient,
-    success_callback: SuccessCallback,
-    failure_callback: FailureCallback,
+    client_type: ClientType,
     runtime: Runtime,
+}
+
+#[repr(C)]
+#[derive(Clone)]
+pub enum ClientType {
+    Async {
+        success_callback: SuccessCallback,
+        failure_callback: FailureCallback,
+    },
+    Sync,
 }
 
 fn create_client_internal(
     connection_request_bytes: &[u8],
-    success_callback: SuccessCallback,
-    failure_callback: FailureCallback,
+    client_type: ClientType,
 ) -> Result<ClientAdapter, String> {
     let request = connection_request::ConnectionRequest::parse_from_bytes(connection_request_bytes)
         .map_err(|err| err.to_string())?;
@@ -161,8 +254,7 @@ fn create_client_internal(
         .map_err(|err| err.to_string())?;
     Ok(ClientAdapter {
         client,
-        success_callback,
-        failure_callback,
+        client_type,
         runtime,
     })
 }
@@ -188,12 +280,12 @@ fn create_client_internal(
 pub unsafe extern "C" fn create_client(
     connection_request_bytes: *const u8,
     connection_request_len: usize,
-    success_callback: SuccessCallback,
-    failure_callback: FailureCallback,
+    client_type: *const ClientType,
 ) -> *const ConnectionResponse {
     let request_bytes =
         unsafe { std::slice::from_raw_parts(connection_request_bytes, connection_request_len) };
-    let response = match create_client_internal(request_bytes, success_callback, failure_callback) {
+    let client_type = unsafe { &*client_type }; // Dereference the pointer
+    let response = match create_client_internal(request_bytes, client_type.clone()) {
         Err(err) => ConnectionResponse {
             conn_ptr: std::ptr::null(),
             connection_error_message: CString::into_raw(
@@ -523,7 +615,7 @@ pub unsafe extern "C" fn command(
     args_len: *const c_ulong,
     route_bytes: *const u8,
     route_bytes_len: usize,
-) {
+) -> *mut CommandResult {
     let client_adapter =
         unsafe { Box::leak(Box::from_raw(client_adapter_ptr as *mut ClientAdapter)) };
     // The safety of this needs to be ensured by the calling code. Cannot dispose of the pointer before
@@ -533,7 +625,7 @@ pub unsafe extern "C" fn command(
     let arg_vec =
         unsafe { convert_double_pointer_to_vec(args as *const *const c_void, arg_count, args_len) };
 
-    let mut client_clone = client_adapter.client.clone();
+    let client_clone = client_adapter.client.clone();
 
     // Create the command outside of the task to ensure that the command arguments passed
     // from "go" are still valid
@@ -548,44 +640,90 @@ pub unsafe extern "C" fn command(
 
     let route = Routes::parse_from_bytes(r_bytes).unwrap();
 
-    client_adapter.runtime.spawn(async move {
-        let result = client_clone
+    let execute_command = move |mut client: GlideClient| async move {
+        client
             .send_command(&cmd, get_route(route, Some(&cmd)))
-            .await;
-        let client_adapter = unsafe { Box::leak(Box::from_raw(ptr_address as *mut ClientAdapter)) };
-        let value = match result {
-            Ok(value) => value,
-            Err(err) => {
-                let message = errors::error_message(&err);
-                let error_type = errors::error_type(&err);
+            .await
+    };
 
-                let c_err_str = CString::into_raw(
-                    CString::new(message).expect("Couldn't convert error message to CString"),
-                );
-                unsafe { (client_adapter.failure_callback)(channel, c_err_str, error_type) };
-                return;
-            }
-        };
-
-        let result: RedisResult<CommandResponse> = valkey_value_to_command_response(value);
-
-        unsafe {
-            match result {
-                Ok(message) => {
-                    (client_adapter.success_callback)(channel, Box::into_raw(Box::new(message)))
+    let handle_result = move |result: Result<_, _>,
+                              success: Option<SuccessCallback>,
+                              failure: Option<FailureCallback>| {
+        match result {
+            Ok(value) => match valkey_value_to_command_response(value) {
+                Ok(command_response) => {
+                    if let Some(success_callback) = success {
+                        unsafe {
+                            (success_callback)(channel, Box::into_raw(Box::new(command_response)));
+                        }
+                    } else {
+                        return Box::into_raw(Box::new(CommandResult {
+                            response: Box::into_raw(Box::new(command_response)),
+                            command_error: std::ptr::null_mut(),
+                        }));
+                    }
                 }
                 Err(err) => {
-                    let message = errors::error_message(&err);
-                    let error_type = errors::error_type(&err);
-
-                    let c_err_str = CString::into_raw(
-                        CString::new(message).expect("Couldn't convert error message to CString"),
-                    );
-                    (client_adapter.failure_callback)(channel, c_err_str, error_type);
+                    if let Some(failure_callback) = failure {
+                        let (c_err_str, error_type) = to_c_error(err);
+                        unsafe { (failure_callback)(channel, c_err_str, error_type) };
+                    } else {
+                        eprintln!("Error converting value to CommandResponse: {:?}", err);
+                        return create_error_result(err);
+                    }
                 }
-            };
+            },
+            Err(err) => {
+                if let Some(failure_callback) = failure {
+                    let (c_err_str, error_type) = to_c_error(err);
+                    unsafe { (failure_callback)(channel, c_err_str, error_type) };
+                } else {
+                    eprintln!("Error executing command: {:?}", err);
+                    return create_error_result(err);
+                }
+            }
+        };
+        std::ptr::null_mut()
+    };
+
+    match client_adapter.client_type {
+        ClientType::Async {
+            success_callback,
+            failure_callback,
+        } => {
+            client_adapter.runtime.spawn(async move {
+                let result = execute_command(client_clone).await;
+                handle_result(result, Some(success_callback), Some(failure_callback));
+            });
+            std::ptr::null_mut()
         }
-    });
+        ClientType::Sync => {
+            let result = client_adapter
+                .runtime
+                .block_on(async move { execute_command(client_clone).await });
+            handle_result(result, None, None)
+        }
+    }
+}
+
+fn create_error_result(err: RedisError) -> *mut CommandResult {
+    let (c_err_str, error_type) = to_c_error(err);
+    Box::into_raw(Box::new(CommandResult {
+        response: std::ptr::null_mut(),
+        command_error: Box::into_raw(Box::new(CommandError {
+            command_error_message: c_err_str,
+            command_error_type: error_type,
+        })),
+    }))
+}
+fn to_c_error(err: RedisError) -> (*const c_char, RequestErrorType) {
+    let message = errors::error_message(&err);
+    let error_type = errors::error_type(&err);
+
+    let c_err_str = CString::into_raw(
+        CString::new(message).expect("Couldn't convert error message to CString"),
+    );
+    (c_err_str, error_type)
 }
 
 fn get_route(route: Routes, cmd: Option<&Cmd>) -> Option<RoutingInfo> {

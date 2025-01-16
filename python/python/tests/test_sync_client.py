@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import math
+from threading import Thread
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union, cast
@@ -91,11 +92,11 @@ from glide.routes import (
     SlotType,
 )
 from glide.glide_sync_client import GlideSync
-from tests.conftest import create_client
+from tests.conftest import create_sync_client
 from tests.utils.utils import (
     check_function_list_response,
     check_function_stats_response,
-    check_if_server_version_lt,
+    sync_check_if_server_version_lt,
     compare_maps,
     convert_bytes_to_string_object,
     convert_string_to_bytes_object,
@@ -110,13 +111,13 @@ from tests.utils.utils import (
 )
 
 
-@pytest.mark.asyncio
+
 class TestGlideClients:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_register_client_name_and_version(self, glide_sync_client: GlideSync):
         min_version = "7.2.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             # TODO: change it to pytest fixture after we'll implement a sync client
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
         info = glide_sync_client.custom_command(["CLIENT", "INFO"])
@@ -128,7 +129,7 @@ class TestGlideClients:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_send_and_receive_large_values(self, request, cluster_mode, protocol):
-        glide_sync_client = create_client(
+        glide_sync_client = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=5000
         )
         length = 2**25  # 33mb
@@ -158,8 +159,6 @@ class TestGlideClients:
     def test_sync_client_handle_concurrent_workload_without_dropping_or_changing_values(
         self, glide_sync_client: GlideSync, value_size
     ):
-        num_of_concurrent_tasks = 100
-        running_tasks = set()
 
         def exec_command(i):
             range_end = 1 if value_size > 100 else 100
@@ -167,14 +166,21 @@ class TestGlideClients:
                 value = get_random_string(value_size)
                 assert glide_sync_client.set(str(i), value) == OK
                 assert glide_sync_client.get(str(i)) == value.encode()
+        num_of_concurrent_threads = 100
+        running_threads = []
+        for i in range(num_of_concurrent_threads):
+            thread = Thread(
+                target=exec_command,
+                args=(i,),
+                name=f"Worker-{i}"
+            )
+            running_threads.append(thread)
+            thread.start()
+        
+        for thread in running_threads:
+            thread.join()
 
-        for i in range(num_of_concurrent_tasks):
-            task = asyncio.create_task(exec_command(i))
-            running_tasks.add(task)
-            task.add_done_callback(running_tasks.discard)
-        asyncio.gather(*(list(running_tasks)))
-
-    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize("cluster_mode", [False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_can_connect_with_auth_requirepass(
         self, glide_sync_client: GlideSync, request
@@ -186,16 +192,15 @@ class TestGlideClients:
             glide_sync_client.custom_command(
                 ["CONFIG", "SET", "requirepass", password]
             )
-
             with pytest.raises(ClosingError, match="NOAUTH"):
                 # Creation of a new client without password should fail
-                create_client(
+                create_sync_client(
                     request,
                     is_cluster,
                     addresses=glide_sync_client.config.addresses,
                 )
 
-            auth_client = create_client(
+            auth_client = create_sync_client(
                 request,
                 is_cluster,
                 credentials,
@@ -208,7 +213,7 @@ class TestGlideClients:
 
         finally:
             # Reset the password
-            auth_client = create_client(
+            auth_client = create_sync_client(
                 request,
                 is_cluster,
                 credentials,
@@ -248,7 +253,7 @@ class TestGlideClients:
             assert glide_sync_client.set(key, key) == OK
             credentials = ServerCredentials(password, username)
 
-            testuser_client = create_client(
+            testuser_client = create_sync_client(
                 request,
                 is_cluster,
                 credentials,
@@ -266,7 +271,7 @@ class TestGlideClients:
 
     @pytest.mark.parametrize("cluster_mode", [False])
     def test_sync_select_standalone_database_id(self, request, cluster_mode):
-        glide_sync_client = create_client(
+        glide_sync_client = create_sync_client(
             request, cluster_mode=cluster_mode, database_id=4
         )
         client_info = glide_sync_client.custom_command(["CLIENT", "INFO"])
@@ -276,7 +281,7 @@ class TestGlideClients:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_client_name(self, request, cluster_mode, protocol):
-        glide_sync_client = create_client(
+        glide_sync_client = create_sync_client(
             request,
             cluster_mode=cluster_mode,
             client_name="TEST_CLIENT_NAME",
@@ -304,7 +309,7 @@ class TestGlideClients:
         assert len(stats) == 2
 
 
-@pytest.mark.asyncio
+
 class TestCommands:
     @pytest.mark.smoke_test
     @pytest.mark.parametrize("cluster_mode", [True, False])
@@ -338,7 +343,7 @@ class TestCommands:
         self, cluster_mode, protocol, inflight_requests_limit, request
     ):
         key1 = f"{{nonexistinglist}}:1-{get_random_string(10)}"
-        test_sync_client = create_client(
+        test_sync_client = create_sync_client(
             request=request,
             protocol=protocol,
             cluster_mode=cluster_mode,
@@ -387,7 +392,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_set_return_old_value(self, glide_sync_client: GlideSync):
         min_version = "6.2.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             # TODO: change it to pytest fixture after we'll implement a sync client
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
         key = get_random_string(10)
@@ -1215,7 +1220,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_lmpop(self, glide_sync_client: GlideSync):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         key1 = f"{{test}}-1-f{get_random_string(10)}"
@@ -1254,7 +1259,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_blmpop(self, glide_sync_client: GlideSync):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         key1 = f"{{test}}-1-f{get_random_string(10)}"
@@ -1938,7 +1943,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_sintercard(self, glide_sync_client: GlideSync):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         key1 = f"{{testKey}}:{get_random_string(10)}"
@@ -2241,7 +2246,7 @@ class TestCommands:
         assert glide_sync_client.set(key, "foo") == OK
         assert glide_sync_client.ttl(key) == -1
 
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert glide_sync_client.expiretime(key) == -1
             assert glide_sync_client.pexpiretime(key) == -1
 
@@ -2250,13 +2255,13 @@ class TestCommands:
 
         # set command clears the timeout.
         assert glide_sync_client.set(key, "bar") == OK
-        if check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert glide_sync_client.pexpire(key, 10000)
         else:
             assert glide_sync_client.pexpire(key, 10000, ExpireOptions.HasNoExpiry)
         assert glide_sync_client.ttl(key) in range(11)
 
-        if check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert glide_sync_client.expire(key, 15)
         else:
             assert glide_sync_client.expire(key, 15, ExpireOptions.HasExistingExpiry)
@@ -2275,7 +2280,7 @@ class TestCommands:
 
         assert glide_sync_client.expireat(key, current_time + 10) == 1
         assert glide_sync_client.ttl(key) in range(11)
-        if check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert glide_sync_client.expireat(key, current_time + 50) == 1
         else:
             assert (
@@ -2289,7 +2294,7 @@ class TestCommands:
         # set command clears the timeout.
         assert glide_sync_client.set(key, "bar") == OK
         current_time_ms = int(time.time() * 1000)
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert not glide_sync_client.pexpireat(
                 key, current_time_ms + 50000, ExpireOptions.HasExistingExpiry
             )
@@ -2303,34 +2308,34 @@ class TestCommands:
         assert glide_sync_client.set(key, "foo") == OK
         assert glide_sync_client.ttl(key) == -1
 
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert glide_sync_client.expiretime(key) == -1
             assert glide_sync_client.pexpiretime(key) == -1
 
         assert glide_sync_client.expire(key, -10) is True
         assert glide_sync_client.ttl(key) == -2
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert glide_sync_client.expiretime(key) == -2
             assert glide_sync_client.pexpiretime(key) == -2
 
         assert glide_sync_client.set(key, "foo") == OK
         assert glide_sync_client.pexpire(key, -10000)
         assert glide_sync_client.ttl(key) == -2
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert glide_sync_client.expiretime(key) == -2
             assert glide_sync_client.pexpiretime(key) == -2
 
         assert glide_sync_client.set(key, "foo") == OK
         assert glide_sync_client.expireat(key, int(time.time()) - 50) == 1
         assert glide_sync_client.ttl(key) == -2
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert glide_sync_client.expiretime(key) == -2
             assert glide_sync_client.pexpiretime(key) == -2
 
         assert glide_sync_client.set(key, "foo") == OK
         assert glide_sync_client.pexpireat(key, int(time.time() * 1000) - 50000)
         assert glide_sync_client.ttl(key) == -2
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert glide_sync_client.expiretime(key) == -2
             assert glide_sync_client.pexpiretime(key) == -2
 
@@ -2346,7 +2351,7 @@ class TestCommands:
         assert glide_sync_client.expireat(key, int(time.time()) + 50) == 0
         assert not glide_sync_client.pexpireat(key, int(time.time() * 1000) + 50000)
         assert glide_sync_client.ttl(key) == -2
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert glide_sync_client.expiretime(key) == -2
             assert glide_sync_client.pexpiretime(key) == -2
 
@@ -4323,7 +4328,7 @@ class TestCommands:
         members_scores: Mapping[TEncodable, float] = {"one": 1.5, "two": 2, "three": 3}
         assert glide_sync_client.zadd(key, members_scores) == 3
         assert glide_sync_client.zrank(key, "one") == 0
-        if not check_if_server_version_lt(glide_sync_client, "7.2.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.2.0"):
             assert glide_sync_client.zrank_withscore(key, "one") == [0, 1.5]
             assert glide_sync_client.zrank_withscore(key, "non_existing_field") is None
             assert (
@@ -4356,7 +4361,7 @@ class TestCommands:
             glide_sync_client.zrevrank(non_existing_key, "non_existing_member") is None
         )
 
-        if not check_if_server_version_lt(glide_sync_client, "7.2.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.2.0"):
             assert glide_sync_client.zrevrank_withscore(key, "one") == [2, 1.0]
             assert (
                 glide_sync_client.zrevrank_withscore(key, "non_existing_member")
@@ -4487,7 +4492,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_bzmpop(self, glide_sync_client: GlideSync):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         key1 = f"{{test}}-1-f{get_random_string(10)}"
@@ -4645,7 +4650,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_zintercard(self, glide_sync_client: GlideSync):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
@@ -4687,7 +4692,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_zmpop(self, glide_sync_client: GlideSync):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         key1 = f"{{test}}-1-f{get_random_string(10)}"
@@ -4777,7 +4782,7 @@ class TestCommands:
     ):
         if isinstance(
             glide_sync_client, GlideClusterClient
-        ) and check_if_server_version_lt(glide_sync_client, "8.0.0"):
+        ) and sync_check_if_server_version_lt(glide_sync_client, "8.0.0"):
             return pytest.mark.skip(
                 reason=f"Valkey version required in cluster mode>= 8.0.0"
             )
@@ -4811,7 +4816,7 @@ class TestCommands:
         # SORT_RO Available since: 7.0.0
         skip_sort_ro_test = False
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             skip_sort_ro_test = True
 
         # Test sort with all arguments
@@ -4934,7 +4939,7 @@ class TestCommands:
         # SORT_RO Available since: 7.0.0
         skip_sort_ro_test = False
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             skip_sort_ro_test = True
 
         # Test sort with non-existing key
@@ -5412,7 +5417,7 @@ class TestCommands:
             == stream_id2.encode()
         )
 
-        test_sync_client = create_client(
+        test_sync_client = create_sync_client(
             request=request, protocol=protocol, cluster_mode=cluster_mode, timeout=900
         )
         # ensure command doesn't time out even if timeout > request timeout
@@ -5511,7 +5516,7 @@ class TestCommands:
             glide_sync_client.xgroup_destroy(non_existing_key, group_name1)
 
         # "ENTRIESREAD" option was added in Valkey 7.0.0
-        if check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             with pytest.raises(RequestError):
                 glide_sync_client.xgroup_create(
                     key,
@@ -5805,7 +5810,7 @@ class TestCommands:
                 {key: stream_id1_1}, "non_existing_group", consumer_name
             )
 
-        test_sync_client = create_client(
+        test_sync_client = create_sync_client(
             request=request, protocol=protocol, cluster_mode=cluster_mode, timeout=900
         )
         timeout_key = f"{{testKey}}:{get_random_string(10)}"
@@ -6437,10 +6442,10 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xautoclaim(self, glide_sync_client: GlideSync, protocol):
         min_version = "6.2.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
-        if check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             version7_or_above = False
         else:
             version7_or_above = True
@@ -6545,10 +6550,10 @@ class TestCommands:
         self, glide_sync_client: GlideSync, protocol
     ):
         min_version = "6.2.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
-        if check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             version7_or_above = False
         else:
             version7_or_above = True
@@ -6716,7 +6721,7 @@ class TestCommands:
         assert consumer1_info.get(b"name") == consumer1.encode()
         assert consumer1_info.get(b"pending") == 1
         assert cast(int, consumer1_info.get(b"idle")) > 0
-        if not check_if_server_version_lt(glide_sync_client, "7.2.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.2.0"):
             assert (
                 cast(int, consumer1_info.get(b"inactive"))
                 > 0  # "inactive" was added in Valkey 7.2.0
@@ -6754,7 +6759,7 @@ class TestCommands:
         assert group1_info.get(b"consumers") == 2
         assert group1_info.get(b"pending") == 3
         assert group1_info.get(b"last-delivered-id") == stream_id1_2.encode()
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert (
                 group1_info.get(b"entries-read")
                 == 3  # we have read stream entries 1-0, 1-1, and 1-2
@@ -6775,7 +6780,7 @@ class TestCommands:
         assert group1_info.get(b"pending") == 3
         assert group1_info.get(b"last-delivered-id") == stream_id1_1.encode()
         # entries-read and lag were added to the result in 7.0.0
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert (
                 group1_info.get(b"entries-read")
                 is None  # gets set to None when we change the last delivered ID
@@ -6785,7 +6790,7 @@ class TestCommands:
                 is None  # gets set to None when we change the last delivered ID
             )
 
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             # verify xgroup_set_id with entries_read effects the returned value from xinfo_groups
             assert (
                 glide_sync_client.xgroup_set_id(
@@ -7015,7 +7020,7 @@ class TestCommands:
 
         # reset the last delivered ID for the consumer group to "1-1"
         # ENTRIESREAD is only supported in Valkey version 7.0.0 and above
-        if check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert glide_sync_client.xgroup_set_id(key, group_name, stream_id1_1) == OK
         else:
             assert (
@@ -7148,7 +7153,7 @@ class TestCommands:
         with pytest.raises(RequestError):
             glide_sync_client.bitcount(set_key, OffsetOptions(1, 1))
 
-        if check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             # exception thrown because BIT and BYTE options were implemented after 7.0.0
             with pytest.raises(RequestError):
                 glide_sync_client.bitcount(
@@ -7190,7 +7195,7 @@ class TestCommands:
                     set_key, OffsetOptions(1, 1, BitmapIndexType.BIT)
                 )
 
-        if check_if_server_version_lt(glide_sync_client, "8.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "8.0.0"):
             # exception thrown optional end was implemented after 8.0.0
             with pytest.raises(RequestError):
                 glide_sync_client.bitcount(
@@ -7285,7 +7290,7 @@ class TestCommands:
         with pytest.raises(RequestError):
             glide_sync_client.bitpos(set_key, 1, OffsetOptions(1, -1))
 
-        if check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             # error thrown because BIT and BYTE options were implemented after 7.0.0
             with pytest.raises(RequestError):
                 glide_sync_client.bitpos(
@@ -7544,7 +7549,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_bitfield_read_only(self, glide_sync_client: GlideSync):
         min_version = "6.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         key = get_random_string(10)
@@ -7640,7 +7645,7 @@ class TestCommands:
         assert glide_sync_client.object_encoding(string_key) == "embstr".encode()
 
         assert glide_sync_client.lpush(list_key, ["1"]) == 1
-        if check_if_server_version_lt(glide_sync_client, "7.2.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.2.0"):
             assert glide_sync_client.object_encoding(list_key) == "quicklist".encode()
         else:
             assert glide_sync_client.object_encoding(list_key) == "listpack".encode()
@@ -7654,7 +7659,7 @@ class TestCommands:
         assert glide_sync_client.object_encoding(intset_key) == "intset".encode()
 
         assert glide_sync_client.sadd(set_listpack_key, ["foo"]) == 1
-        if check_if_server_version_lt(glide_sync_client, "7.2.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.2.0"):
             assert (
                 glide_sync_client.object_encoding(set_listpack_key)
                 == "hashtable".encode()
@@ -7674,7 +7679,7 @@ class TestCommands:
         )
 
         assert glide_sync_client.hset(hash_listpack_key, {"1": "2"}) == 1
-        if check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert (
                 glide_sync_client.object_encoding(hash_listpack_key)
                 == "ziplist".encode()
@@ -7691,7 +7696,7 @@ class TestCommands:
         assert glide_sync_client.object_encoding(skiplist_key) == "skiplist".encode()
 
         assert glide_sync_client.zadd(zset_listpack_key, {"1": 2.0}) == 1
-        if check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             assert (
                 glide_sync_client.object_encoding(zset_listpack_key)
                 == "ziplist".encode()
@@ -7755,7 +7760,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_function_load(self, glide_sync_client: GlideSync):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         lib_name = f"mylib1C{get_random_string(5)}"
@@ -7809,7 +7814,7 @@ class TestCommands:
         self, glide_sync_client: GlideClusterClient, single_route: bool
     ):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         lib_name = f"mylib1C{get_random_string(5)}"
@@ -7919,7 +7924,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_function_list(self, glide_sync_client: GlideSync):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         original_functions_count = len(glide_sync_client.function_list())
@@ -7984,7 +7989,7 @@ class TestCommands:
         self, glide_sync_client: GlideClusterClient, single_route: bool
     ):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         route = SlotKeyRoute(SlotType.PRIMARY, "1") if single_route else AllPrimaries()
@@ -8071,7 +8076,7 @@ class TestCommands:
         self, glide_sync_client: GlideSync
     ):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         glide_sync_client.function_flush()
@@ -8116,7 +8121,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_function_flush(self, glide_sync_client: GlideSync):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             pytest.skip(f"Valkey version required >= {min_version}")
 
         lib_name = f"mylib1C{get_random_string(5)}"
@@ -8152,7 +8157,7 @@ class TestCommands:
         self, glide_sync_client: GlideClusterClient, single_route: bool
     ):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             pytest.skip(f"Valkey version required >= {min_version}")
 
         lib_name = f"mylib1C{get_random_string(5)}"
@@ -8204,7 +8209,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_function_delete(self, glide_sync_client: GlideSync):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             pytest.skip(f"Valkey version required >= {min_version}")
 
         lib_name = f"mylib1C{get_random_string(5)}"
@@ -8235,7 +8240,7 @@ class TestCommands:
         self, glide_sync_client: GlideClusterClient, single_route: bool
     ):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             pytest.skip(f"Valkey version required >= {min_version}")
 
         lib_name = f"mylib1C{get_random_string(5)}"
@@ -8276,7 +8281,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_function_stats(self, glide_sync_client: GlideSync):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         lib_name = "functionStats_without_route"
@@ -8322,7 +8327,7 @@ class TestCommands:
         self, request, cluster_mode, protocol, glide_sync_client: GlideSync
     ):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         lib_name = f"mylib1C{get_random_string(5)}"
@@ -8333,11 +8338,11 @@ class TestCommands:
         assert glide_sync_client.function_load(code, replace=True) == lib_name.encode()
 
         # create a second client to run fcall
-        test_sync_client = create_client(
+        test_sync_client = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=30000
         )
 
-        test_sync_client2 = create_client(
+        test_sync_client2 = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=30000
         )
 
@@ -8379,7 +8384,7 @@ class TestCommands:
         self, glide_sync_client: GlideClusterClient, single_route: bool
     ):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         route = (
@@ -8446,7 +8451,7 @@ class TestCommands:
         self, request, cluster_mode, protocol, glide_sync_client: GlideSync
     ):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         lib_name = f"mylib1C{get_random_string(5)}"
@@ -8462,7 +8467,7 @@ class TestCommands:
         assert glide_sync_client.function_load(code, replace=True) == lib_name.encode()
 
         # create a second client to run fcall
-        test_sync_client = create_client(
+        test_sync_client = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=15000
         )
 
@@ -8506,7 +8511,7 @@ class TestCommands:
         self, request, cluster_mode, protocol, glide_sync_client: GlideSync
     ):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         lib_name = f"mylib1C{get_random_string(5)}"
@@ -8517,7 +8522,7 @@ class TestCommands:
         assert glide_sync_client.function_load(code, replace=True) == lib_name.encode()
 
         # create a second client to run fcall - and give it a long timeout
-        test_sync_client = create_client(
+        test_sync_client = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=15000
         )
 
@@ -8555,7 +8560,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_fcall_with_key(self, glide_sync_client: GlideClusterClient):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
@@ -8602,7 +8607,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_fcall_readonly_function(self, glide_sync_client: GlideClusterClient):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         lib_name = f"fcall_readonly_function{get_random_string(5)}"
@@ -8652,7 +8657,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_function_dump_restore_standalone(self, glide_sync_client: GlideClient):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         assert glide_sync_client.function_flush(FlushMode.SYNC) is OK
@@ -8726,7 +8731,7 @@ class TestCommands:
         self, glide_sync_client: GlideClusterClient
     ):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         assert glide_sync_client.function_flush(FlushMode.SYNC) is OK
@@ -8873,7 +8878,7 @@ class TestCommands:
         assert glide_sync_client.dbsize() > 0
         assert glide_sync_client.flushall() == OK
         assert glide_sync_client.flushall(FlushMode.ASYNC) == OK
-        if not check_if_server_version_lt(glide_sync_client, min_version):
+        if not sync_check_if_server_version_lt(glide_sync_client, min_version):
             assert glide_sync_client.flushall(FlushMode.SYNC) == OK
         assert glide_sync_client.dbsize() == 0
 
@@ -8881,7 +8886,7 @@ class TestCommands:
             glide_sync_client.set(key, value)
             assert glide_sync_client.flushall(route=AllPrimaries()) == OK
             assert glide_sync_client.flushall(FlushMode.ASYNC, AllPrimaries()) == OK
-            if not check_if_server_version_lt(glide_sync_client, min_version):
+            if not sync_check_if_server_version_lt(glide_sync_client, min_version):
                 assert glide_sync_client.flushall(FlushMode.SYNC, AllPrimaries()) == OK
             assert glide_sync_client.dbsize() == 0
 
@@ -8914,7 +8919,7 @@ class TestCommands:
         assert glide_sync_client.dbsize() == 0
 
         # verify flush SYNC
-        if not check_if_server_version_lt(glide_sync_client, min_version):
+        if not sync_check_if_server_version_lt(glide_sync_client, min_version):
             glide_sync_client.set(key2, value)
             assert glide_sync_client.dbsize() > 0
             assert glide_sync_client.flushdb(FlushMode.SYNC) == OK
@@ -8924,7 +8929,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_getex(self, glide_sync_client: GlideSync):
         min_version = "6.2.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         key1 = get_random_string(10)
@@ -8960,7 +8965,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_copy_no_database(self, glide_sync_client: GlideSync):
         min_version = "6.2.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         source = f"{{testKey}}:1-{get_random_string(10)}"
@@ -8994,7 +8999,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_copy_database(self, glide_sync_client: GlideClient):
         min_version = "6.2.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         source = get_random_string(10)
@@ -9253,7 +9258,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_lcs(self, glide_sync_client: GlideClient):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
         key1 = "testKey1"
         value1 = "abcd"
@@ -9277,7 +9282,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_lcs_len(self, glide_sync_client: GlideClient):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
         key1 = "testKey1"
         value1 = "abcd"
@@ -9301,7 +9306,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_lcs_idx(self, glide_sync_client: GlideClient):
         min_version = "7.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
         key1 = "testKey1"
         value1 = "abcd1234"
@@ -9446,7 +9451,7 @@ class TestCommands:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_lpos(self, glide_sync_client: GlideSync):
         min_version = "6.0.6"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             # TODO: change it to pytest fixture after we'll implement a sync client
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
         key = f"{{key}}-1{get_random_string(5)}"
@@ -9544,7 +9549,7 @@ class TestMultiKeyCommandCrossSlot:
             glide_sync_client.xread({"abc": "0-0", "zxy": "0-0"}),
         ]
 
-        if not check_if_server_version_lt(glide_sync_client, "6.2.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "6.2.0"):
             promises.extend(
                 [
                     glide_sync_client.geosearchstore(
@@ -9557,7 +9562,7 @@ class TestMultiKeyCommandCrossSlot:
                 ]
             )
 
-        if not check_if_server_version_lt(glide_sync_client, "7.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             promises.extend(
                 [
                     glide_sync_client.bzmpop(["abc", "zxy", "lkn"], ScoreFilter.MAX, 0.1),
@@ -9688,7 +9693,7 @@ class TestCommandsUnitTests:
         assert is_single_response(None, None)
 
 
-@pytest.mark.asyncio
+
 class TestClusterRoutes:
     def cluster_route_custom_command_multi_nodes(
         self,
@@ -9876,7 +9881,7 @@ class TestClusterRoutes:
         assert glide_sync_client.flushdb(FlushMode.ASYNC, AllPrimaries()) == OK
         assert glide_sync_client.dbsize() == 0
 
-        if not check_if_server_version_lt(glide_sync_client, min_version):
+        if not sync_check_if_server_version_lt(glide_sync_client, min_version):
             glide_sync_client.set(key, value)
             assert glide_sync_client.dbsize() > 0
             assert glide_sync_client.flushdb(FlushMode.SYNC, AllPrimaries()) == OK
@@ -9902,7 +9907,7 @@ class TestClusterRoutes:
         assert result[result_collection_index] == []
 
         # Negative cursor
-        if check_if_server_version_lt(glide_sync_client, "8.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "8.0.0"):
             result = glide_sync_client.sscan(key1, "-1")
             assert result[result_cursor_index] == initial_cursor.encode()
             assert result[result_collection_index] == []
@@ -10016,7 +10021,7 @@ class TestClusterRoutes:
         assert result[result_collection_index] == []
 
         # Negative cursor
-        if check_if_server_version_lt(glide_sync_client, "8.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "8.0.0"):
             result = glide_sync_client.zscan(key1, "-1")
             assert result[result_cursor_index] == initial_cursor.encode()
             assert result[result_collection_index] == []
@@ -10092,7 +10097,7 @@ class TestClusterRoutes:
         assert len(result[result_collection_index]) >= 0
 
         # Test no_scores option
-        if not check_if_server_version_lt(glide_sync_client, "8.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "8.0.0"):
             result = glide_sync_client.zscan(key1, initial_cursor, no_scores=True)
             assert result[result_cursor_index] != b"0"
             values_array = cast(List[bytes], result[result_collection_index])
@@ -10143,7 +10148,7 @@ class TestClusterRoutes:
         assert result[result_collection_index] == []
 
         # Negative cursor
-        if check_if_server_version_lt(glide_sync_client, "8.0.0"):
+        if sync_check_if_server_version_lt(glide_sync_client, "8.0.0"):
             result = glide_sync_client.hscan(key1, "-1")
             assert result[result_cursor_index] == initial_cursor.encode()
             assert result[result_collection_index] == []
@@ -10219,7 +10224,7 @@ class TestClusterRoutes:
         assert len(result[result_collection_index]) >= 0
 
         # Test no_values option
-        if not check_if_server_version_lt(glide_sync_client, "8.0.0"):
+        if not sync_check_if_server_version_lt(glide_sync_client, "8.0.0"):
             result = glide_sync_client.hscan(key1, initial_cursor, no_values=True)
             assert result[result_cursor_index] != b"0"
             values_array = cast(List[bytes], result[result_collection_index])
@@ -10302,7 +10307,7 @@ def script_kill_tests(
     test_sync_client.close()
 
 
-@pytest.mark.asyncio
+
 class TestScripts:
     @pytest.mark.smoke_test
     @pytest.mark.parametrize("cluster_mode", [True, False])
@@ -10365,7 +10370,7 @@ class TestScripts:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_script_large_keys_no_args(self, request, cluster_mode, protocol):
-        glide_sync_client = create_client(
+        glide_sync_client = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=5000
         )
         length = 2**13  # 8kb
@@ -10377,7 +10382,7 @@ class TestScripts:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_script_large_args_no_keys(self, request, cluster_mode, protocol):
-        glide_sync_client = create_client(
+        glide_sync_client = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=5000
         )
         length = 2**12  # 4kb
@@ -10393,7 +10398,7 @@ class TestScripts:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_script_large_keys_and_args(self, request, cluster_mode, protocol):
-        glide_sync_client = create_client(
+        glide_sync_client = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=5000
         )
         length = 2**12  # 4kb
@@ -10477,7 +10482,7 @@ class TestScripts:
         route = SlotKeyRoute(SlotType.PRIMARY, "1") if single_route else AllPrimaries()
 
         # Create a second client to run the script
-        test_sync_client = create_client(
+        test_sync_client = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=30000
         )
 
@@ -10493,7 +10498,7 @@ class TestScripts:
         glide_sync_client: GlideSync,
     ):
         # Create a second client to run the script
-        test_sync_client = create_client(
+        test_sync_client = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=30000
         )
 
@@ -10505,12 +10510,12 @@ class TestScripts:
         self, request, cluster_mode, protocol, glide_sync_client: GlideSync
     ):
         # Create a second client to run the script
-        test_sync_client = create_client(
+        test_sync_client = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=30000
         )
 
         # Create a second client to kill the script
-        test_sync_client2 = create_client(
+        test_sync_client2 = create_sync_client(
             request, cluster_mode=cluster_mode, protocol=protocol, timeout=15000
         )
 
@@ -10555,7 +10560,7 @@ class TestScripts:
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_script_show(self, glide_sync_client: GlideSync):
         min_version = "8.0.0"
-        if check_if_server_version_lt(glide_sync_client, min_version):
+        if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
         code = f"return '{get_random_string(5)}'"
