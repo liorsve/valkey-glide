@@ -10,7 +10,6 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Union, cast
 
 import pytest
-from glide.glide_client_sync_uds import UDSGlideClientSync
 from glide import ClosingError, RequestError, Script
 from glide.async_commands.bitmap import (
     BitFieldGet,
@@ -42,7 +41,6 @@ from glide.async_commands.core import (
     OnlyIfEqual,
     UpdateOptions,
 )
-from glide.glide_async_ffi_client import GlideAsync
 from glide.async_commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
@@ -113,11 +111,6 @@ from tests.utils.utils import (
 )
 
 
-@pytest.mark.asyncio
-def test_sync_uds_client():
-    config = GlideClientConfiguration([NodeAddress("localhost", 6379)])
-    client = UDSGlideClientSync.create(config)
-    client.set("foo", "bar")
 class TestGlideClients:
     @pytest.mark.skip_if_version_below("7.2.0")
     @pytest.mark.parametrize("cluster_mode", [True, False])
@@ -160,9 +153,8 @@ class TestGlideClients:
     # @pytest.mark.parametrize("cluster_mode", [True, False])
     # @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     async def test_client_handle_concurrent_workload_without_dropping_or_changing_values(
-        self, value_size
+        self, value_size, glide_client: TGlideClient
     ):
-        glide_client = GlideAsync()
         num_of_concurrent_tasks = 100
         running_tasks = set()
 
@@ -395,10 +387,9 @@ class TestGlideClients:
 @pytest.mark.asyncio
 class TestCommands:
     @pytest.mark.smoke_test
-    # @pytest.mark.parametrize("cluster_mode", [True, False])
-    # @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    async def test_socket_set_get(self):
-        glide_client = GlideAsync()
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
+    async def test_socket_set_get(self, glide_client: TGlideClient):
         key = get_random_string(10)
         value = datetime.now(timezone.utc).strftime("%m/%d/%Y, %H:%M:%S")
         assert await glide_client.set(key, value) == OK

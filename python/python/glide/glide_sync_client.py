@@ -13,7 +13,7 @@ class GlideSync(CoreCommands):
         # Call the `create_client` function
         conn_req = config._create_a_protobuf_conn_request(cluster_mode=type(config) == GlideClusterClientConfiguration)
         conn_req_bytes = conn_req.SerializeToString()
-        client_response_ptr = self.lib.create_client(conn_req_bytes, len(conn_req_bytes))
+        client_response_ptr = self.lib.create_client(conn_req_bytes, len(conn_req_bytes), 0,  0) 
         # Handle the connection response
         if client_response_ptr != self.ffi.NULL:
             client_response = self.ffi.cast("ConnectionResponse*", client_response_ptr)
@@ -54,7 +54,13 @@ class GlideSync(CoreCommands):
             const char* connection_error_message;
         } ConnectionResponse;
 
-        const ConnectionResponse* create_client(const uint8_t* connection_request_bytes, size_t connection_request_len);
+        const ConnectionResponse* create_client(
+            const uint8_t* connection_request_bytes,
+            size_t connection_request_len,
+            uintptr_t success_callback,  // Always 0 for the sync client (NULL)
+            uintptr_t failure_callback   // Always 0 for the sync client (NULL)
+
+        );
         void free_command_response(CommandResponse* response);
         void free_connection_response(ConnectionResponse* response);
 
@@ -66,6 +72,10 @@ class GlideSync(CoreCommands):
             const size_t *args,
             const unsigned long *args_len
         );
+        
+        // Function to close the client
+        void close_client(const void* client_adapter_ptr);
+
         """)
 
         # Load the shared library (adjust the path to your compiled Rust library)
@@ -175,3 +185,24 @@ class GlideSync(CoreCommands):
             c_args,  # Array of argument pointers
             c_lengths  # Array of argument lengths
         ))
+
+    def custom_command(self, command_args: List[TEncodable]) -> TResult:
+        """
+        Executes a single command, without checking inputs.
+        See the [Valkey GLIDE Wiki](https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#custom-command)
+        for details on the restrictions and limitations of the custom command API.
+
+            @example - Return a list of all pub/sub clients:
+
+                connection.customCommand(["CLIENT", "LIST","TYPE", "PUBSUB"])
+        Args:
+            command_args (List[TEncodable]): List of the command's arguments, where each argument is either a string or bytes.
+            Every part of the command, including the command name and subcommands, should be added as a separate value in args.
+
+        Returns:
+            TResult: The returning value depends on the executed command.
+        """
+        return self._execute_command(RequestType.CustomCommand, command_args)
+
+    def close(self):
+        self.lib.close_client(self.core_client)
