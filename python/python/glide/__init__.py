@@ -154,7 +154,6 @@ from glide.exceptions import (
 )
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
 from glide.logger import Level as LogLevel
-from glide.glide_async_ffi_client import GlideAsync
 from glide.logger import Logger
 from glide.routes import (
     AllNodes,
@@ -168,14 +167,10 @@ from glide.routes import (
 )
 from glide.glide_sync_client import GlideSync
 from .glide import ClusterScanCursor, Script
-from glide.glide_client_sync_uds import UDSGlideClientSync, UDSGlideClusterClientSync
 PubSubMsg = CoreCommands.PubSubMsg
 
 __all__ = [
     # Client
-    "UDSGlideClientSync",
-    "UDSGlideClusterClientSync",
-    "GlideAsync",
     "GlideSync",
     "GlideClient",
     "GlideClusterClient",
