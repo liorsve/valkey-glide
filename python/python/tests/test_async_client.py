@@ -150,8 +150,8 @@ class TestGlideClients:
         assert await glide_client.get(key.encode()) == value.encode()
 
     @pytest.mark.parametrize("value_size", [100, 2**16])
-    # @pytest.mark.parametrize("cluster_mode", [True, False])
-    # @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     async def test_client_handle_concurrent_workload_without_dropping_or_changing_values(
         self, value_size, glide_client: TGlideClient
     ):

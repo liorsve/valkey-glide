@@ -1,80 +1,125 @@
 from cffi import FFI
-from glide import GlideClusterClientConfiguration
 from glide.protobuf.command_request_pb2 import Command, CommandRequest, RequestType
-from typing import List, Union, Optional
-from glide.sync_commands.core import CoreCommands
+from typing import List, Union, Optional, cast
+from glide.sync_commands.core import CoreCommands, InfoSection
 from glide.constants import DEFAULT_READ_BYTES_SIZE, OK, TEncodable, TRequest, TResult
 from glide.routes import Route
+from glide.exceptions import ClosingError, RequestError
+from glide.config import GlideClusterClientConfiguration
+from glide.glide_client import get_request_error_class
 
-
+# Enum values must match the Rust definition
+class FFIClientTypeEnum:
+    Async = 0
+    Sync = 1
+    
 class GlideSync(CoreCommands):        
     def __init__(self, config):
         self._init_ffi()
-        # Call the `create_client` function
+        self.config = config
         conn_req = config._create_a_protobuf_conn_request(cluster_mode=type(config) == GlideClusterClientConfiguration)
         conn_req_bytes = conn_req.SerializeToString()
-        client_response_ptr = self.lib.create_client(conn_req_bytes, len(conn_req_bytes), 0,  0) 
+        client_type = self.ffi.new("ClientType*", {
+            "_type": self.ffi.cast("ClientTypeEnum", FFIClientTypeEnum.Sync),
+        })
+        client_response_ptr = self.lib.create_client(conn_req_bytes, len(conn_req_bytes), client_type) 
         # Handle the connection response
         if client_response_ptr != self.ffi.NULL:
             client_response = self.ffi.cast("ConnectionResponse*", client_response_ptr)
             if client_response.conn_ptr != self.ffi.NULL:
-                print("Client created successfully.")
                 self.core_client = client_response.conn_ptr
             else:
                 error_message = self.ffi.string(client_response.connection_error_message).decode('utf-8') if client_response.connection_error_message != self.ffi.NULL else "Unknown error"
-                print(f"Failed to create client. Error: {error_message}")
+                raise ClosingError(error_message)
 
             # Free the connection response to avoid memory leaks
             self.lib.free_connection_response(client_response_ptr)
         else:
-            print("Failed to create client, response pointer is NULL.")
+            raise ClosingError("Failed to create client, response pointer is NULL.")
 
     def _init_ffi(self):
         self.ffi = FFI()
 
         # Define the CommandResponse struct and related types
         self.ffi.cdef("""
-        typedef struct CommandResponse {
-            int response_type;
-            long int_value;
-            double float_value;
-            bool bool_value;
-            char* string_value;
-            long string_value_len;
-            struct CommandResponse* array_value;
-            long array_value_len;
-            struct CommandResponse* map_key;
-            struct CommandResponse* map_value;
-            struct CommandResponse* sets_value;
-            long sets_value_len;
-        } CommandResponse;
+            typedef struct {
+                int response_type;
+                long int_value;
+                double float_value;
+                bool bool_value;
+                char* string_value;
+                long string_value_len;
+                struct CommandResponse* array_value;
+                long array_value_len;
+                struct CommandResponse* map_key;
+                struct CommandResponse* map_value;
+                struct CommandResponse* sets_value;
+                long sets_value_len;
+            } CommandResponse;
 
-        typedef struct ConnectionResponse {
-            const void* conn_ptr;
-            const char* connection_error_message;
-        } ConnectionResponse;
+            typedef enum {
+                Null = 0,
+                Int = 1,
+                Float = 2,
+                Bool = 3,
+                String = 4,
+                Array = 5,
+                Map = 6,
+                Sets = 7
+            } ResponseType;
 
-        const ConnectionResponse* create_client(
-            const uint8_t* connection_request_bytes,
-            size_t connection_request_len,
-            uintptr_t success_callback,  // Always 0 for the sync client (NULL)
-            uintptr_t failure_callback   // Always 0 for the sync client (NULL)
+            typedef void (*SuccessCallback)(uintptr_t index_ptr, const CommandResponse* message);
+            typedef void (*FailureCallback)(uintptr_t index_ptr, const char* error_message, int error_type);
 
-        );
-        void free_command_response(CommandResponse* response);
-        void free_connection_response(ConnectionResponse* response);
+            typedef struct {
+                const void* conn_ptr;
+                const char* connection_error_message;
+            } ConnectionResponse;
 
-        CommandResponse* command(
-            const void *client_adapter_ptr,
-            size_t channel,
-            int command_type,
-            unsigned long arg_count,
-            const size_t *args,
-            const unsigned long *args_len
-        );
-        
-        // Function to close the client
-        void close_client(const void* client_adapter_ptr);
+            typedef struct {
+                const char* command_error_message;
+                int command_error_type;
+            } CommandError;
+
+            typedef struct {
+                CommandResponse* response;
+                CommandError* command_error;
+            } CommandResult;
+
+            typedef enum {
+                Async = 0,
+                Sync = 1
+            } ClientTypeEnum;
+
+            typedef struct {
+                SuccessCallback success_callback;
+                FailureCallback failure_callback;
+            } AsyncClient;
+
+            typedef struct {
+                int _type;  // Enum to differentiate between Async and Sync
+                union {
+                    struct {
+                        void (*success_callback)(uintptr_t, const void*);
+                        void (*failure_callback)(uintptr_t, const char*, int);
+                    } async_client;
+                };
+            } ClientType;
+
+            // Function declarations
+            const ConnectionResponse* create_client(
+                const uint8_t* connection_request_bytes,
+                size_t connection_request_len,
+                const ClientType* client_type  // Pass by pointer
+            );
+            void close_client(const void* client_adapter_ptr);
+            void free_connection_response(ConnectionResponse* connection_response_ptr);
+            char* get_response_type_string(int response_type);
+            void free_response_type_string(char* response_string);
+            void free_command_response(CommandResponse* command_response_ptr);
+            void free_error_message(char* error_message);
+            void free_command_result(CommandResult* command_result_ptr);
+            CommandResult* command(const void* client_adapter_ptr, uintptr_t channel, int command_type, unsigned long arg_count, const size_t *args, const unsigned long* args_len, const unsigned char* route_bytes, size_t route_bytes_len);
 
         """)
 
@@ -83,8 +128,7 @@ class GlideSync(CoreCommands):
         
     def _handle_response(self, message):
         if message == self.ffi.NULL:
-            print("Received NULL message.")
-            return None
+            raise RequestError("Received NULL message.")
 
         # Identify the type of the message
         message_type = self.ffi.typeof(message).cname
@@ -109,7 +153,8 @@ class GlideSync(CoreCommands):
                     string_value = self.ffi.buffer(msg.string_value, msg.string_value_len)[:]
                     return string_value
                 except Exception as e:
-                    print(f"Error decoding string value: {e}")
+                    # TODO: Add memory cleanup in case of failures
+                    raise RequestError(f"Error decoding string value: {e}")
             elif msg.response_type == 5:  # Array
                 array = []
                 for i in range(msg.array_value_len):
@@ -131,11 +176,11 @@ class GlideSync(CoreCommands):
                     result_set.add(self._handle_response(element))
                 return result_set
             else:
-                print(f"Unhandled response type = {msg.response_type}")
-                return None
+                raise RequestError(f"Unhandled response type = {msg.response_type}")
         else:
-            print(f"Unexpected message type: {message_type}")
-            return None    
+            raise RequestError(f"Unexpected message type = {message_type}")
+  
+        
 
     def _to_c_strings(self, args):
         """Convert Python arguments to C-compatible pointers and lengths."""
@@ -164,6 +209,23 @@ class GlideSync(CoreCommands):
             buffers,  # Ensure buffers stay alive
         )
     
+    def _handle_cmd_result(self, command_result):
+        try:
+            if command_result == self.ffi.NULL:
+                raise ClosingError("Internal error: Received NULL as a command result")
+            if command_result.command_error != self.ffi.NULL:
+                # Handle the error case
+                error = self.ffi.cast("CommandError*", command_result.command_error)
+                error_message = self.ffi.string(error.command_error_message).decode('utf-8')
+                error_class = get_request_error_class(error.command_error_type)
+                # Free the error message to avoid memory leaks
+                raise error_class(error_message)
+            else:
+                return self._handle_response(command_result.response)
+                # Free the error message to avoid memory leaks
+        finally:
+            self.lib.free_command_result(command_result)
+
     def _execute_command(
         self,
         request_type: RequestType.ValueType,
@@ -177,15 +239,23 @@ class GlideSync(CoreCommands):
         # Convert the arguments to C-compatible pointers
         c_args, c_lengths, buffers = self._to_c_strings(args)
         # Call the command function
-        return self._handle_response(self.lib.command(
+        route_bytes = b"" # TODO: add support for route 
+        route_ptr = self.ffi.new("unsigned char[]", route_bytes)
+
+
+        result = self.lib.command(
             client_adapter_ptr,  # Client pointer
             1,  # Example channel (adjust as needed)
             request_type,  # Request type (e.g., GET or SET)
             len(args),  # Number of arguments
             c_args,  # Array of argument pointers
-            c_lengths  # Array of argument lengths
-        ))
+            c_lengths,  # Array of argument lengths
+            route_ptr,
+            len(route_bytes)
+        )
+        return self._handle_cmd_result(result)
 
+    # TODO: remove function once StandaloneCommands and ClusterCommands are added
     def custom_command(self, command_args: List[TEncodable]) -> TResult:
         """
         Executes a single command, without checking inputs.
@@ -206,3 +276,25 @@ class GlideSync(CoreCommands):
 
     def close(self):
         self.lib.close_client(self.core_client)
+
+    # TODO: remove function once StandaloneCommands and ClusterCommands are added
+    def info(
+        self,
+        sections: Optional[List[InfoSection]] = None,
+    ) -> bytes:
+        """
+        Get information and statistics about the server.
+        See https://valkey.io/commands/info/ for details.
+
+        Args:
+            sections (Optional[List[InfoSection]]): A list of InfoSection values specifying which sections of
+            information to retrieve. When no parameter is provided, the default option is assumed.
+
+
+        Returns:
+            bytes: Returns bytes containing the information for the sections requested.
+        """
+        args: List[TEncodable] = (
+            [section.value for section in sections] if sections else []
+        )
+        return cast(bytes, self._execute_command(RequestType.Info, args))
