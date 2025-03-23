@@ -95,16 +95,28 @@ class TestAuthCommands:
         on immediate re-authentication, but will succeed with non-immediate re-auth
         """
         await glide_client.set("test_key", "test_value")
-        await config_set_new_password(glide_client, NEW_PASSWORD)
+        await config_set_new_password(management_client, NEW_PASSWORD)
         await kill_connections(management_client)
+        await trigger_disconnection(glide_client)
         result = await glide_client.update_connection_password(
             NEW_PASSWORD, immediate_auth=False
         )
         assert result == OK
-        with pytest.raises(RequestError):
+        with pytest.raises(RequestError) as exc_info:
             await glide_client.update_connection_password(
                 NEW_PASSWORD, immediate_auth=True
             )
+        
+        print(f"Raised error: {exc_info}")
+        # try: 
+        #     await glide_client.update_connection_password(
+        #         NEW_PASSWORD, immediate_auth=True
+        #     )
+        #     print("success after connection loss")
+        # except Exception as e:
+        #     print("failed after connection loss")
+        #     print(e)
+
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
@@ -285,11 +297,26 @@ class TestAuthCommands:
         )
 
         # ensure client disconnection
+        await trigger_disconnection(acl_glide_client)
 
-        with pytest.raises(RequestError):
+        with pytest.raises(RequestError) as exc_info:
             await acl_glide_client.update_connection_password(
                 NEW_PASSWORD, immediate_auth=True
             )
+        
+        print(f"Raised error: {exc_info}")
+
+        # try: 
+        #     await acl_glide_client.update_connection_password(
+        #         NEW_PASSWORD, immediate_auth=True
+        #     )
+        #     print("success after connection loss")
+        # except Exception as e:
+        #     print("failed after connection loss")
+        #     print (e)
+        #     raise e
+
+
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])

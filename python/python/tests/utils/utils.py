@@ -414,9 +414,7 @@ async def trigger_disconnection(client: TGlideClient):
     Ping the servers in order to trigger a disconnection in the client side after a credential change.
     """
     try: 
-        if isinstance(client, GlideClient):
-            await client.ping()
-        elif isinstance(client, GlideClusterClient):
-            await client.ping(route=AllNodes())
-    except ConnectionError:
+        await client.ping()    
+    except Exception as e:
+        print(e)
         pass
