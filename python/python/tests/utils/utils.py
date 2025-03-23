@@ -14,6 +14,7 @@ from glide.constants import (
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
 from glide.routes import AllNodes
 from packaging import version
+from glide import ConnectionError
 
 T = TypeVar("T")
 
@@ -416,8 +417,6 @@ async def trigger_disconnection(client: TGlideClient):
         if isinstance(client, GlideClient):
             await client.ping()
         elif isinstance(client, GlideClusterClient):
-            await client.ping(
-                ["CLIENT", "KILL", "TYPE", "normal"], route=AllNodes()
-            )
+            await client.ping(route=AllNodes())
     except ConnectionError:
         pass
