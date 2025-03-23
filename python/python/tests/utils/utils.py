@@ -407,3 +407,17 @@ async def delete_acl_username_and_password(client: TGlideClient, username: str):
         return await client.custom_command(
             ["ACL", "DELUSER", username], route=AllNodes()
         )
+
+async def trigger_disconnection(client: TGlideClient):
+    """
+    Ping the servers in order to trigger a disconnection in the client side after a credential change.
+    """
+    try: 
+        if isinstance(client, GlideClient):
+            await client.ping()
+        elif isinstance(client, GlideClusterClient):
+            await client.ping(
+                ["CLIENT", "KILL", "TYPE", "normal"], route=AllNodes()
+            )
+    except ConnectionError:
+        pass

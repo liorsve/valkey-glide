@@ -18,6 +18,7 @@ from tests.conftest import (
 from tests.utils.utils import (
     delete_acl_username_and_password,
     set_new_acl_username_with_password,
+    trigger_disconnection
 )
 
 
@@ -69,12 +70,12 @@ class TestAuthCommands:
         # Add a short delay to allow the server to apply the new password
         # without this delay, command may or may not time out while the client reconnect
         # ending up with a flaky test
-        await asyncio.sleep(2)
+        trigger_disconnection(glide_client)
         # Verify that the client is able to reconnect with the new password,
         value = await glide_client.get("test_key")
         assert value == b"test_value"
         await kill_connections(management_client)
-        await asyncio.sleep(2)
+        trigger_disconnection(glide_client)
         # Verify that the client is able to immediateAuth with the new password after client is killed
         result = await glide_client.update_connection_password(
             NEW_PASSWORD, immediate_auth=True
@@ -219,8 +220,8 @@ class TestAuthCommands:
         )
 
         # Sleep to allow enough time for reconnecting
-        await asyncio.sleep(2)
-
+        await trigger_disconnection(acl_glide_client)
+    
         # The client should now reconnect with the new password automatically
         # Verify that the client is still able to perform operations
         value = await acl_glide_client.get("test_key")
