@@ -18,8 +18,8 @@ import redis.asyncio as redispy  # type: ignore
 from glide import (
     GlideClientConfiguration,
     GlideClusterClientConfiguration,
-    GlideAsync,
     GlideClient,
+    TGlideClient,
     GlideClientConfiguration,
     GlideClusterClient,
     GlideClusterClientConfiguration,
@@ -325,7 +325,7 @@ async def main(
         )
     if clients_to_run == "all" or clients_to_run == "glide_ffi":
         # Glide Socket
-        client_class = GlideAsync
+        client_class = TGlideClient
         config = GlideClusterClientConfiguration(
             [NodeAddress(host=host, port=port)], use_tls=use_tls
         ) if is_cluster else GlideClientConfiguration(

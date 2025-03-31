@@ -941,7 +941,6 @@ pub unsafe extern "C" fn command(
     let mut cmd = command_type
         .get_command()
         .expect("Couldn't fetch command type");
-
     for command_arg in arg_vec {
         cmd.arg(command_arg);
     }
