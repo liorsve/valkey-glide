@@ -10,9 +10,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Union, cast
 
 import pytest
-from glide.glide_client_sync_uds import UDSGlideClientSync
 from glide import ClosingError, RequestError, Script
-from glide.async_commands.bitmap import (
+from glide.commands.bitmap import (
     BitFieldGet,
     BitFieldIncrBy,
     BitFieldOverflow,
@@ -26,8 +25,8 @@ from glide.async_commands.bitmap import (
     SignedEncoding,
     UnsignedEncoding,
 )
-from glide.async_commands.command_args import Limit, ListDirection, OrderBy
-from glide.async_commands.core import (
+from glide.commands.command_args import Limit, ListDirection, OrderBy
+from glide.commands.core_options import (
     ConditionalChange,
     ExpireOptions,
     ExpiryGetEx,
@@ -36,20 +35,19 @@ from glide.async_commands.core import (
     ExpiryTypeGetEx,
     FlushMode,
     FunctionRestorePolicy,
-    InfBound,
     InfoSection,
     InsertPosition,
     OnlyIfEqual,
     UpdateOptions,
 )
-from glide.glide_async_client import GlideAsync
-from glide.async_commands.sorted_set import (
+from glide.commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
     GeoSearchByRadius,
     GeoSearchCount,
     GeospatialData,
     GeoUnit,
+    InfBound,
     LexBoundary,
     RangeByIndex,
     RangeByLex,
@@ -57,7 +55,7 @@ from glide.async_commands.sorted_set import (
     ScoreBoundary,
     ScoreFilter,
 )
-from glide.async_commands.stream import (
+from glide.commands.stream import (
     ExclusiveIdBound,
     IdBound,
     MaxId,
@@ -71,17 +69,8 @@ from glide.async_commands.stream import (
     TrimByMaxLen,
     TrimByMinId,
 )
-from glide.async_commands.transaction import ClusterTransaction, Transaction
-from glide.config import (
-    GlideClientConfiguration,
-    GlideClusterClientConfiguration,
-    ProtocolVersion,
-    ServerCredentials,
-    NodeAddress,
-    BackoffStrategy,
-    ProtocolVersion,
-    ServerCredentials
-)
+from glide.commands.transaction import ClusterTransaction, Transaction
+from glide.config import BackoffStrategy, ProtocolVersion, ServerCredentials
 from glide.constants import OK, TEncodable, TFunctionStatsSingleNodeResponse, TResult
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
 from glide.routes import (
@@ -114,6 +103,7 @@ from tests.utils.utils import (
 )
 
 
+@pytest.mark.asyncio
 class TestGlideClients:
     @pytest.mark.skip_if_version_below("7.2.0")
     @pytest.mark.parametrize("cluster_mode", [True, False])
@@ -153,12 +143,11 @@ class TestGlideClients:
         assert await glide_client.get(key.encode()) == value.encode()
 
     @pytest.mark.parametrize("value_size", [100, 2**16])
-    # @pytest.mark.parametrize("cluster_mode", [True, False])
-    # @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     async def test_client_handle_concurrent_workload_without_dropping_or_changing_values(
-        self, value_size, glide_client: TGlideClient
+        self, glide_client: TGlideClient, value_size
     ):
-        glide_client = GlideAsync()
         num_of_concurrent_tasks = 100
         running_tasks = set()
 
@@ -321,7 +310,7 @@ class TestGlideClients:
         )
         assert isinstance(client, (GlideClient, GlideClusterClient))
 
-        assert await client.set("key", "value") == "OK"
+        assert await client.set("key", "value") == OK
 
         await client.close()
 
@@ -377,7 +366,7 @@ class TestGlideClients:
             )
 
             # Ensure the second client can connect and perform a simple operation
-            assert await timeout_client.set("key", "value") == "OK"
+            assert await timeout_client.set("key", "value") == OK
             await timeout_client.close()
 
         # Run tests
@@ -391,10 +380,9 @@ class TestGlideClients:
 @pytest.mark.asyncio
 class TestCommands:
     @pytest.mark.smoke_test
-    # @pytest.mark.parametrize("cluster_mode", [True, False])
-    # @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    async def test_socket_set_get(self):
-        glide_client = GlideAsync()
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
+    async def test_socket_set_get(self, glide_client: TGlideClient):
         key = get_random_string(10)
         value = datetime.now(timezone.utc).strftime("%m/%d/%Y, %H:%M:%S")
         assert await glide_client.set(key, value) == OK
@@ -663,7 +651,7 @@ class TestCommands:
         value = get_random_string(10)
         non_existing_key = get_random_string(10)
         list_key = get_random_string(10)
-        assert await glide_client.set(key, value) == "OK"
+        assert await glide_client.set(key, value) == OK
 
         # Retrieve and delete existing key
         assert await glide_client.getdel(key) == value.encode()
@@ -2127,7 +2115,7 @@ class TestCommands:
             await glide_client.sintercard([])
 
         # Non-set key
-        assert await glide_client.set(string_key, "value") == "OK"
+        assert await glide_client.set(string_key, "value") == OK
         with pytest.raises(RequestError):
             await glide_client.sintercard([string_key])
 
@@ -8582,7 +8570,7 @@ class TestCommands:
                 try:
                     result = await glide_client.function_kill()
                     #  we expect to get success
-                    assert result == "OK"
+                    assert result == OK
                     break
                 except RequestError:
                     # a RequestError may occur if the function is not yet running
@@ -9501,7 +9489,7 @@ class TestCommands:
         assert result is not None
         assert isinstance(result, list)
         assert len(result) == 2
-        assert result[0] == "OK"
+        assert result[0] == OK
         assert result[1] == b"transaction_value"
 
         # UNWATCH returns OK when there no watched keys
@@ -10358,7 +10346,7 @@ async def script_kill_tests(
                 else:
                     result = await glide_client.script_kill()
                 #  we expect to get success
-                assert result == "OK"
+                assert result == OK
                 break
             except RequestError:
                 # a RequestError may occur if the script is not yet running
@@ -10396,13 +10384,11 @@ class TestScripts:
 
         script = Script("return redis.call('SET', KEYS[1], ARGV[1])")
         assert (
-            await glide_client.invoke_script(script, keys=[key1], args=["value1"])
-            == "OK"
+            await glide_client.invoke_script(script, keys=[key1], args=["value1"]) == OK
         )
         # Reuse the same script with different parameters.
         assert (
-            await glide_client.invoke_script(script, keys=[key2], args=["value2"])
-            == "OK"
+            await glide_client.invoke_script(script, keys=[key2], args=["value2"]) == OK
         )
         script = Script("return redis.call('GET', KEYS[1])")
         assert (
@@ -10426,14 +10412,14 @@ class TestScripts:
             await glide_client.invoke_script(
                 script, keys=[key1], args=[bytes("value1", "utf-8")]
             )
-            == "OK"
+            == OK
         )
         # Reuse the same script with different parameters.
         assert (
             await glide_client.invoke_script(
                 script, keys=[key2], args=[bytes("value2", "utf-8")]
             )
-            == "OK"
+            == OK
         )
         script = Script(bytes("return redis.call('GET', KEYS[1])", "utf-8"))
         assert (
