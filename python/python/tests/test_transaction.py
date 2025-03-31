@@ -6,7 +6,7 @@ from typing import List, Optional, Union, cast
 
 import pytest
 from glide import RequestError
-from glide.async_commands.bitmap import (
+from glide.commands.bitmap import (
     BitFieldGet,
     BitFieldSet,
     BitmapIndexType,
@@ -17,15 +17,15 @@ from glide.async_commands.bitmap import (
     SignedEncoding,
     UnsignedEncoding,
 )
-from glide.async_commands.command_args import Limit, ListDirection, OrderBy
-from glide.async_commands.core import (
+from glide.commands.command_args import Limit, ListDirection, OrderBy
+from glide.commands.core_options import (
     ExpiryGetEx,
     ExpiryTypeGetEx,
     FlushMode,
     FunctionRestorePolicy,
     InsertPosition,
 )
-from glide.async_commands.sorted_set import (
+from glide.commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
     GeoSearchByRadius,
@@ -37,7 +37,7 @@ from glide.async_commands.sorted_set import (
     ScoreBoundary,
     ScoreFilter,
 )
-from glide.async_commands.stream import (
+from glide.commands.stream import (
     IdBound,
     MaxId,
     MinId,
@@ -47,7 +47,7 @@ from glide.async_commands.stream import (
     StreamReadGroupOptions,
     TrimByMinId,
 )
-from glide.async_commands.transaction import (
+from glide.commands.transaction import (
     BaseTransaction,
     ClusterTransaction,
     Transaction,

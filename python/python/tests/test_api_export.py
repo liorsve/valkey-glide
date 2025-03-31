@@ -39,17 +39,17 @@ excluded_symbol_list = [
     # python/python/glide/protobuf_codec.py
     "ProtobufCodec",  # ClassDef
     "PartialMessageException",  # Exception
-    # python/python/glide/async_commands/transaction.py
+    # python/python/glide/commands/async_commands/transaction.py
     "BaseTransaction",  # ClassDef
-    # python/python/glide/async_commands/standalone_commands.py
+    # python/python/glide/commands/async_commands/standalone_commands.py
     "StandaloneCommands",  # ClassDef
-    # python/python/glide/async_commands/cluster_commands.py
+    # python/python/glide/commands/async_commands/cluster_commands.py
     "ClusterCommands",  # ClassDef
-    # python/python/glide/async_commands/core.py
+    # python/python/glide/commands/async_commands/core.py
     "CoreCommands",  # ClassDef
-    # python/python/glide/async_commands/sorted_set.py
+    # python/python/glide/commands/async_commands/sorted_set.py
     "separate_keys",  # FunctionDef
-    # python/python/glide/async_commands/server_modules/ft_options/ft_constants.py
+    # python/python/glide/commands/async_commands/server_modules/ft_options/ft_constants.py
     "CommandNames",  # ClassDef
     "FtCreateKeywords",  # ClassDef
     "FtSearchKeywords",  # ClassDef

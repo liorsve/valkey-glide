@@ -17,7 +17,11 @@ from glide.config import (
 )
 from glide.exceptions import ClosingError
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
-from glide.glide_sync_client import GlideSync
+from glide.sync import (
+    TGlideClient as TSyncGlideClient,
+    GlideClient as SyncGlideClient,
+    GlideClusterClient as SyncGlideClusterClient
+)
 from glide.logger import Level as logLevel
 from glide.logger import Logger
 from glide.routes import AllNodes
@@ -235,7 +239,7 @@ def glide_sync_client(
     request,
     cluster_mode: bool,
     protocol: ProtocolVersion,
-) -> Generator[GlideSync, None, None]:
+) -> Generator[TSyncGlideClient, None, None]:
     "Get async socket client for tests"
     client = create_sync_client(request, cluster_mode, protocol=protocol)
     yield client
@@ -445,7 +449,7 @@ def create_sync_client(
     read_from: ReadFrom = ReadFrom.PRIMARY,
     client_az: Optional[str] = None,
     valkey_cluster: Optional[ValkeyCluster] = None,
-) -> GlideSync:
+) -> TSyncGlideClient:
     # Create sync client
     config = create_client_config(
         request, 
@@ -462,7 +466,7 @@ def create_sync_client(
         read_from, 
         client_az, 
         valkey_cluster)
-    return GlideSync(config)
+    return TSyncGlideClient.create(config)
 
 NEW_PASSWORD = "new_secure_password"
 WRONG_PASSWORD = "wrong_password"
@@ -480,7 +484,7 @@ async def auth_client(client: TGlideClient, password: str, username: str = "defa
         )
 
 
-def sync_auth_client(client: TGlideClient, password):
+def sync_auth_client(client: TSyncGlideClient, password):
     """
     Authenticates the given TGlideClient server connected.
     """
@@ -490,7 +494,7 @@ def sync_auth_client(client: TGlideClient, password):
         client.custom_command(["AUTH", password], route=AllNodes())
 
 
-def sync_config_set_new_password(client: TGlideClient, password):
+def sync_config_set_new_password(client: TSyncGlideClient, password):
     """
     Sets a new password for the given TGlideClient server connected.
     This function updates the server to require a new password.
@@ -511,7 +515,7 @@ async def config_set_new_password(client: TGlideClient, password):
         await client.config_set({"requirepass": password}, route=AllNodes())
 
 
-def sync_kill_connections(client: TGlideClient):
+def sync_kill_connections(client: TSyncGlideClient):
     """
     Kills all connections to the given TGlideClient server connected.
     """

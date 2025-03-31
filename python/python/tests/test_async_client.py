@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional, Union, cast
 import pytest
 from glide.glide_client_sync_uds import UDSGlideClientSync
 from glide import ClosingError, RequestError, Script
-from glide.async_commands.bitmap import (
+from glide.commands.bitmap import (
     BitFieldGet,
     BitFieldIncrBy,
     BitFieldOverflow,
@@ -26,8 +26,8 @@ from glide.async_commands.bitmap import (
     SignedEncoding,
     UnsignedEncoding,
 )
-from glide.async_commands.command_args import Limit, ListDirection, OrderBy
-from glide.async_commands.core import (
+from glide.commands.command_args import Limit, ListDirection, OrderBy
+from glide.commands.core_options import (
     ConditionalChange,
     ExpireOptions,
     ExpiryGetEx,
@@ -42,8 +42,7 @@ from glide.async_commands.core import (
     OnlyIfEqual,
     UpdateOptions,
 )
-from glide.glide_async_client import GlideAsync
-from glide.async_commands.sorted_set import (
+from glide.commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
     GeoSearchByRadius,
@@ -57,7 +56,7 @@ from glide.async_commands.sorted_set import (
     ScoreBoundary,
     ScoreFilter,
 )
-from glide.async_commands.stream import (
+from glide.commands.stream import (
     ExclusiveIdBound,
     IdBound,
     MaxId,
@@ -71,7 +70,7 @@ from glide.async_commands.stream import (
     TrimByMaxLen,
     TrimByMinId,
 )
-from glide.async_commands.transaction import ClusterTransaction, Transaction
+from glide.commands.transaction import ClusterTransaction, Transaction
 from glide.config import (
     GlideClientConfiguration,
     GlideClusterClientConfiguration,

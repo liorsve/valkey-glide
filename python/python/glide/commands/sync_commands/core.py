@@ -16,7 +16,7 @@ from typing import (
     get_args,
 )
 
-from glide.command_options.bitmap import (
+from glide.commands.bitmap import (
     BitFieldGet,
     BitFieldSubCommands,
     BitmapIndexType,
@@ -25,8 +25,8 @@ from glide.command_options.bitmap import (
     _create_bitfield_args,
     _create_bitfield_read_only_args,
 )
-from glide.command_options.command_args import Limit, ListDirection, ObjectType, OrderBy
-from glide.command_options.sorted_set import (
+from glide.commands.command_args import Limit, ListDirection, ObjectType, OrderBy
+from glide.commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
     GeoSearchByRadius,
@@ -44,7 +44,7 @@ from glide.command_options.sorted_set import (
     _create_zinter_zunion_cmd_args,
     _create_zrange_args,
 )
-from glide.command_options.stream import (
+from glide.commands.stream import (
     StreamAddOptions,
     StreamClaimOptions,
     StreamGroupOptions,
@@ -67,7 +67,7 @@ from glide.routes import Route
 
 from ...glide import ClusterScanCursor
 
-from glide.command_options.core_options import (
+from glide.commands.core_options import (
     ConditionalChange,
     ExpireOptions,
     ExpiryGetEx,

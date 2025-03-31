@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple, Union, cast
 
 import pytest
 from glide import ClosingError, RequestError, Script
-from glide.async_commands.bitmap import (
+from glide.commands.bitmap import (
     BitFieldGet,
     BitFieldIncrBy,
     BitFieldOverflow,
@@ -27,8 +27,8 @@ from glide.async_commands.bitmap import (
     SignedEncoding,
     UnsignedEncoding,
 )
-from glide.async_commands.command_args import Limit, ListDirection, OrderBy
-from glide.async_commands.core import (
+from glide.commands.command_args import Limit, ListDirection, OrderBy
+from glide.commands.core_options import (
     ConditionalChange,
     ExpireOptions,
     ExpiryGetEx,
@@ -42,7 +42,7 @@ from glide.async_commands.core import (
     InsertPosition,
     UpdateOptions,
 )
-from glide.async_commands.sorted_set import (
+from glide.commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
     GeoSearchByRadius,
@@ -57,7 +57,7 @@ from glide.async_commands.sorted_set import (
     ScoreBoundary,
     ScoreFilter,
 )
-from glide.async_commands.stream import (
+from glide.commands.stream import (
     ExclusiveIdBound,
     IdBound,
     MaxId,
@@ -71,7 +71,7 @@ from glide.async_commands.stream import (
     TrimByMaxLen,
     TrimByMinId,
 )
-from glide.async_commands.transaction import ClusterTransaction, Transaction
+from glide.commands.transaction import ClusterTransaction, Transaction
 from glide.config import (
     GlideClientConfiguration,
     GlideClusterClientConfiguration,
@@ -91,7 +91,7 @@ from glide.routes import (
     SlotKeyRoute,
     SlotType,
 )
-from glide.glide_sync_client import GlideSync
+from glide.sync import TGlideClient
 from tests.conftest import create_sync_client
 from tests.utils.utils import (
     check_function_list_response,
@@ -114,7 +114,7 @@ from tests.utils.utils import (
 class TestGlideClients:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_register_client_name_and_version(self, glide_sync_client: GlideSync):
+    def test_sync_register_client_name_and_version(self, glide_sync_client: TGlideClient):
         min_version = "7.2.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             # TODO: change it to pytest fixture after we'll implement a sync client
@@ -142,7 +142,7 @@ class TestGlideClients:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_send_and_receive_non_ascii_unicode(self, glide_sync_client: GlideSync):
+    def test_sync_send_and_receive_non_ascii_unicode(self, glide_sync_client: TGlideClient):
         key = "foo"
         value = "שלום hello 汉字"
         assert value == "שלום hello 汉字"
@@ -156,7 +156,7 @@ class TestGlideClients:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_client_handle_concurrent_workload_without_dropping_or_changing_values(
-        self, glide_sync_client: GlideSync, value_size
+        self, glide_sync_client: TGlideClient, value_size
     ):
 
         def exec_command(i):
@@ -182,7 +182,7 @@ class TestGlideClients:
     @pytest.mark.parametrize("cluster_mode", [False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_can_connect_with_auth_requirepass(
-        self, glide_sync_client: GlideSync, request
+        self, glide_sync_client: TGlideClient, request
     ):
         is_cluster = isinstance(glide_sync_client, GlideClusterClient)
         password = "TEST_AUTH"
@@ -292,7 +292,7 @@ class TestGlideClients:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_closed_client_raises_error(self, glide_sync_client: GlideSync):
+    def test_sync_closed_client_raises_error(self, glide_sync_client: TGlideClient):
         glide_sync_client.close()
         with pytest.raises(ClosingError) as e:
             glide_sync_client.set("foo", "bar")
@@ -300,7 +300,7 @@ class TestGlideClients:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_statistics(self, glide_sync_client: GlideSync):
+    def test_sync_statistics(self, glide_sync_client: TGlideClient):
         stats = glide_sync_client.get_statistics()
         assert isinstance(stats, dict)
         assert "total_connections" in stats
@@ -312,7 +312,7 @@ class TestCommands:
     @pytest.mark.smoke_test
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_socket_set_get(self, glide_sync_client: GlideSync):
+    def test_sync_socket_set_get(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         value = datetime.now(timezone.utc).strftime("%m/%d/%Y, %H:%M:%S")
         assert glide_sync_client.set(key, value) == OK
@@ -320,14 +320,14 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP3])
-    def test_sync_use_resp3_protocol(self, glide_sync_client: GlideSync):
+    def test_sync_use_resp3_protocol(self, glide_sync_client: TGlideClient):
         result = cast(Dict[bytes, bytes], glide_sync_client.custom_command(["HELLO"]))
 
         assert int(result[b"proto"]) == 3
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2])
-    def test_sync_allow_opt_in_to_resp2_protocol(self, glide_sync_client: GlideSync):
+    def test_sync_allow_opt_in_to_resp2_protocol(self, glide_sync_client: TGlideClient):
         result = cast(Dict[bytes, bytes], glide_sync_client.custom_command(["HELLO"]))
 
         assert int(result[b"proto"]) == 2
@@ -368,7 +368,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_conditional_set(self, glide_sync_client: GlideSync):
+    def test_sync_conditional_set(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         value = get_random_string(10)
         res = glide_sync_client.set(
@@ -388,7 +388,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_set_return_old_value(self, glide_sync_client: GlideSync):
+    def test_sync_set_return_old_value(self, glide_sync_client: TGlideClient):
         min_version = "6.2.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             # TODO: change it to pytest fixture after we'll implement a sync client
@@ -405,14 +405,14 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_custom_command_single_arg(self, glide_sync_client: GlideSync):
+    def test_sync_custom_command_single_arg(self, glide_sync_client: TGlideClient):
         # Test single arg command
         res = glide_sync_client.custom_command(["PING"])
         assert res == b"PONG"
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_custom_command_multi_arg(self, glide_sync_client: GlideSync):
+    def test_sync_custom_command_multi_arg(self, glide_sync_client: TGlideClient):
         # Test multi args command
         client_list = glide_sync_client.custom_command(
             ["CLIENT", "LIST", "TYPE", "NORMAL"]
@@ -426,7 +426,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_custom_command_multi_arg_in_TEncodable(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         # Test multi args command
         client_list = glide_sync_client.custom_command(
@@ -441,7 +441,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_custom_command_lower_and_upper_case(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         # Test multi args command
         client_list = glide_sync_client.custom_command(
@@ -455,7 +455,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_request_error_raises_exception(self, glide_sync_client: GlideSync):
+    def test_sync_request_error_raises_exception(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         value = get_random_string(10)
         glide_sync_client.set(key, value)
@@ -465,7 +465,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_info_server_replication(self, glide_sync_client: GlideSync):
+    def test_sync_info_server_replication(self, glide_sync_client: TGlideClient):
         info_res = get_first_result(glide_sync_client.info([InfoSection.SERVER]))
         info = info_res.decode()
         assert "# Server" in info
@@ -477,7 +477,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_info_default(self, glide_sync_client: GlideSync):
+    def test_sync_info_default(self, glide_sync_client: TGlideClient):
         cluster_mode = isinstance(glide_sync_client, GlideClusterClient)
         info_result = glide_sync_client.info()
         if cluster_mode:
@@ -541,7 +541,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_delete(self, glide_sync_client: GlideSync):
+    def test_sync_delete(self, glide_sync_client: TGlideClient):
         keys = [get_random_string(10), get_random_string(10), get_random_string(10)]
         value = get_random_string(10)
         value_encoded = value.encode()
@@ -555,7 +555,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_getdel(self, glide_sync_client: GlideSync):
+    def test_sync_getdel(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         value = get_random_string(10)
         non_existing_key = get_random_string(10)
@@ -575,7 +575,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_getrange(self, glide_sync_client: GlideSync):
+    def test_sync_getrange(self, glide_sync_client: TGlideClient):
         key = get_random_string(16)
         value = get_random_string(10)
         value_encoded = value.encode()
@@ -606,7 +606,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_config_reset_stat(self, glide_sync_client: GlideSync):
+    def test_sync_config_reset_stat(self, glide_sync_client: TGlideClient):
         # we execute set and info so the commandstats will show `cmdstat_set::calls` greater than 1
         # after the configResetStat call we initiate an info command and the the commandstats won't contain `cmdstat_set`.
         glide_sync_client.set("foo", "bar")
@@ -622,7 +622,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_config_rewrite(self, glide_sync_client: GlideSync):
+    def test_sync_config_rewrite(self, glide_sync_client: TGlideClient):
         info_server = parse_info_response(
             get_first_result(glide_sync_client.info([InfoSection.SERVER]))
         )
@@ -636,14 +636,14 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_client_id(self, glide_sync_client: GlideSync):
+    def test_sync_client_id(self, glide_sync_client: TGlideClient):
         client_id = glide_sync_client.client_id()
         assert type(client_id) is int
         assert client_id > 0
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_incr_commands_existing_key(self, glide_sync_client: GlideSync):
+    def test_sync_incr_commands_existing_key(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "10") == OK
         assert glide_sync_client.incr(key) == 11
@@ -655,7 +655,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_incr_commands_non_existing_key(self, glide_sync_client: GlideSync):
+    def test_sync_incr_commands_non_existing_key(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         key2 = get_random_string(10)
         key3 = get_random_string(10)
@@ -674,7 +674,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_incr_commands_with_str_value(self, glide_sync_client: GlideSync):
+    def test_sync_incr_commands_with_str_value(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "foo") == OK
         with pytest.raises(RequestError) as e:
@@ -693,7 +693,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_client_getname(self, glide_sync_client: GlideSync):
+    def test_sync_client_getname(self, glide_sync_client: TGlideClient):
         assert glide_sync_client.client_getname() is None
         assert (
             glide_sync_client.custom_command(["CLIENT", "SETNAME", "GlideConnection"])
@@ -703,7 +703,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_mset_mget(self, glide_sync_client: GlideSync):
+    def test_sync_mset_mget(self, glide_sync_client: TGlideClient):
         keys = [get_random_string(10), get_random_string(10), get_random_string(10)]
         non_existing_key = get_random_string(10)
         key_value_pairs = {key: value for key, value in zip(keys, keys)}
@@ -718,7 +718,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_touch(self, glide_sync_client: GlideSync):
+    def test_sync_touch(self, glide_sync_client: TGlideClient):
         keys = [get_random_string(10), get_random_string(10)]
         key_value_pairs = {key: value for key, value in zip(keys, keys)}
 
@@ -730,7 +730,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_msetnx(self, glide_sync_client: GlideSync):
+    def test_sync_msetnx(self, glide_sync_client: TGlideClient):
         key1 = f"{{key}}-1{get_random_string(5)}"
         key2 = f"{{key}}-2{get_random_string(5)}"
         key3 = f"{{key}}-3{get_random_string(5)}"
@@ -753,13 +753,13 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_ping(self, glide_sync_client: GlideSync):
+    def test_sync_ping(self, glide_sync_client: TGlideClient):
         assert glide_sync_client.ping() == b"PONG"
         assert glide_sync_client.ping("HELLO") == b"HELLO"
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_config_get_set(self, glide_sync_client: GlideSync):
+    def test_sync_config_get_set(self, glide_sync_client: TGlideClient):
         previous_timeout = glide_sync_client.config_get(["timeout"])
         assert glide_sync_client.config_set({"timeout": "1000"}) == OK
         assert glide_sync_client.config_get(["timeout"]) == {b"timeout": b"1000"}
@@ -776,7 +776,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_decr_decrby_existing_key(self, glide_sync_client: GlideSync):
+    def test_sync_decr_decrby_existing_key(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "10") == OK
         assert glide_sync_client.decr(key) == 9
@@ -786,7 +786,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_decr_decrby_non_existing_key(self, glide_sync_client: GlideSync):
+    def test_sync_decr_decrby_non_existing_key(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         key2 = get_random_string(10)
 
@@ -800,7 +800,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_decr_with_str_value(self, glide_sync_client: GlideSync):
+    def test_sync_decr_with_str_value(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "foo") == OK
         with pytest.raises(RequestError) as e:
@@ -815,7 +815,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_setrange(self, glide_sync_client: GlideSync):
+    def test_sync_setrange(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
 
@@ -837,7 +837,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hset_hget_hgetall(self, glide_sync_client: GlideSync):
+    def test_sync_hset_hget_hgetall(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         field = get_random_string(5)
         field2 = get_random_string(5)
@@ -858,7 +858,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hdel(self, glide_sync_client: GlideSync):
+    def test_sync_hdel(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         field = get_random_string(5)
         field2 = get_random_string(5)
@@ -872,7 +872,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hsetnx(self, glide_sync_client: GlideSync):
+    def test_sync_hsetnx(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         field = get_random_string(5)
 
@@ -886,7 +886,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hmget(self, glide_sync_client: GlideSync):
+    def test_sync_hmget(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         field = get_random_string(5)
         field2 = get_random_string(5)
@@ -905,7 +905,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hset_without_data(self, glide_sync_client: GlideSync):
+    def test_sync_hset_without_data(self, glide_sync_client: TGlideClient):
         with pytest.raises(RequestError) as e:
             glide_sync_client.hset("key", {})
 
@@ -913,7 +913,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hincrby_hincrbyfloat(self, glide_sync_client: GlideSync):
+    def test_sync_hincrby_hincrbyfloat(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         field = get_random_string(5)
         field_value_map = {field: "10"}
@@ -925,7 +925,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hincrby_non_existing_key_field(self, glide_sync_client: GlideSync):
+    def test_sync_hincrby_non_existing_key_field(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         key2 = get_random_string(10)
         field = get_random_string(5)
@@ -939,7 +939,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hincrby_invalid_value(self, glide_sync_client: GlideSync):
+    def test_sync_hincrby_invalid_value(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         field = get_random_string(5)
         field_value_map = {field: "value"}
@@ -956,7 +956,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hexist(self, glide_sync_client: GlideSync):
+    def test_sync_hexist(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         field = get_random_string(5)
         field2 = get_random_string(5)
@@ -969,7 +969,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hlen(self, glide_sync_client: GlideSync):
+    def test_sync_hlen(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         key2 = get_random_string(5)
         field = get_random_string(5)
@@ -988,7 +988,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hvals(self, glide_sync_client: GlideSync):
+    def test_sync_hvals(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         key2 = get_random_string(5)
         field = get_random_string(5)
@@ -1007,7 +1007,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hkeys(self, glide_sync_client: GlideSync):
+    def test_sync_hkeys(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         key2 = get_random_string(5)
         field = get_random_string(5)
@@ -1029,7 +1029,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hrandfield(self, glide_sync_client: GlideSync):
+    def test_sync_hrandfield(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         key2 = get_random_string(5)
         field = get_random_string(5)
@@ -1049,7 +1049,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hrandfield_count(self, glide_sync_client: GlideSync):
+    def test_sync_hrandfield_count(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         key2 = get_random_string(5)
         field = get_random_string(5)
@@ -1077,7 +1077,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hrandfield_withvalues(self, glide_sync_client: GlideSync):
+    def test_sync_hrandfield_withvalues(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         key2 = get_random_string(5)
         field = get_random_string(5)
@@ -1112,7 +1112,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_hstrlen(self, glide_sync_client: GlideSync):
+    def test_sync_hstrlen(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
 
         assert glide_sync_client.hstrlen(key, "field") == 0
@@ -1127,7 +1127,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_lpush_lpop_lrange(self, glide_sync_client: GlideSync):
+    def test_sync_lpush_lpop_lrange(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         value_list: List[TEncodable] = ["value4", "value3", "value2", "value1"]
 
@@ -1145,7 +1145,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_lpush_lpop_lrange_wrong_type_raise_error(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "foo") == OK
@@ -1164,7 +1164,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_lpushx(self, glide_sync_client: GlideSync):
+    def test_sync_lpushx(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
 
@@ -1187,7 +1187,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_blpop(self, glide_sync_client: GlideSync):
+    def test_sync_blpop(self, glide_sync_client: TGlideClient):
         key1 = f"{{test}}-1-f{get_random_string(10)}"
         key2 = f"{{test}}-2-f{get_random_string(10)}"
         value1 = "value1"
@@ -1216,7 +1216,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_lmpop(self, glide_sync_client: GlideSync):
+    def test_sync_lmpop(self, glide_sync_client: TGlideClient):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -1255,7 +1255,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_blmpop(self, glide_sync_client: GlideSync):
+    def test_sync_blmpop(self, glide_sync_client: TGlideClient):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -1303,7 +1303,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_lindex(self, glide_sync_client: GlideSync):
+    def test_sync_lindex(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         value_list = [get_random_string(5), get_random_string(5)]
         assert glide_sync_client.lpush(key, value_list) == 2
@@ -1314,7 +1314,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_rpush_rpop(self, glide_sync_client: GlideSync):
+    def test_sync_rpush_rpop(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         value_list: List[TEncodable] = ["value4", "value3", "value2", "value1"]
 
@@ -1328,7 +1328,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_rpush_rpop_wrong_type_raise_error(self, glide_sync_client: GlideSync):
+    def test_sync_rpush_rpop_wrong_type_raise_error(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "foo") == OK
 
@@ -1342,7 +1342,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_rpushx(self, glide_sync_client: GlideSync):
+    def test_sync_rpushx(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
 
@@ -1365,7 +1365,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_brpop(self, glide_sync_client: GlideSync):
+    def test_sync_brpop(self, glide_sync_client: TGlideClient):
         key1 = f"{{test}}-1-f{get_random_string(10)}"
         key2 = f"{{test}}-2-f{get_random_string(10)}"
         value1 = "value1"
@@ -1395,7 +1395,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_linsert(self, glide_sync_client: GlideSync):
+    def test_sync_linsert(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
 
@@ -1428,7 +1428,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_lmove(self, glide_sync_client: GlideSync):
+    def test_sync_lmove(self, glide_sync_client: TGlideClient):
         key1 = "{SameSlot}" + get_random_string(10)
         key2 = "{SameSlot}" + get_random_string(10)
 
@@ -1511,7 +1511,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_blmove(self, glide_sync_client: GlideSync):
+    def test_sync_blmove(self, glide_sync_client: TGlideClient):
         key1 = "{SameSlot}" + get_random_string(10)
         key2 = "{SameSlot}" + get_random_string(10)
 
@@ -1615,7 +1615,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_lset(self, glide_sync_client: GlideSync):
+    def test_sync_lset(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         element = get_random_string(5)
         values = [get_random_string(5) for _ in range(4)]
@@ -1649,7 +1649,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_sadd_srem_smembers_scard(self, glide_sync_client: GlideSync):
+    def test_sync_sadd_srem_smembers_scard(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         value_list: List[TEncodable] = ["member1", "member2", "member3", "member4"]
 
@@ -1666,7 +1666,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_sadd_srem_smembers_scard_non_existing_key(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         non_existing_key = get_random_string(10)
         assert glide_sync_client.srem(non_existing_key, ["member"]) == 0
@@ -1676,7 +1676,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_sadd_srem_smembers_scard_wrong_type_raise_error(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "foo") == OK
@@ -1699,7 +1699,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_sismember(self, glide_sync_client: GlideSync):
+    def test_sync_sismember(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         member = get_random_string(5)
         assert glide_sync_client.sadd(key, [member]) == 1
@@ -1709,7 +1709,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_spop(self, glide_sync_client: GlideSync):
+    def test_sync_spop(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         member = get_random_string(5)
         assert glide_sync_client.sadd(key, [member]) == 1
@@ -1729,7 +1729,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_smove(self, glide_sync_client: GlideSync):
+    def test_sync_smove(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         key2 = f"{{testKey}}:2-{get_random_string(10)}"
         key3 = f"{{testKey}}:3-{get_random_string(10)}"
@@ -1785,7 +1785,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_sunion(self, glide_sync_client: GlideSync):
+    def test_sync_sunion(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:{get_random_string(10)}"
         key2 = f"{{testKey}}:{get_random_string(10)}"
         non_existing_key = f"{{testKey}}:non_existing_key"
@@ -1812,7 +1812,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_sunionstore(self, glide_sync_client: GlideSync):
+    def test_sync_sunionstore(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         key2 = f"{{testKey}}:2-{get_random_string(10)}"
         key3 = f"{{testKey}}:3-{get_random_string(10)}"
@@ -1869,7 +1869,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_sinter(self, glide_sync_client: GlideSync):
+    def test_sync_sinter(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:{get_random_string(10)}"
         key2 = f"{{testKey}}:{get_random_string(10)}"
         non_existing_key = f"{{testKey}}:non_existing_key"
@@ -1896,7 +1896,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_sinterstore(self, glide_sync_client: GlideSync):
+    def test_sync_sinterstore(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:{get_random_string(10)}"
         key2 = f"{{testKey}}:{get_random_string(10)}"
         key3 = f"{{testKey}}:{get_random_string(10)}"
@@ -1939,7 +1939,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_sintercard(self, glide_sync_client: GlideSync):
+    def test_sync_sintercard(self, glide_sync_client: TGlideClient):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -1986,7 +1986,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_sdiff(self, glide_sync_client: GlideSync):
+    def test_sync_sdiff(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         key2 = f"{{testKey}}:2-{get_random_string(10)}"
         string_key = f"{{testKey}}:4-{get_random_string(10)}"
@@ -2018,7 +2018,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_sdiffstore(self, glide_sync_client: GlideSync):
+    def test_sync_sdiffstore(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         key2 = f"{{testKey}}:2-{get_random_string(10)}"
         key3 = f"{{testKey}}:3-{get_random_string(10)}"
@@ -2071,7 +2071,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_smismember(self, glide_sync_client: GlideSync):
+    def test_sync_smismember(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         string_key = get_random_string(10)
         non_existing_key = get_random_string(10)
@@ -2092,7 +2092,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_ltrim(self, glide_sync_client: GlideSync):
+    def test_sync_ltrim(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         value_list: List[TEncodable] = ["value4", "value3", "value2", "value1"]
 
@@ -2114,7 +2114,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_lrem(self, glide_sync_client: GlideSync):
+    def test_sync_lrem(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         value_list: List[TEncodable] = [
             "value1",
@@ -2143,7 +2143,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_llen(self, glide_sync_client: GlideSync):
+    def test_sync_llen(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
         value_list: List[TEncodable] = ["value4", "value3", "value2", "value1"]
@@ -2160,7 +2160,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_strlen(self, glide_sync_client: GlideSync):
+    def test_sync_strlen(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
         value_list: List[TEncodable] = ["value4", "value3", "value2", "value1"]
@@ -2175,7 +2175,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_rename(self, glide_sync_client: GlideSync):
+    def test_sync_rename(self, glide_sync_client: TGlideClient):
         key1 = "{" + get_random_string(10) + "}"
         assert glide_sync_client.set(key1, "foo") == OK
         assert glide_sync_client.rename(key1, key1 + "_rename") == OK
@@ -2188,7 +2188,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_renamenx(self, glide_sync_client: GlideSync):
+    def test_sync_renamenx(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         key2 = f"{{testKey}}:2-{get_random_string(10)}"
         key3 = f"{{testKey}}:3-{get_random_string(10)}"
@@ -2212,7 +2212,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_exists(self, glide_sync_client: GlideSync):
+    def test_sync_exists(self, glide_sync_client: TGlideClient):
         keys = [get_random_string(10), get_random_string(10)]
 
         assert glide_sync_client.set(keys[0], "value") == OK
@@ -2225,7 +2225,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_unlink(self, glide_sync_client: GlideSync):
+    def test_sync_unlink(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
         key3 = get_random_string(10)
@@ -2238,7 +2238,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_expire_pexpire_ttl_expiretime_pexpiretime_with_positive_timeout(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "foo") == OK
@@ -2270,7 +2270,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_expireat_pexpireat_ttl_with_positive_timeout(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "foo") == OK
@@ -2300,7 +2300,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_expire_pexpire_expireat_pexpireat_expiretime_pexpiretime_past_or_negative_timeout(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "foo") == OK
@@ -2340,7 +2340,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_expire_pexpire_expireAt_pexpireAt_ttl_expiretime_pexpiretime_non_existing_key(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         key = get_random_string(10)
 
@@ -2355,7 +2355,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_pttl(self, glide_sync_client: GlideSync):
+    def test_sync_pttl(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         assert glide_sync_client.pttl(key) == -2
         current_time = int(time.time())
@@ -2374,7 +2374,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_persist(self, glide_sync_client: GlideSync):
+    def test_sync_persist(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "value") == OK
         assert not glide_sync_client.persist(key)
@@ -2384,7 +2384,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_geoadd(self, glide_sync_client: GlideSync):
+    def test_sync_geoadd(self, glide_sync_client: TGlideClient):
         key, key2 = get_random_string(10), get_random_string(10)
         members_coordinates: Dict[str | bytes, GeospatialData] = {
             "Palermo": GeospatialData(13.361389, 38.115556),
@@ -2425,7 +2425,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_geoadd_invalid_args(self, glide_sync_client: GlideSync):
+    def test_sync_geoadd_invalid_args(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
 
         with pytest.raises(RequestError):
@@ -2445,7 +2445,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_geosearch_by_box(self, glide_sync_client: GlideSync):
+    def test_sync_geosearch_by_box(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members = ["Catania", "Palermo", "edge2", "edge1"]
         members_coordinates: Mapping[TEncodable, GeospatialData] = {
@@ -2538,7 +2538,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_geosearch_by_radius(self, glide_sync_client: GlideSync):
+    def test_sync_geosearch_by_radius(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_coordinates: Mapping[TEncodable, GeospatialData] = {
             "Palermo": GeospatialData(13.361389, 38.115556),
@@ -2613,7 +2613,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_geosearch_no_result(self, glide_sync_client: GlideSync):
+    def test_sync_geosearch_no_result(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_coordinates: Mapping[TEncodable, GeospatialData] = {
             "Palermo": GeospatialData(13.361389, 38.115556),
@@ -2675,7 +2675,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_geosearchstore_by_box(self, glide_sync_client: GlideSync):
+    def test_sync_geosearchstore_by_box(self, glide_sync_client: TGlideClient):
         key = f"{{testKey}}:{get_random_string(10)}"
         destination_key = f"{{testKey}}:{get_random_string(8)}"
         members_coordinates: Mapping[TEncodable, GeospatialData] = {
@@ -2796,7 +2796,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_geosearchstore_by_radius(self, glide_sync_client: GlideSync):
+    def test_sync_geosearchstore_by_radius(self, glide_sync_client: TGlideClient):
         key = f"{{testKey}}:{get_random_string(10)}"
         destination_key = f"{{testKey}}:{get_random_string(8)}"
         # Checking when parts of the value contain bytes
@@ -2914,7 +2914,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_geosearchstore_no_result(self, glide_sync_client: GlideSync):
+    def test_sync_geosearchstore_no_result(self, glide_sync_client: TGlideClient):
         key = f"{{testKey}}:{get_random_string(10)}"
         destination_key = f"{{testKey}}:{get_random_string(8)}"
         members_coordinates: Mapping[TEncodable, GeospatialData] = {
@@ -2987,7 +2987,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_geohash(self, glide_sync_client: GlideSync):
+    def test_sync_geohash(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_coordinates: Mapping[TEncodable, GeospatialData] = {
             "Palermo": GeospatialData(13.361389, 38.115556),
@@ -3022,7 +3022,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_geodist(self, glide_sync_client: GlideSync):
+    def test_sync_geodist(self, glide_sync_client: TGlideClient):
         key, key2 = get_random_string(10), get_random_string(10)
         members_coordinates: Mapping[TEncodable, GeospatialData] = {
             "Palermo": GeospatialData(13.361389, 38.115556),
@@ -3049,7 +3049,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_geopos(self, glide_sync_client: GlideSync):
+    def test_sync_geopos(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_coordinates: Mapping[TEncodable, GeospatialData] = {
             "Palermo": GeospatialData(13.361389, 38.115556),
@@ -3093,7 +3093,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zadd_zaddincr(self, glide_sync_client: GlideSync):
+    def test_sync_zadd_zaddincr(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"one": 1, "two": 2, "three": 3}
         assert glide_sync_client.zadd(key, members_scores=members_scores) == 3
@@ -3101,7 +3101,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zadd_nx_xx(self, glide_sync_client: GlideSync):
+    def test_sync_zadd_nx_xx(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"one": 1, "two": 2, "three": 3}
         assert (
@@ -3143,7 +3143,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zadd_gt_lt(self, glide_sync_client: GlideSync):
+    def test_sync_zadd_gt_lt(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Dict[TEncodable, float] = {"one": -3, "two": 2, "three": 3}
         assert glide_sync_client.zadd(key, members_scores=members_scores) == 3
@@ -3190,7 +3190,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zincrby(self, glide_sync_client: GlideSync):
+    def test_sync_zincrby(self, glide_sync_client: TGlideClient):
         key, member, member2 = (
             get_random_string(10),
             get_random_string(5),
@@ -3216,7 +3216,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrem(self, glide_sync_client: GlideSync):
+    def test_sync_zrem(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"one": 1, "two": 2, "three": 3}
         assert glide_sync_client.zadd(key, members_scores=members_scores) == 3
@@ -3228,7 +3228,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zremrangebyscore(self, glide_sync_client: GlideSync):
+    def test_sync_zremrangebyscore(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"one": 1, "two": 2, "three": 3}
         assert glide_sync_client.zadd(key, members_scores) == 3
@@ -3256,7 +3256,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zremrangebylex(self, glide_sync_client: GlideSync):
+    def test_sync_zremrangebylex(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
         range = RangeByIndex(0, -1)
@@ -3301,7 +3301,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zremrangebyrank(self, glide_sync_client: GlideSync):
+    def test_sync_zremrangebyrank(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
         range = RangeByIndex(0, -1)
@@ -3336,7 +3336,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zlexcount(self, glide_sync_client: GlideSync):
+    def test_sync_zlexcount(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"a": 1.0, "b": 2.0, "c": 3.0}
@@ -3380,7 +3380,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zcard(self, glide_sync_client: GlideSync):
+    def test_sync_zcard(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"one": 1, "two": 2, "three": 3}
         assert glide_sync_client.zadd(key, members_scores=members_scores) == 3
@@ -3392,7 +3392,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zcount(self, glide_sync_client: GlideSync):
+    def test_sync_zcount(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"one": 1, "two": 2, "three": 3}
         assert glide_sync_client.zadd(key, members_scores=members_scores) == 3
@@ -3435,7 +3435,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zscore(self, glide_sync_client: GlideSync):
+    def test_sync_zscore(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"one": 1, "two": 2, "three": 3}
         assert glide_sync_client.zadd(key, members_scores=members_scores) == 3
@@ -3448,7 +3448,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zmscore(self, glide_sync_client: GlideSync):
+    def test_sync_zmscore(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"one": 1, "two": 2, "three": 3}
@@ -3470,7 +3470,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zinter_commands(self, glide_sync_client: GlideSync):
+    def test_sync_zinter_commands(self, glide_sync_client: TGlideClient):
         key1 = "{testKey}:1-" + get_random_string(10)
         key2 = "{testKey}:2-" + get_random_string(10)
         key3 = "{testKey}:3-" + get_random_string(10)
@@ -3606,7 +3606,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zunion_commands(self, glide_sync_client: GlideSync):
+    def test_sync_zunion_commands(self, glide_sync_client: TGlideClient):
         key1 = "{testKey}:1-" + get_random_string(10)
         key2 = "{testKey}:2-" + get_random_string(10)
         key3 = "{testKey}:3-" + get_random_string(10)
@@ -3763,7 +3763,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zpopmin(self, glide_sync_client: GlideSync):
+    def test_sync_zpopmin(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"a": 1.0, "b": 2.0, "c": 3.0}
         assert glide_sync_client.zadd(key, members_scores=members_scores) == 3
@@ -3782,7 +3782,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_bzpopmin(self, glide_sync_client: GlideSync):
+    def test_sync_bzpopmin(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:{get_random_string(10)}"
         key2 = f"{{testKey}}:{get_random_string(10)}"
         non_existing_key = f"{{testKey}}:non_existing_key"
@@ -3822,7 +3822,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zpopmax(self, glide_sync_client: GlideSync):
+    def test_sync_zpopmax(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"a": 1.0, "b": 2.0, "c": 3.0}
         assert glide_sync_client.zadd(key, members_scores) == 3
@@ -3841,7 +3841,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_bzpopmax(self, glide_sync_client: GlideSync):
+    def test_sync_bzpopmax(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:{get_random_string(10)}"
         key2 = f"{{testKey}}:{get_random_string(10)}"
         non_existing_key = f"{{testKey}}:non_existing_key"
@@ -3881,7 +3881,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrange_by_index(self, glide_sync_client: GlideSync):
+    def test_sync_zrange_by_index(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"one": 1, "two": 2, "three": 3}
         assert glide_sync_client.zadd(key, members_scores=members_scores) == 3
@@ -3905,7 +3905,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrange_byscore(self, glide_sync_client: GlideSync):
+    def test_sync_zrange_byscore(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"one": 1, "two": 2, "three": 3}
         assert glide_sync_client.zadd(key, members_scores=members_scores) == 3
@@ -3975,7 +3975,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrange_bylex(self, glide_sync_client: GlideSync):
+    def test_sync_zrange_bylex(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"a": 1, "b": 2, "c": 3}
         assert glide_sync_client.zadd(key, members_scores=members_scores) == 3
@@ -4029,7 +4029,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrange_different_types_of_keys(self, glide_sync_client: GlideSync):
+    def test_sync_zrange_different_types_of_keys(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
 
         assert glide_sync_client.zrange("non_existing_key", RangeByIndex(0, 1)) == []
@@ -4049,7 +4049,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrangestore_by_index(self, glide_sync_client: GlideSync):
+    def test_sync_zrangestore_by_index(self, glide_sync_client: TGlideClient):
         destination = f"{{testKey}}:{get_random_string(10)}"
         source = f"{{testKey}}:{get_random_string(10)}"
         string_key = f"{{testKey}}:{get_random_string(10)}"
@@ -4111,7 +4111,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrangestore_by_score(self, glide_sync_client: GlideSync):
+    def test_sync_zrangestore_by_score(self, glide_sync_client: TGlideClient):
         destination = f"{{testKey}}:{get_random_string(10)}"
         source = f"{{testKey}}:{get_random_string(10)}"
         string_key = f"{{testKey}}:{get_random_string(10)}"
@@ -4218,7 +4218,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrangestore_by_lex(self, glide_sync_client: GlideSync):
+    def test_sync_zrangestore_by_lex(self, glide_sync_client: TGlideClient):
         destination = f"{{testKey}}:{get_random_string(10)}"
         source = f"{{testKey}}:{get_random_string(10)}"
         string_key = f"{{testKey}}:4-{get_random_string(10)}"
@@ -4321,7 +4321,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrank(self, glide_sync_client: GlideSync):
+    def test_sync_zrank(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         members_scores: Mapping[TEncodable, float] = {"one": 1.5, "two": 2, "three": 3}
         assert glide_sync_client.zadd(key, members_scores) == 3
@@ -4342,7 +4342,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrevrank(self, glide_sync_client: GlideSync):
+    def test_sync_zrevrank(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         non_existing_key = get_random_string(10)
         string_key = get_random_string(10)
@@ -4381,7 +4381,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zdiff(self, glide_sync_client: GlideSync):
+    def test_sync_zdiff(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         key2 = f"{{testKey}}:2-{get_random_string(10)}"
         key3 = f"{{testKey}}:3-{get_random_string(10)}"
@@ -4440,7 +4440,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zdiffstore(self, glide_sync_client: GlideSync):
+    def test_sync_zdiffstore(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         key2 = f"{{testKey}}:2-{get_random_string(10)}"
         key3 = f"{{testKey}}:3-{get_random_string(10)}"
@@ -4488,7 +4488,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_bzmpop(self, glide_sync_client: GlideSync):
+    def test_sync_bzmpop(self, glide_sync_client: TGlideClient):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -4565,7 +4565,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrandmember(self, glide_sync_client: GlideSync):
+    def test_sync_zrandmember(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         string_key = get_random_string(10)
         scores: Mapping[TEncodable, float] = {"one": 1, "two": 2}
@@ -4584,7 +4584,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrandmember_count(self, glide_sync_client: GlideSync):
+    def test_sync_zrandmember_count(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         string_key = get_random_string(10)
         scores: Mapping[TEncodable, float] = {"one": 1, "two": 2}
@@ -4613,7 +4613,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zrandmember_withscores(self, glide_sync_client: GlideSync):
+    def test_sync_zrandmember_withscores(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         string_key = get_random_string(10)
         scores: Mapping[TEncodable, float] = {"one": 1, "two": 2}
@@ -4646,7 +4646,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zintercard(self, glide_sync_client: GlideSync):
+    def test_sync_zintercard(self, glide_sync_client: TGlideClient):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -4688,7 +4688,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_zmpop(self, glide_sync_client: GlideSync):
+    def test_sync_zmpop(self, glide_sync_client: TGlideClient):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -4741,7 +4741,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_type(self, glide_sync_client: GlideSync):
+    def test_sync_type(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "value") == OK
         assert (glide_sync_client.type(key)).lower() == b"string"
@@ -4776,7 +4776,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_sort_and_sort_store_with_get_or_by_args(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         if isinstance(
             glide_sync_client, GlideClusterClient
@@ -4929,7 +4929,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_sort_and_sort_store_without_get_or_by_args(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         key = "{SameSlotKey}" + get_random_string(10)
         store = "{SameSlotKey}" + get_random_string(10)
@@ -5022,7 +5022,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_echo(self, glide_sync_client: GlideSync):
+    def test_sync_echo(self, glide_sync_client: TGlideClient):
         message = get_random_string(5)
         assert glide_sync_client.echo(message) == message.encode()
         if isinstance(glide_sync_client, GlideClusterClient):
@@ -5033,7 +5033,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_dbsize(self, glide_sync_client: GlideSync):
+    def test_sync_dbsize(self, glide_sync_client: TGlideClient):
         assert glide_sync_client.custom_command(["FLUSHALL"]) == OK
 
         assert glide_sync_client.dbsize() == 0
@@ -5054,7 +5054,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_time(self, glide_sync_client: GlideSync):
+    def test_sync_time(self, glide_sync_client: TGlideClient):
         current_time = int(time.time()) - 1
         result = glide_sync_client.time()
         assert len(result) == 2
@@ -5064,7 +5064,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_lastsave(self, glide_sync_client: GlideSync):
+    def test_sync_lastsave(self, glide_sync_client: TGlideClient):
         yesterday = date.today() - timedelta(1)
         yesterday_unix_time = time.mktime(yesterday.timetuple())
 
@@ -5086,7 +5086,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_append(self, glide_sync_client: GlideSync):
+    def test_sync_append(self, glide_sync_client: TGlideClient):
         key, value = get_random_string(10), get_random_string(5)
         assert glide_sync_client.append(key, value) == 5
 
@@ -5095,7 +5095,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_xadd_xtrim_xlen(self, glide_sync_client: GlideSync):
+    def test_sync_xadd_xtrim_xlen(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         string_key = get_random_string(10)
         non_existing_key = get_random_string(10)
@@ -5170,7 +5170,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_xdel(self, glide_sync_client: GlideSync):
+    def test_sync_xdel(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         string_key = get_random_string(10)
         non_existing_key = get_random_string(10)
@@ -5207,7 +5207,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_xrange_and_xrevrange(self, glide_sync_client: GlideSync):
+    def test_sync_xrange_and_xrevrange(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         non_existing_key = get_random_string(10)
         string_key = get_random_string(10)
@@ -5299,7 +5299,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xread(
-        self, glide_sync_client: GlideSync, cluster_mode, protocol, request
+        self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         key2 = f"{{testKey}}:2-{get_random_string(10)}"
@@ -5394,7 +5394,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xread_edge_cases_and_failures(
-        self, glide_sync_client: GlideSync, cluster_mode, protocol, request
+        self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         string_key = f"{{testKey}}:2-{get_random_string(10)}"
@@ -5474,7 +5474,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xgroup_create_xgroup_destroy(
-        self, glide_sync_client: GlideSync, cluster_mode, protocol, request
+        self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
         key = get_random_string(10)
         non_existing_key = get_random_string(10)
@@ -5545,7 +5545,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xgroup_create_consumer_xreadgroup_xgroup_del_consumer(
-        self, glide_sync_client: GlideSync, cluster_mode, protocol, request
+        self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
         key = f"{{testKey}}:{get_random_string(10)}"
         non_existing_key = f"{{testKey}}:{get_random_string(10)}"
@@ -5711,7 +5711,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xreadgroup_edge_cases_and_failures(
-        self, glide_sync_client: GlideSync, cluster_mode, protocol, request
+        self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
         key = f"{{testKey}}:{get_random_string(10)}"
         non_existing_key = f"{{testKey}}:{get_random_string(10)}"
@@ -5876,7 +5876,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xack(
-        self, glide_sync_client: GlideSync, cluster_mode, protocol, request
+        self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
         key = f"{{testKey}}:{get_random_string(10)}"
         non_existing_key = f"{{testKey}}:{get_random_string(10)}"
@@ -5952,7 +5952,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_xpending_xclaim(self, glide_sync_client: GlideSync):
+    def test_sync_xpending_xclaim(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         group_name = get_random_string(10)
         consumer1 = get_random_string(10)
@@ -6164,7 +6164,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_xpending_edge_cases_and_failures(self, glide_sync_client: GlideSync):
+    def test_sync_xpending_edge_cases_and_failures(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         non_existing_key = get_random_string(10)
         string_key = get_random_string(10)
@@ -6336,7 +6336,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_xclaim_edge_cases_and_failures(self, glide_sync_client: GlideSync):
+    def test_sync_xclaim_edge_cases_and_failures(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         non_existing_key = get_random_string(10)
         string_key = get_random_string(10)
@@ -6438,7 +6438,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_xautoclaim(self, glide_sync_client: GlideSync, protocol):
+    def test_sync_xautoclaim(self, glide_sync_client: TGlideClient, protocol):
         min_version = "6.2.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -6545,7 +6545,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xautoclaim_edge_cases_and_failures(
-        self, glide_sync_client: GlideSync, protocol
+        self, glide_sync_client: TGlideClient, protocol
     ):
         min_version = "6.2.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
@@ -6678,7 +6678,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xinfo_groups_xinfo_consumers(
-        self, glide_sync_client: GlideSync, protocol
+        self, glide_sync_client: TGlideClient, protocol
     ):
         key = get_random_string(10)
         group_name1 = get_random_string(10)
@@ -6819,7 +6819,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xinfo_groups_xinfo_consumers_edge_cases_and_failures(
-        self, glide_sync_client: GlideSync, protocol
+        self, glide_sync_client: TGlideClient, protocol
     ):
         key = get_random_string(10)
         string_key = get_random_string(10)
@@ -6861,7 +6861,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xinfo_stream(
-        self, glide_sync_client: GlideSync, cluster_mode, protocol
+        self, glide_sync_client: TGlideClient, cluster_mode, protocol
     ):
         key = get_random_string(10)
         group_name = get_random_string(10)
@@ -6933,7 +6933,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xinfo_stream_edge_cases_and_failures(
-        self, glide_sync_client: GlideSync, cluster_mode, protocol
+        self, glide_sync_client: TGlideClient, cluster_mode, protocol
     ):
         key = get_random_string(10)
         string_key = get_random_string(10)
@@ -6977,7 +6977,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xgroup_set_id(
-        self, glide_sync_client: GlideSync, cluster_mode, protocol, request
+        self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
         key = f"{{testKey}}:{get_random_string(10)}"
         non_existing_key = f"{{testKey}}:{get_random_string(10)}"
@@ -7053,7 +7053,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_pfadd(self, glide_sync_client: GlideSync):
+    def test_sync_pfadd(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         assert glide_sync_client.pfadd(key, []) == 1
         assert glide_sync_client.pfadd(key, ["one", "two"]) == 1
@@ -7066,7 +7066,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_pfcount(self, glide_sync_client: GlideSync):
+    def test_sync_pfcount(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         key2 = f"{{testKey}}:2-{get_random_string(10)}"
         key3 = f"{{testKey}}:3-{get_random_string(10)}"
@@ -7094,7 +7094,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_pfmerge(self, glide_sync_client: GlideSync):
+    def test_sync_pfmerge(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         key2 = f"{{testKey}}:2-{get_random_string(10)}"
         key3 = f"{{testKey}}:3-{get_random_string(10)}"
@@ -7131,7 +7131,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_bitcount(self, glide_sync_client: GlideSync):
+    def test_sync_bitcount(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         set_key = get_random_string(10)
         non_existing_key = get_random_string(10)
@@ -7214,7 +7214,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_setbit(self, glide_sync_client: GlideSync):
+    def test_sync_setbit(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         set_key = get_random_string(10)
 
@@ -7232,7 +7232,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_getbit(self, glide_sync_client: GlideSync):
+    def test_sync_getbit(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         non_existing_key = get_random_string(10)
         set_key = get_random_string(10)
@@ -7257,7 +7257,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_bitpos(self, glide_sync_client: GlideSync):
+    def test_sync_bitpos(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         non_existing_key = get_random_string(10)
         set_key = get_random_string(10)
@@ -7332,7 +7332,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_bitop(self, glide_sync_client: GlideSync):
+    def test_sync_bitop(self, glide_sync_client: TGlideClient):
         key1 = f"{{testKey}}:1-{get_random_string(10)}"
         key2 = f"{{testKey}}:2-{get_random_string(10)}"
         keys: List[TEncodable] = [key1, key2]
@@ -7417,7 +7417,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_bitfield(self, glide_sync_client: GlideSync):
+    def test_sync_bitfield(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
         non_existing_key = get_random_string(10)
@@ -7545,7 +7545,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_bitfield_read_only(self, glide_sync_client: GlideSync):
+    def test_sync_bitfield_read_only(self, glide_sync_client: TGlideClient):
         min_version = "6.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -7616,7 +7616,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_object_encoding(self, glide_sync_client: GlideSync):
+    def test_sync_object_encoding(self, glide_sync_client: TGlideClient):
         string_key = get_random_string(10)
         list_key = get_random_string(10)
         hashtable_key = get_random_string(10)
@@ -7710,7 +7710,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_object_freq(self, glide_sync_client: GlideSync):
+    def test_sync_object_freq(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         non_existing_key = get_random_string(10)
         maxmemory_policy_key = "maxmemory-policy"
@@ -7733,7 +7733,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_object_idletime(self, glide_sync_client: GlideSync):
+    def test_sync_object_idletime(self, glide_sync_client: TGlideClient):
         string_key = get_random_string(10)
         non_existing_key = get_random_string(10)
 
@@ -7745,7 +7745,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_object_refcount(self, glide_sync_client: GlideSync):
+    def test_sync_object_refcount(self, glide_sync_client: TGlideClient):
         string_key = get_random_string(10)
         non_existing_key = get_random_string(10)
 
@@ -7756,7 +7756,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_function_load(self, glide_sync_client: GlideSync):
+    def test_sync_function_load(self, glide_sync_client: TGlideClient):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -7920,7 +7920,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_function_list(self, glide_sync_client: GlideSync):
+    def test_sync_function_list(self, glide_sync_client: TGlideClient):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -8071,7 +8071,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_function_list_with_multiple_functions(
-        self, glide_sync_client: GlideSync
+        self, glide_sync_client: TGlideClient
     ):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
@@ -8117,7 +8117,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_function_flush(self, glide_sync_client: GlideSync):
+    def test_sync_function_flush(self, glide_sync_client: TGlideClient):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             pytest.skip(f"Valkey version required >= {min_version}")
@@ -8205,7 +8205,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_function_delete(self, glide_sync_client: GlideSync):
+    def test_sync_function_delete(self, glide_sync_client: TGlideClient):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             pytest.skip(f"Valkey version required >= {min_version}")
@@ -8277,7 +8277,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_function_stats(self, glide_sync_client: GlideSync):
+    def test_sync_function_stats(self, glide_sync_client: TGlideClient):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -8322,7 +8322,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [False, True])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_function_stats_running_script(
-        self, request, cluster_mode, protocol, glide_sync_client: GlideSync
+        self, request, cluster_mode, protocol, glide_sync_client: TGlideClient
     ):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
@@ -8446,7 +8446,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_function_kill_no_write(
-        self, request, cluster_mode, protocol, glide_sync_client: GlideSync
+        self, request, cluster_mode, protocol, glide_sync_client: TGlideClient
     ):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
@@ -8506,7 +8506,7 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [False, True])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_function_kill_write_is_unkillable(
-        self, request, cluster_mode, protocol, glide_sync_client: GlideSync
+        self, request, cluster_mode, protocol, glide_sync_client: TGlideClient
     ):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
@@ -8818,7 +8818,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_srandmember(self, glide_sync_client: GlideSync):
+    def test_sync_srandmember(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         string_key = get_random_string(10)
         elements: List[TEncodable] = ["one", "two"]
@@ -8837,7 +8837,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_srandmember_count(self, glide_sync_client: GlideSync):
+    def test_sync_srandmember_count(self, glide_sync_client: TGlideClient):
         key = get_random_string(10)
         string_key = get_random_string(10)
         elements: List[TEncodable] = ["one", "two"]
@@ -8867,7 +8867,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_flushall(self, glide_sync_client: GlideSync):
+    def test_sync_flushall(self, glide_sync_client: TGlideClient):
         min_version = "6.2.0"
         key = f"{{key}}-1{get_random_string(5)}"
         value = get_random_string(5)
@@ -8925,7 +8925,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_getex(self, glide_sync_client: GlideSync):
+    def test_sync_getex(self, glide_sync_client: TGlideClient):
         min_version = "6.2.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -8961,7 +8961,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_copy_no_database(self, glide_sync_client: GlideSync):
+    def test_sync_copy_no_database(self, glide_sync_client: TGlideClient):
         min_version = "6.2.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -9065,7 +9065,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_wait(self, glide_sync_client: GlideSync):
+    def test_sync_wait(self, glide_sync_client: TGlideClient):
         key = f"{{key}}-1{get_random_string(5)}"
         value = get_random_string(5)
         value2 = get_random_string(5)
@@ -9086,7 +9086,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_lolwut(self, glide_sync_client: GlideSync):
+    def test_sync_lolwut(self, glide_sync_client: TGlideClient):
         result = glide_sync_client.lolwut()
         assert b"Redis ver. " in result
         result = glide_sync_client.lolwut(parameters=[])
@@ -9164,7 +9164,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_dump_restore(self, glide_sync_client: GlideSync):
+    def test_sync_dump_restore(self, glide_sync_client: TGlideClient):
         key1 = f"{{key}}-1{get_random_string(10)}"
         key2 = f"{{key}}-2{get_random_string(10)}"
         key3 = f"{{key}}-3{get_random_string(10)}"
@@ -9197,7 +9197,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_dump_restore_options(self, glide_sync_client: GlideSync):
+    def test_sync_dump_restore_options(self, glide_sync_client: TGlideClient):
         key1 = f"{{key}}-1{get_random_string(10)}"
         key2 = f"{{key}}-2{get_random_string(10)}"
         key3 = f"{{key}}-3{get_random_string(10)}"
@@ -9447,7 +9447,7 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_lpos(self, glide_sync_client: GlideSync):
+    def test_sync_lpos(self, glide_sync_client: TGlideClient):
         min_version = "6.0.6"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             # TODO: change it to pytest fixture after we'll implement a sync client
@@ -10244,7 +10244,7 @@ class TestClusterRoutes:
 
 
 def script_kill_tests(
-    glide_sync_client: GlideSync, test_sync_client: TGlideClient, route: Optional[Route] = None
+    glide_sync_client: TGlideClient, test_sync_client: TGlideClient, route: Optional[Route] = None
 ):
     """
     shared tests for SCRIPT KILL used in routed and non-routed variants, clients are created in
@@ -10308,7 +10308,7 @@ class TestScripts:
     @pytest.mark.smoke_test
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_script(self, glide_sync_client: GlideSync):
+    def test_sync_script(self, glide_sync_client: TGlideClient):
         key1 = get_random_string(10)
         key2 = get_random_string(10)
         script = Script("return 'Hello'")
@@ -10335,7 +10335,7 @@ class TestScripts:
     @pytest.mark.smoke_test
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_script_binary(self, glide_sync_client: GlideSync):
+    def test_sync_script_binary(self, glide_sync_client: TGlideClient):
         key1 = bytes(get_random_string(10), "utf-8")
         key2 = bytes(get_random_string(10), "utf-8")
         script = Script(bytes("return 'Hello'", "utf-8"))
@@ -10410,7 +10410,7 @@ class TestScripts:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_script_exists(self, glide_sync_client: GlideSync, cluster_mode: bool):
+    def test_sync_script_exists(self, glide_sync_client: TGlideClient, cluster_mode: bool):
         cluster_mode = isinstance(glide_sync_client, GlideClusterClient)
         script1 = Script("return 'Hello'")
         script2 = Script("return 'World'")
@@ -10445,7 +10445,7 @@ class TestScripts:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_script_flush(self, glide_sync_client: GlideSync):
+    def test_sync_script_flush(self, glide_sync_client: TGlideClient):
         # Load a script
         script = Script("return 'Hello'")
         glide_sync_client.invoke_script(script)
@@ -10472,7 +10472,7 @@ class TestScripts:
         request,
         cluster_mode,
         protocol,
-        glide_sync_client: GlideSync,
+        glide_sync_client: TGlideClient,
         single_route: bool,
     ):
         route = SlotKeyRoute(SlotType.PRIMARY, "1") if single_route else AllPrimaries()
@@ -10491,7 +10491,7 @@ class TestScripts:
         request,
         cluster_mode,
         protocol,
-        glide_sync_client: GlideSync,
+        glide_sync_client: TGlideClient,
     ):
         # Create a second client to run the script
         test_sync_client = create_sync_client(
@@ -10503,7 +10503,7 @@ class TestScripts:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_script_kill_unkillable(
-        self, request, cluster_mode, protocol, glide_sync_client: GlideSync
+        self, request, cluster_mode, protocol, glide_sync_client: TGlideClient
     ):
         # Create a second client to run the script
         test_sync_client = create_sync_client(
@@ -10554,7 +10554,7 @@ class TestScripts:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_script_show(self, glide_sync_client: GlideSync):
+    def test_sync_script_show(self, glide_sync_client: TGlideClient):
         min_version = "8.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")

@@ -4,9 +4,9 @@ from cffi import FFI
 import sys
 from glide.protobuf.command_request_pb2 import Command, CommandRequest, RequestType
 from typing import List, Union, Optional, cast
-from glide.sync.sync_commands.core import CoreCommands
-from glide.sync.sync_commands.cluster_commands import ClusterCommands
-from glide.sync.sync_commands.standalone_commands import StandaloneCommands
+from glide.commands.sync_commands.core import CoreCommands
+from glide.commands.sync_commands.cluster_commands import ClusterCommands
+from glide.commands.sync_commands.standalone_commands import StandaloneCommands
 from glide.constants import DEFAULT_READ_BYTES_SIZE, OK, TEncodable, TRequest, TResult
 from glide.routes import Route
 from glide.exceptions import ClosingError, RequestError
@@ -143,7 +143,7 @@ class BaseClient(CoreCommands):
         """)
 
         # Load the shared library (adjust the path to your compiled Rust library)
-        self.lib = self.ffi.dlopen("/home/ubuntu/glide-for-redis/go/target/debug/libglide_rs.so")
+        self.lib = self.ffi.dlopen("/home/ubuntu/glide-for-redis/ffi/target/debug/libglide_rs.so")
         
     def _handle_response(self, message):
         if message == self.ffi.NULL:

@@ -13,14 +13,14 @@ from typing import (
     Union,
     cast,
 )
-from glide.command_options.core_options import (
+from glide.commands.core_options import (
     ExpireOptions,
     ExpiryGetEx,
     InsertPosition,
     UpdateOptions,
     _build_sort_args,   
 )
-from glide.command_options.bitmap import (
+from glide.commands.bitmap import (
     BitFieldGet,
     BitFieldSubCommands,
     BitwiseOperation,
@@ -28,8 +28,8 @@ from glide.command_options.bitmap import (
     _create_bitfield_args,
     _create_bitfield_read_only_args,
 )
-from glide.command_options.command_args import Limit, ListDirection, ObjectType, OrderBy
-from glide.command_options.sorted_set import (
+from glide.commands.command_args import Limit, ListDirection, ObjectType, OrderBy
+from glide.commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
     GeoSearchByRadius,
@@ -47,7 +47,7 @@ from glide.command_options.sorted_set import (
     _create_zinter_zunion_cmd_args,
     _create_zrange_args,
 )
-from glide.command_options.stream import (
+from glide.commands.stream import (
     StreamAddOptions,
     StreamClaimOptions,
     StreamGroupOptions,
@@ -67,7 +67,7 @@ from glide.constants import (
 )
 from glide.protobuf.command_request_pb2 import RequestType
 from glide.routes import Route
-from python.python.glide.command_options.core_options import ConditionalChange, ExpirySet
+from python.python.glide.commands.core_options import ConditionalChange, ExpirySet
 
 from ..glide import ClusterScanCursor
 
