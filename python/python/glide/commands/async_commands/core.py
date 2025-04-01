@@ -17,6 +17,7 @@ from glide.commands.core_options import (
     ExpireOptions,
     ExpiryGetEx,
     InsertPosition,
+    OnlyIfEqual,
     UpdateOptions,
     _build_sort_args,   
 )
@@ -67,9 +68,7 @@ from glide.constants import (
 )
 from glide.protobuf.command_request_pb2 import RequestType
 from glide.routes import Route
-from python.python.glide.commands.core_options import ConditionalChange, ExpirySet
-
-from ..glide import ClusterScanCursor
+from glide.commands.core_options import ConditionalChange, ExpirySet
 
 
 class CoreCommands(Protocol):
@@ -94,14 +93,14 @@ class CoreCommands(Protocol):
         route: Optional[Route] = None,
     ) -> TResult: ...
 
-    async def _cluster_scan(
-        self,
-        cursor: ClusterScanCursor,
-        match: Optional[TEncodable] = ...,
-        count: Optional[int] = ...,
-        type: Optional[ObjectType] = ...,
-        allow_non_covered_slots: bool = ...,
-    ) -> TResult: ...
+    # async def _cluster_scan(
+    #     self,
+    #     cursor: ClusterScanCursor,
+    #     match: Optional[TEncodable] = ...,
+    #     count: Optional[int] = ...,
+    #     type: Optional[ObjectType] = ...,
+    #     allow_non_covered_slots: bool = ...,
+    # ) -> TResult: ...
 
     async def _update_connection_password(
         self, password: Optional[str], immediate_auth: bool

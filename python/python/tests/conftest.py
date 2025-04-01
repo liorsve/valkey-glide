@@ -466,7 +466,10 @@ def create_sync_client(
         read_from, 
         client_az, 
         valkey_cluster)
-    return TSyncGlideClient.create(config)
+    if cluster_mode:
+        return SyncGlideClusterClient.create(config)
+    else:
+        return SyncGlideClient.create(config)
 
 NEW_PASSWORD = "new_secure_password"
 WRONG_PASSWORD = "wrong_password"

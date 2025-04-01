@@ -10,7 +10,7 @@ from glide.commands.core_options import (
     FunctionRestorePolicy,
     InfoSection,
 )
-from glide.commands.async_commands.standalone_commands import CoreCommands
+from glide.commands.async_commands import CoreCommands
 
 from glide.commands.transaction import Transaction
 from glide.constants import (
@@ -22,7 +22,7 @@ from glide.constants import (
 )
 from glide.protobuf.command_request_pb2 import RequestType
 
-from ..glide import Script
+from ...glide import Script
 
 
 class StandaloneCommands(CoreCommands):
