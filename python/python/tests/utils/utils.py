@@ -88,6 +88,7 @@ async def check_if_server_version_lt(client: TGlideClient, min_version: str) -> 
     assert version_str is not None, "Server version not found in INFO response"
     return version.parse(version_str) < version.parse(min_version)
 
+
 def sync_check_if_server_version_lt(client: TGlideClient, min_version: str) -> bool:
     # TODO: change to pytest fixture after sync client is implemented
     info = parse_info_response(client.info([InfoSection.SERVER]))

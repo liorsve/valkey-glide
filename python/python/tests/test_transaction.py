@@ -47,11 +47,7 @@ from glide.commands.stream import (
     StreamReadGroupOptions,
     TrimByMinId,
 )
-from glide.commands.transaction import (
-    BaseTransaction,
-    ClusterTransaction,
-    Transaction,
-)
+from glide.commands.transaction import BaseTransaction, ClusterTransaction, Transaction
 from glide.config import ProtocolVersion
 from glide.constants import OK, TResult, TSingleNodeRoute
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient

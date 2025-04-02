@@ -1,17 +1,23 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 
-from cffi import FFI
 import sys
-from glide.protobuf.command_request_pb2 import Command, CommandRequest, RequestType
-from typing import List, Union, Optional, cast
-from glide.commands.sync_commands.core import CoreCommands
+from typing import List, Optional, Union, cast
+
+from cffi import FFI
 from glide.commands.sync_commands.cluster_commands import ClusterCommands
+from glide.commands.sync_commands.core import CoreCommands
 from glide.commands.sync_commands.standalone_commands import StandaloneCommands
+from glide.config import (
+    BaseClientConfiguration,
+    GlideClientConfiguration,
+    GlideClusterClientConfiguration,
+)
 from glide.constants import DEFAULT_READ_BYTES_SIZE, OK, TEncodable, TRequest, TResult
-from glide.routes import Route
 from glide.exceptions import ClosingError, RequestError
-from glide.config import BaseClientConfiguration, GlideClientConfiguration, GlideClusterClientConfiguration
 from glide.glide_client import get_request_error_class
+from glide.protobuf.command_request_pb2 import Command, CommandRequest, RequestType
+from glide.routes import Route
+
 if sys.version_info >= (3, 11):
     from typing import Self
 
@@ -22,32 +28,45 @@ class FFIClientTypeEnum:
     Sync = 1
 
 
-class BaseClient(CoreCommands):    
-    
+class BaseClient(CoreCommands):
+
     def __init__(self, config: BaseClientConfiguration):
-            """
-            To create a new client, use the `create` classmethod
-            """
-            self.config: BaseClientConfiguration = config
-            
+        """
+        To create a new client, use the `create` classmethod
+        """
+        self.config: BaseClientConfiguration = config
+
     @classmethod
     def create(cls, config: BaseClientConfiguration) -> Self:
         self = cls(config)
         self._init_ffi()
         self.config = config
-        conn_req = config._create_a_protobuf_conn_request(cluster_mode=type(config) == GlideClusterClientConfiguration)
+        conn_req = config._create_a_protobuf_conn_request(
+            cluster_mode=type(config) == GlideClusterClientConfiguration
+        )
         conn_req_bytes = conn_req.SerializeToString()
-        client_type = self.ffi.new("ClientType*", {
-            "_type": self.ffi.cast("ClientTypeEnum", FFIClientTypeEnum.Sync),
-        })
-        client_response_ptr = self.lib.create_client(conn_req_bytes, len(conn_req_bytes), client_type) 
+        client_type = self.ffi.new(
+            "ClientType*",
+            {
+                "_type": self.ffi.cast("ClientTypeEnum", FFIClientTypeEnum.Sync),
+            },
+        )
+        client_response_ptr = self.lib.create_client(
+            conn_req_bytes, len(conn_req_bytes), client_type
+        )
         # Handle the connection response
         if client_response_ptr != self.ffi.NULL:
             client_response = self.ffi.cast("ConnectionResponse*", client_response_ptr)
             if client_response.conn_ptr != self.ffi.NULL:
                 self.core_client = client_response.conn_ptr
             else:
-                error_message = self.ffi.string(client_response.connection_error_message).decode('utf-8') if client_response.connection_error_message != self.ffi.NULL else "Unknown error"
+                error_message = (
+                    self.ffi.string(client_response.connection_error_message).decode(
+                        "utf-8"
+                    )
+                    if client_response.connection_error_message != self.ffi.NULL
+                    else "Unknown error"
+                )
                 raise ClosingError(error_message)
 
             # Free the connection response to avoid memory leaks
@@ -60,7 +79,8 @@ class BaseClient(CoreCommands):
         self.ffi = FFI()
 
         # Define the CommandResponse struct and related types
-        self.ffi.cdef("""
+        self.ffi.cdef(
+            """
             typedef struct {
                 int response_type;
                 long int_value;
@@ -140,11 +160,14 @@ class BaseClient(CoreCommands):
             void free_command_result(CommandResult* command_result_ptr);
             CommandResult* command(const void* client_adapter_ptr, uintptr_t channel, int command_type, unsigned long arg_count, const size_t *args, const unsigned long* args_len, const unsigned char* route_bytes, size_t route_bytes_len);
 
-        """)
+        """
+        )
 
         # Load the shared library (adjust the path to your compiled Rust library)
-        self.lib = self.ffi.dlopen("/home/ubuntu/glide-for-redis/ffi/target/debug/libglide_ffi.so")
-        
+        self.lib = self.ffi.dlopen(
+            "/home/ubuntu/glide-for-redis/ffi/target/debug/libglide_ffi.so"
+        )
+
     def _handle_response(self, message):
         if message == self.ffi.NULL:
             raise RequestError("Received NULL message.")
@@ -169,7 +192,9 @@ class BaseClient(CoreCommands):
                 return bool(msg.bool_value)
             elif msg.response_type == 4:  # String
                 try:
-                    string_value = self.ffi.buffer(msg.string_value, msg.string_value_len)[:]
+                    string_value = self.ffi.buffer(
+                        msg.string_value, msg.string_value_len
+                    )[:]
                     return string_value
                 except Exception as e:
                     # TODO: Add memory cleanup in case of failures
@@ -177,7 +202,9 @@ class BaseClient(CoreCommands):
             elif msg.response_type == 5:  # Array
                 array = []
                 for i in range(msg.array_value_len):
-                    element = self.ffi.cast("struct CommandResponse*", msg.array_value + i)
+                    element = self.ffi.cast(
+                        "struct CommandResponse*", msg.array_value + i
+                    )
                     array.append(self._handle_response(element))
                 return array
             elif msg.response_type == 6:  # Map
@@ -189,7 +216,9 @@ class BaseClient(CoreCommands):
                 return map_dict
             elif msg.response_type == 7:  # Sets
                 result_set = set()
-                sets_array = self.ffi.cast(f"struct CommandResponse[{msg.sets_value_len}]", msg.sets_value)
+                sets_array = self.ffi.cast(
+                    f"struct CommandResponse[{msg.sets_value_len}]", msg.sets_value
+                )
                 for i in range(msg.sets_value_len):
                     element = sets_array[i]  # Already a struct
                     result_set.add(self._handle_response(element))
@@ -198,8 +227,6 @@ class BaseClient(CoreCommands):
                 raise RequestError(f"Unhandled response type = {msg.response_type}")
         else:
             raise RequestError(f"Unexpected message type = {message_type}")
-  
-        
 
     def _to_c_strings(self, args):
         """Convert Python arguments to C-compatible pointers and lengths."""
@@ -210,11 +237,11 @@ class BaseClient(CoreCommands):
         for arg in args:
             if isinstance(arg, str):
                 # Convert string to UTF-8 bytes
-                arg_bytes = arg.encode('utf-8')
+                arg_bytes = arg.encode("utf-8")
             elif isinstance(arg, (int, float)):
                 # Convert numeric values to strings and then to bytes
-                arg_bytes = str(arg).encode('utf-8')
-            elif isinstance (arg, bytes):
+                arg_bytes = str(arg).encode("utf-8")
+            elif isinstance(arg, bytes):
                 arg_bytes = arg
             else:
                 raise ValueError(f"Unsupported argument type: {type(arg)}")
@@ -229,7 +256,7 @@ class BaseClient(CoreCommands):
             self.ffi.new("unsigned long[]", string_lengths),
             buffers,  # Ensure buffers stay alive
         )
-    
+
     def _handle_cmd_result(self, command_result):
         try:
             if command_result == self.ffi.NULL:
@@ -237,7 +264,9 @@ class BaseClient(CoreCommands):
             if command_result.command_error != self.ffi.NULL:
                 # Handle the error case
                 error = self.ffi.cast("CommandError*", command_result.command_error)
-                error_message = self.ffi.string(error.command_error_message).decode('utf-8')
+                error_message = self.ffi.string(error.command_error_message).decode(
+                    "utf-8"
+                )
                 error_class = get_request_error_class(error.command_error_type)
                 # Free the error message to avoid memory leaks
                 raise error_class(error_message)
@@ -260,9 +289,8 @@ class BaseClient(CoreCommands):
         # Convert the arguments to C-compatible pointers
         c_args, c_lengths, buffers = self._to_c_strings(args)
         # Call the command function
-        route_bytes = b"" # TODO: add support for route 
+        route_bytes = b""  # TODO: add support for route
         route_ptr = self.ffi.new("unsigned char[]", route_bytes)
-
 
         result = self.lib.command(
             client_adapter_ptr,  # Client pointer
@@ -272,13 +300,14 @@ class BaseClient(CoreCommands):
             c_args,  # Array of argument pointers
             c_lengths,  # Array of argument lengths
             route_ptr,
-            len(route_bytes)
+            len(route_bytes),
         )
         return self._handle_cmd_result(result)
-    
+
     def close(self):
         self.lib.close_client(self.core_client)
-    
+
+
 class GlideClusterClient(BaseClient, ClusterCommands):
     """
     Client used for connection to cluster servers.
@@ -293,5 +322,6 @@ class GlideClient(BaseClient, StandaloneCommands):
     For full documentation, see
     https://github.com/valkey-io/valkey-glide/wiki/Python-wrapper#standalone
     """
+
 
 TGlideClient = Union[GlideClient, GlideClusterClient]

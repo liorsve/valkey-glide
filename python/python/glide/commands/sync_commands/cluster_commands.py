@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import Any, Dict, List, Mapping, Optional, Set, Union, cast
 
 from glide.commands.command_args import Limit, ObjectType, OrderBy
-from glide.commands.sync_commands.core import CoreCommands
 from glide.commands.core_options import (
     FlushMode,
     FunctionRestorePolicy,
     InfoSection,
     _build_sort_args,
 )
+from glide.commands.sync_commands.core import CoreCommands
 from glide.commands.transaction import ClusterTransaction
 from glide.constants import (
     TOK,
@@ -121,9 +121,7 @@ class ClusterCommands(CoreCommands):
         Returns:
             OK: Returns "OK" to confirm that the statistics were successfully reset.
         """
-        return cast(
-            TOK, self._execute_command(RequestType.ConfigResetStat, [], route)
-        )
+        return cast(TOK, self._execute_command(RequestType.ConfigResetStat, [], route))
 
     def config_rewrite(
         self,
@@ -144,9 +142,7 @@ class ClusterCommands(CoreCommands):
             >>> client.config_rewrite()
                 'OK'
         """
-        return cast(
-            TOK, self._execute_command(RequestType.ConfigRewrite, [], route)
-        )
+        return cast(TOK, self._execute_command(RequestType.ConfigRewrite, [], route))
 
     def client_id(
         self,
@@ -195,9 +191,7 @@ class ClusterCommands(CoreCommands):
                 b"Hello"
         """
         argument = [] if message is None else [message]
-        return cast(
-            bytes, self._execute_command(RequestType.Ping, argument, route)
-        )
+        return cast(bytes, self._execute_command(RequestType.Ping, argument, route))
 
     def config_get(
         self, parameters: List[TEncodable], route: Optional[Route] = None
@@ -628,9 +622,7 @@ class ClusterCommands(CoreCommands):
             self._execute_command(RequestType.FunctionStats, [], route),
         )
 
-    def function_dump(
-        self, route: Optional[Route] = None
-    ) -> TClusterResponse[bytes]:
+    def function_dump(self, route: Optional[Route] = None) -> TClusterResponse[bytes]:
         """
         Returns the serialized payload of all loaded libraries.
 
@@ -698,9 +690,7 @@ class ClusterCommands(CoreCommands):
             TOK, self._execute_command(RequestType.FunctionRestore, args, route)
         )
 
-    def time(
-        self, route: Optional[Route] = None
-    ) -> TClusterResponse[List[bytes]]:
+    def time(self, route: Optional[Route] = None) -> TClusterResponse[List[bytes]]:
         """
         Returns the server time.
 
@@ -787,9 +777,7 @@ class ClusterCommands(CoreCommands):
         )
         return cast(int, result)
 
-    def pubsub_shardchannels(
-        self, pattern: Optional[TEncodable] = None
-    ) -> List[bytes]:
+    def pubsub_shardchannels(self, pattern: Optional[TEncodable] = None) -> List[bytes]:
         """
         Lists the currently active shard channels.
         The command is routed to all nodes, and aggregates the response to a single array.
@@ -1068,225 +1056,4 @@ class ClusterCommands(CoreCommands):
         return cast(
             TOK,
             self._execute_command(RequestType.UnWatch, [], route),
-        )
-
-    def scan(
-        self,
-        cursor: ClusterScanCursor,
-        match: Optional[TEncodable] = None,
-        count: Optional[int] = None,
-        type: Optional[ObjectType] = None,
-        allow_non_covered_slots: bool = False,
-    ) -> List[Union[ClusterScanCursor, List[bytes]]]:
-        """
-        Incrementally iterates over the keys in the cluster.
-        The method returns a list containing the next cursor and a list of keys.
-
-        This command is similar to the SCAN command but is designed to work in a cluster environment.
-        For each iteration, the new cursor object should be used to continue the scan.
-        Using the same cursor object for multiple iterations will result in the same keys or unexpected behavior.
-        For more information about the Cluster Scan implementation, see [Cluster Scan](https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#cluster-scan).
-
-        Like the SCAN command, the method can be used to iterate over the keys in the database,
-        returning all keys the database has from when the scan started until the scan ends.
-        The same key can be returned in multiple scan iterations.
-
-        See https://valkey.io/commands/scan/ for more details.
-
-        Args:
-            cursor (ClusterScanCursor): The cursor object that wraps the scan state.
-                To start a new scan, create a new empty ClusterScanCursor using ClusterScanCursor().
-            match (Optional[TEncodable]): A pattern to match keys against.
-            count (Optional[int]): The number of keys to return in a single iteration.
-                The actual number returned can vary and is not guaranteed to match this count exactly.
-                This parameter serves as a hint to the server on the number of steps to perform in each iteration.
-                The default value is 10.
-            type (Optional[ObjectType]): The type of object to scan for.
-            allow_non_covered_slots (bool): If set to True, the scan will perform even if some slots are not covered by any node.
-                It's important to note that when set to True, the scan has no guarantee to cover all keys in the cluster,
-                and the method loses its way to validate the progress of the scan. Defaults to False.
-
-        Returns:
-            List[Union[ClusterScanCursor, List[TEncodable]]]: A list containing the next cursor and a list of keys,
-                formatted as [ClusterScanCursor, [key1, key2, ...]].
-
-        Examples:
-            >>> # Iterate over all keys in the cluster.
-            >>> client.mset({b'key1': b'value1', b'key2': b'value2', b'key3': b'value3'})
-            >>> cursor = ClusterScanCursor()
-            >>> all_keys = []
-            >>> while not cursor.is_finished():
-            >>>     cursor, keys = client.scan(cursor, count=10, allow_non_covered_slots=False)
-            >>>     all_keys.extend(keys)
-            >>> print(all_keys)  # [b'key1', b'key2', b'key3']
-
-            >>> # Iterate over keys matching the pattern "*key*".
-            >>> client.mset({b"key1": b"value1", b"key2": b"value2", b"not_my_key": b"value3", b"something_else": b"value4"})
-            >>> cursor = ClusterScanCursor()
-            >>> all_keys = []
-            >>> while not cursor.is_finished():
-            >>>     cursor, keys = client.scan(cursor, match=b"*key*", count=10, allow_non_covered_slots=False)
-            >>>     all_keys.extend(keys)
-            >>> print(all_keys)  # [b'key1', b'key2', b'not_my_key']
-
-            >>> # Iterate over keys of type STRING.
-            >>> client.mset({b'key1': b'value1', b'key2': b'value2', b'key3': b'value3'})
-            >>> client.sadd(b"this_is_a_set", [b"value4"])
-            >>> cursor = ClusterScanCursor()
-            >>> all_keys = []
-            >>> while not cursor.is_finished():
-            >>>     cursor, keys = client.scan(cursor, type=ObjectType.STRING, allow_non_covered_slots=False)
-            >>>     all_keys.extend(keys)
-            >>> print(all_keys)  # [b'key1', b'key2', b'key3']
-        """
-        return cast(
-            List[Union[ClusterScanCursor, List[bytes]]],
-            self._cluster_scan(
-                cursor=cursor,
-                match=match,
-                count=count,
-                type=type,
-                allow_non_covered_slots=allow_non_covered_slots,
-            ),
-        )
-
-    def script_exists(
-        self, sha1s: List[TEncodable], route: Optional[Route] = None
-    ) -> TClusterResponse[List[bool]]:
-        """
-        Check existence of scripts in the script cache by their SHA1 digest.
-
-        See https://valkey.io/commands/script-exists for more details.
-
-        Args:
-            sha1s (List[TEncodable]): List of SHA1 digests of the scripts to check.
-            route (Optional[Route]): The command will be routed to all primary nodes, unless `route` is provided, in which
-            case the client will route the command to the nodes defined by `route`. Defaults to None.
-
-        Returns:
-            TClusterResponse[List[bool]]: A list of boolean values indicating the existence of each script.
-
-        Examples:
-            >>> lua_script = Script("return { KEYS[1], ARGV[1] }")
-            >>> client.script_exists([lua_script.get_hash(), "sha1_digest2"])
-                [True, False]
-        """
-        return cast(
-            TClusterResponse[List[bool]],
-            self._execute_command(RequestType.ScriptExists, sha1s, route),
-        )
-
-    def script_flush(
-        self, mode: Optional[FlushMode] = None, route: Optional[Route] = None
-    ) -> TOK:
-        """
-        Flush the Lua scripts cache.
-
-        See https://valkey.io/commands/script-flush for more details.
-
-        Args:
-            mode (Optional[FlushMode]): The flushing mode, could be either `SYNC` or `ASYNC`.
-            route (Optional[Route]): The command will be routed automatically to all nodes, unless `route` is provided, in which
-                case the client will route the command to the nodes defined by `route`. Defaults to None.
-
-        Returns:
-            TOK: A simple `OK` response.
-
-        Examples:
-            >>> client.script_flush()
-                "OK"
-
-            >>> client.script_flush(FlushMode.ASYNC)
-                "OK"
-        """
-
-        return cast(
-            TOK,
-            self._execute_command(
-                RequestType.ScriptFlush, [mode.value] if mode else [], route
-            ),
-        )
-
-    def script_kill(self, route: Optional[Route] = None) -> TOK:
-        """
-        Kill the currently executing Lua script, assuming no write operation was yet performed by the script.
-        The command is routed to all nodes, and aggregates the response to a single array.
-
-        See https://valkey.io/commands/script-kill for more details.
-
-        Returns:
-            TOK: A simple `OK` response.
-            route (Optional[Route]): The command will be routed automatically to all nodes, unless `route` is provided, in which
-                case the client will route the command to the nodes defined by `route`. Defaults to None.
-
-        Examples:
-            >>> client.script_kill()
-                "OK"
-        """
-        return cast(TOK, self._execute_command(RequestType.ScriptKill, [], route))
-
-    def invoke_script(
-        self,
-        script: Script,
-        keys: Optional[List[TEncodable]] = None,
-        args: Optional[List[TEncodable]] = None,
-    ) -> TClusterResponse[TResult]:
-        """
-        Invokes a Lua script with its keys and arguments.
-        This method simplifies the process of invoking scripts on a server by using an object that represents a Lua script.
-        The script loading, argument preparation, and execution will all be handled internally.
-        If the script has not already been loaded, it will be loaded automatically using the `SCRIPT LOAD` command.
-        After that, it will be invoked using the `EVALSHA` command.
-
-        When in cluster mode, `key`s must map to the same hash slot.
-
-        See https://valkey.io/commands/script-load/ and https://valkey.io/commands/evalsha/ for more details.
-
-        Args:
-            script (Script): The Lua script to execute.
-            keys (Optional[List[TEncodable]]): The keys that are used in the script. To ensure the correct execution of
-                the script, all names of keys that a script accesses must be explicitly provided as `keys`.
-            args (Optional[List[TEncodable]]): The non-key arguments for the script.
-
-        Returns:
-            TResult: a value that depends on the script that was executed.
-
-        Examples:
-            >>> lua_script = Script("return { KEYS[1], ARGV[1] }")
-            >>> invoke_script(lua_script, keys=["foo"], args=["bar"] );
-                [b"foo", b"bar"]
-        """
-        return self._execute_script(script.get_hash(), keys, args)
-
-    def invoke_script_route(
-        self,
-        script: Script,
-        args: Optional[List[TEncodable]] = None,
-        route: Optional[Route] = None,
-    ) -> TClusterResponse[TResult]:
-        """
-        Invokes a Lua script with its arguments and route.
-        This method simplifies the process of invoking scripts on a server by using an object that represents a Lua script.
-        The script loading, argument preparation, and execution will all be handled internally.
-        If the script has not already been loaded, it will be loaded automatically using the `SCRIPT LOAD` command.
-        After that, it will be invoked using the `EVALSHA` command.
-
-        See https://valkey.io/commands/script-load/ and https://valkey.io/commands/evalsha/ for more details.
-
-        Args:
-            script (Script): The Lua script to execute.
-            args (Optional[List[TEncodable]]): The non-key arguments for the script.
-            route (Optional[Route]): The command will be routed automatically to a random node, unless `route` is provided, in which
-                case the client will route the command to the nodes defined by `route`. Defaults to None.
-
-        Returns:
-            TResult: a value that depends on the script that was executed.
-
-        Examples:
-            >>> lua_script = Script("return { ARGV[1] }")
-            >>> invoke_script(lua_script, args=["bar"], route=AllPrimaries());
-                [b"bar"]
-        """
-        return self._execute_script(
-            script.get_hash(), keys=None, args=args, route=route
         )

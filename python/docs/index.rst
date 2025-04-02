@@ -9,9 +9,9 @@ Valkey GLIDE documentation
 Welcome to the documentation page for Valkey GLIDE!
 
 .. toctree::
-   :maxdepth: 8
+   :maxdepth: 9
    :caption: Contents:
 
    glide
-   glide.async_commands
+   glide.commands.async_commands
    modules

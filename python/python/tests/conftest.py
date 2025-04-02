@@ -17,14 +17,12 @@ from glide.config import (
 )
 from glide.exceptions import ClosingError
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
-from glide.sync import (
-    TGlideClient as TSyncGlideClient,
-    GlideClient as SyncGlideClient,
-    GlideClusterClient as SyncGlideClusterClient
-)
 from glide.logger import Level as logLevel
 from glide.logger import Logger
 from glide.routes import AllNodes
+from glide.sync import GlideClient as SyncGlideClient
+from glide.sync import GlideClusterClient as SyncGlideClusterClient
+from glide.sync import TGlideClient as TSyncGlideClient
 from tests.utils.cluster import ValkeyCluster
 from tests.utils.utils import (
     check_if_server_version_lt,
@@ -234,6 +232,7 @@ async def glide_client(
     await test_teardown(request, cluster_mode, protocol)
     await client.close()
 
+
 @pytest.fixture(scope="function")
 def glide_sync_client(
     request,
@@ -258,6 +257,7 @@ async def management_client(
     yield client
     await test_teardown(request, cluster_mode, protocol)
     await client.close()
+
 
 def create_client_config(
     request,
@@ -371,20 +371,21 @@ async def create_client(
 ) -> Union[GlideClient, GlideClusterClient]:
     # Create async socket client
     config = create_client_config(
-        request, 
-        cluster_mode, 
-        credentials, 
-        database_id, 
-        addresses, 
-        client_name, 
-        protocol, 
-        timeout, 
-        cluster_mode_pubsub, 
-        standalone_mode_pubsub, 
-        inflight_requests_limit, 
-        read_from, 
-        client_az, 
-        valkey_cluster)
+        request,
+        cluster_mode,
+        credentials,
+        database_id,
+        addresses,
+        client_name,
+        protocol,
+        timeout,
+        cluster_mode_pubsub,
+        standalone_mode_pubsub,
+        inflight_requests_limit,
+        read_from,
+        client_az,
+        valkey_cluster,
+    )
     if cluster_mode:
         valkey_cluster = valkey_cluster or pytest.valkey_cluster  # type: ignore
         assert type(valkey_cluster) is ValkeyCluster
@@ -430,6 +431,7 @@ async def create_client(
 USERNAME = "username"
 INITIAL_PASSWORD = "initial_password"
 
+
 def create_sync_client(
     request,
     cluster_mode: bool,
@@ -452,24 +454,26 @@ def create_sync_client(
 ) -> TSyncGlideClient:
     # Create sync client
     config = create_client_config(
-        request, 
-        cluster_mode, 
-        credentials, 
-        database_id, 
-        addresses, 
-        client_name, 
-        protocol, 
-        timeout, 
-        cluster_mode_pubsub, 
-        standalone_mode_pubsub, 
-        inflight_requests_limit, 
-        read_from, 
-        client_az, 
-        valkey_cluster)
+        request,
+        cluster_mode,
+        credentials,
+        database_id,
+        addresses,
+        client_name,
+        protocol,
+        timeout,
+        cluster_mode_pubsub,
+        standalone_mode_pubsub,
+        inflight_requests_limit,
+        read_from,
+        client_az,
+        valkey_cluster,
+    )
     if cluster_mode:
         return SyncGlideClusterClient.create(config)
     else:
         return SyncGlideClient.create(config)
+
 
 NEW_PASSWORD = "new_secure_password"
 WRONG_PASSWORD = "wrong_password"
@@ -507,6 +511,7 @@ def sync_config_set_new_password(client: TSyncGlideClient, password):
     elif isinstance(client, GlideClusterClient):
         client.config_set({"requirepass": password}, route=AllNodes())
 
+
 async def config_set_new_password(client: TGlideClient, password):
     """
     Sets a new password for the given TGlideClient server connected.
@@ -525,9 +530,8 @@ def sync_kill_connections(client: TSyncGlideClient):
     if isinstance(client, GlideClient):
         client.custom_command(["CLIENT", "KILL", "TYPE", "normal"])
     elif isinstance(client, GlideClusterClient):
-        client.custom_command(
-            ["CLIENT", "KILL", "TYPE", "normal"], route=AllNodes()
-        )
+        client.custom_command(["CLIENT", "KILL", "TYPE", "normal"], route=AllNodes())
+
 
 async def kill_connections(client: TGlideClient):
     """

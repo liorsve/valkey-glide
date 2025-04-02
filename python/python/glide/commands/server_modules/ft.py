@@ -16,12 +16,8 @@ from glide.commands.server_modules.ft_options.ft_create_options import (
     Field,
     FtCreateOptions,
 )
-from glide.commands.server_modules.ft_options.ft_profile_options import (
-    FtProfileOptions,
-)
-from glide.commands.server_modules.ft_options.ft_search_options import (
-    FtSearchOptions,
-)
+from glide.commands.server_modules.ft_options.ft_profile_options import FtProfileOptions
+from glide.commands.server_modules.ft_options.ft_search_options import FtSearchOptions
 from glide.constants import (
     TOK,
     FtAggregateResponse,

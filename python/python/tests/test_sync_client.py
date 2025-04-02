@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import math
-from threading import Thread
 import time
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Union, cast
+from threading import Thread
+from typing import Any, Dict, List, Mapping, Union, cast
 
 import pytest
 from glide import ClosingError, RequestError
@@ -71,15 +70,8 @@ from glide.commands.stream import (
     TrimByMinId,
 )
 from glide.commands.transaction import ClusterTransaction, Transaction
-from glide.config import (
-    GlideClientConfiguration,
-    GlideClusterClientConfiguration,
-    ProtocolVersion,
-    ServerCredentials,
-)
+from glide.config import ProtocolVersion, ServerCredentials
 from glide.constants import OK, TEncodable, TFunctionStatsSingleNodeResponse, TResult
-from glide.exceptions import TimeoutError as GlideTimeoutError
-from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
 from glide.routes import (
     AllNodes,
     AllPrimaries,
@@ -90,16 +82,14 @@ from glide.routes import (
     SlotKeyRoute,
     SlotType,
 )
-from glide.sync import TGlideClient
+from glide.sync import GlideClient, GlideClusterClient, TGlideClient
 from tests.conftest import create_sync_client
 from tests.utils.utils import (
     check_function_list_response,
     check_function_stats_response,
-    sync_check_if_server_version_lt,
     compare_maps,
     convert_bytes_to_string_object,
     convert_string_to_bytes_object,
-    create_long_running_lua_script,
     create_lua_lib_with_long_running_function,
     generate_lua_lib_code,
     get_first_result,
@@ -107,13 +97,16 @@ from tests.utils.utils import (
     is_single_response,
     parse_info_response,
     round_values,
+    sync_check_if_server_version_lt,
 )
 
 
 class TestGlideClients:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_register_client_name_and_version(self, glide_sync_client: TGlideClient):
+    def test_sync_register_client_name_and_version(
+        self, glide_sync_client: TGlideClient
+    ):
         min_version = "7.2.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             # TODO: change it to pytest fixture after we'll implement a sync client
@@ -141,7 +134,9 @@ class TestGlideClients:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_send_and_receive_non_ascii_unicode(self, glide_sync_client: TGlideClient):
+    def test_sync_send_and_receive_non_ascii_unicode(
+        self, glide_sync_client: TGlideClient
+    ):
         key = "foo"
         value = "שלום hello 汉字"
         assert value == "שלום hello 汉字"
@@ -164,17 +159,14 @@ class TestGlideClients:
                 value = get_random_string(value_size)
                 assert glide_sync_client.set(str(i), value) == OK
                 assert glide_sync_client.get(str(i)) == value.encode()
+
         num_of_concurrent_threads = 100
         running_threads = []
         for i in range(num_of_concurrent_threads):
-            thread = Thread(
-                target=exec_command,
-                args=(i,),
-                name=f"Worker-{i}"
-            )
+            thread = Thread(target=exec_command, args=(i,), name=f"Worker-{i}")
             running_threads.append(thread)
             thread.start()
-        
+
         for thread in running_threads:
             thread.join()
 
@@ -187,9 +179,7 @@ class TestGlideClients:
         password = "TEST_AUTH"
         credentials = ServerCredentials(password)
         try:
-            glide_sync_client.custom_command(
-                ["CONFIG", "SET", "requirepass", password]
-            )
+            glide_sync_client.custom_command(["CONFIG", "SET", "requirepass", password])
             with pytest.raises(ClosingError, match="NOAUTH"):
                 # Creation of a new client without password should fail
                 create_sync_client(
@@ -339,7 +329,7 @@ class TestCommands:
     def test_sync_inflight_request_limit(
         self, cluster_mode, protocol, inflight_requests_limit, request
     ):
-        key1 = f"{{nonexistinglist}}:1-{get_random_string(10)}"
+        key1 = f"{{nonexistinglist}}1-{get_random_string(10)}"
         test_sync_client = create_sync_client(
             request=request,
             protocol=protocol,
@@ -518,7 +508,7 @@ class TestCommands:
         assert glide_sync_client.select(1) == OK
         assert glide_sync_client.get(key) == value.encode()
 
-        with pytest.raises(RequestError) as e:
+        with pytest.raises(RequestError):
             glide_sync_client.move(key, -1)
 
     @pytest.mark.parametrize("cluster_mode", [False])
@@ -569,7 +559,7 @@ class TestCommands:
         assert glide_sync_client.getdel(non_existing_key) is None
 
         assert glide_sync_client.lpush(list_key, [value]) == 1
-        with pytest.raises(RequestError) as e:
+        with pytest.raises(RequestError):
             glide_sync_client.getdel(list_key)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
@@ -875,8 +865,8 @@ class TestCommands:
         key = get_random_string(10)
         field = get_random_string(5)
 
-        assert glide_sync_client.hsetnx(key, field, "value") == True
-        assert glide_sync_client.hsetnx(key, field, "new value") == False
+        assert glide_sync_client.hsetnx(key, field, "value") is True
+        assert glide_sync_client.hsetnx(key, field, "new value") is False
         assert glide_sync_client.hget(key, field) == b"value"
         key = get_random_string(5)
         assert glide_sync_client.set(key, "value") == OK
@@ -1178,7 +1168,7 @@ class TestCommands:
         )
         # key exists, but not a list
         assert glide_sync_client.set(key2, "bar") == OK
-        with pytest.raises(RequestError) as e:
+        with pytest.raises(RequestError):
             glide_sync_client.lpushx(key2, ["_"])
         # incorrect arguments
         with pytest.raises(RequestError):
@@ -1327,7 +1317,9 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_rpush_rpop_wrong_type_raise_error(self, glide_sync_client: TGlideClient):
+    def test_sync_rpush_rpop_wrong_type_raise_error(
+        self, glide_sync_client: TGlideClient
+    ):
         key = get_random_string(10)
         assert glide_sync_client.set(key, "foo") == OK
 
@@ -1356,7 +1348,7 @@ class TestCommands:
         )
         # key existing, but it is not a list
         assert glide_sync_client.set(key2, "bar") == OK
-        with pytest.raises(RequestError) as e:
+        with pytest.raises(RequestError):
             glide_sync_client.rpushx(key2, ["_"])
         # incorrect arguments
         with pytest.raises(RequestError):
@@ -1449,9 +1441,7 @@ class TestCommands:
 
         # Move from LEFT to RIGHT
         assert (
-            glide_sync_client.lmove(
-                key1, key2, ListDirection.LEFT, ListDirection.RIGHT
-            )
+            glide_sync_client.lmove(key1, key2, ListDirection.LEFT, ListDirection.RIGHT)
             == b"2"
         )
         assert glide_sync_client.lrange(key1, 0, -1) == []
@@ -1461,9 +1451,7 @@ class TestCommands:
 
         # Move from RIGHT to LEFT - non-existing destination key
         assert (
-            glide_sync_client.lmove(
-                key2, key1, ListDirection.RIGHT, ListDirection.LEFT
-            )
+            glide_sync_client.lmove(key2, key1, ListDirection.RIGHT, ListDirection.LEFT)
             == b"2"
         )
         assert glide_sync_client.lrange(key2, 0, -1) == convert_string_to_bytes_object(
@@ -1723,17 +1711,17 @@ class TestCommands:
 
         assert glide_sync_client.scard(key) == 0
 
-        assert glide_sync_client.spop("non_existing_key") == None
+        assert glide_sync_client.spop("non_existing_key") is None
         assert glide_sync_client.spop_count("non_existing_key", 3) == set()
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_smove(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
-        key3 = f"{{testKey}}:3-{get_random_string(10)}"
-        string_key = f"{{testKey}}:4-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:5-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
+        key3 = f"{{testKey}}3-{get_random_string(10)}"
+        string_key = f"{{testKey}}4-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}5-{get_random_string(10)}"
 
         assert glide_sync_client.sadd(key1, ["1", "2", "3"]) == 3
         assert glide_sync_client.sadd(key2, ["2", "3"]) == 2
@@ -1785,9 +1773,9 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_sunion(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:{get_random_string(10)}"
-        key2 = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:non_existing_key"
+        key1 = f"{{testKey}}{get_random_string(10)}"
+        key2 = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = "{testKey}non_existing_key"
         member1_list: List[TEncodable] = ["a", "b", "c"]
         member2_list: List[TEncodable] = ["b", "c", "d", "e"]
 
@@ -1806,18 +1794,18 @@ class TestCommands:
 
         # non-set key
         assert glide_sync_client.set(key2, "value") == OK
-        with pytest.raises(RequestError) as e:
+        with pytest.raises(RequestError):
             glide_sync_client.sunion([key2])
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_sunionstore(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
-        key3 = f"{{testKey}}:3-{get_random_string(10)}"
-        key4 = f"{{testKey}}:4-{get_random_string(10)}"
-        string_key = f"{{testKey}}:4-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:5-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
+        key3 = f"{{testKey}}3-{get_random_string(10)}"
+        key4 = f"{{testKey}}4-{get_random_string(10)}"
+        string_key = f"{{testKey}}4-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}5-{get_random_string(10)}"
 
         assert glide_sync_client.sadd(key1, ["a", "b", "c"]) == 3
         assert glide_sync_client.sadd(key2, ["c", "d", "e"]) == 3
@@ -1852,9 +1840,7 @@ class TestCommands:
 
         # overwrite destination when destination is not a set
         assert glide_sync_client.sunionstore(string_key, [key1, key3]) == 7
-        assert glide_sync_client.smembers(
-            string_key
-        ) == convert_string_to_bytes_object(
+        assert glide_sync_client.smembers(string_key) == convert_string_to_bytes_object(
             {
                 "a",
                 "b",
@@ -1869,9 +1855,9 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_sinter(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:{get_random_string(10)}"
-        key2 = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:non_existing_key"
+        key1 = f"{{testKey}}{get_random_string(10)}"
+        key2 = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = "{testKey}non_existing_key"
         member1_list: List[TEncodable] = ["a", "b", "c"]
         member2_list: List[TEncodable] = ["c", "d", "e"]
 
@@ -1896,11 +1882,11 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_sinterstore(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:{get_random_string(10)}"
-        key2 = f"{{testKey}}:{get_random_string(10)}"
-        key3 = f"{{testKey}}:{get_random_string(10)}"
-        string_key = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:non_existing_key"
+        key1 = f"{{testKey}}{get_random_string(10)}"
+        key2 = f"{{testKey}}{get_random_string(10)}"
+        key3 = f"{{testKey}}{get_random_string(10)}"
+        string_key = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = "{testKey}non_existing_key"
         member1_list: List[TEncodable] = ["a", "b", "c"]
         member2_list: List[TEncodable] = ["c", "d", "e"]
 
@@ -1929,7 +1915,7 @@ class TestCommands:
 
         # non-set key
         assert glide_sync_client.set(string_key, "value") == OK
-        with pytest.raises(RequestError) as e:
+        with pytest.raises(RequestError):
             glide_sync_client.sinterstore(key3, [string_key])
 
         # overwrite non-set key
@@ -1943,11 +1929,11 @@ class TestCommands:
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
-        key1 = f"{{testKey}}:{get_random_string(10)}"
-        key2 = f"{{testKey}}:{get_random_string(10)}"
-        key3 = f"{{testKey}}:{get_random_string(10)}"
-        string_key = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:non_existing_key"
+        key1 = f"{{testKey}}{get_random_string(10)}"
+        key2 = f"{{testKey}}{get_random_string(10)}"
+        key3 = f"{{testKey}}{get_random_string(10)}"
+        string_key = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = "{testKey}non_existing_key"
         member1_list: List[TEncodable] = ["a", "b", "c"]
         member2_list: List[TEncodable] = ["b", "c", "d", "e"]
         member3_list: List[TEncodable] = ["b", "c", "f", "g"]
@@ -1986,10 +1972,10 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_sdiff(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
-        string_key = f"{{testKey}}:4-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:5-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
+        string_key = f"{{testKey}}4-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}5-{get_random_string(10)}"
 
         assert glide_sync_client.sadd(key1, ["a", "b", "c"]) == 3
         assert glide_sync_client.sadd(key2, ["c", "d", "e"]) == 3
@@ -2018,11 +2004,11 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_sdiffstore(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
-        key3 = f"{{testKey}}:3-{get_random_string(10)}"
-        string_key = f"{{testKey}}:4-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:5-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
+        key3 = f"{{testKey}}3-{get_random_string(10)}"
+        string_key = f"{{testKey}}4-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}5-{get_random_string(10)}"
 
         assert glide_sync_client.sadd(key1, ["a", "b", "c"]) == 3
         assert glide_sync_client.sadd(key2, ["c", "d", "e"]) == 3
@@ -2064,9 +2050,9 @@ class TestCommands:
 
         # Overwrite a key holding a non-set value
         assert glide_sync_client.sdiffstore(string_key, [key1, key2]) == 2
-        assert glide_sync_client.smembers(
-            string_key
-        ) == convert_string_to_bytes_object({"a", "b"})
+        assert glide_sync_client.smembers(string_key) == convert_string_to_bytes_object(
+            {"a", "b"}
+        )
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
@@ -2188,10 +2174,10 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_renamenx(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
-        key3 = f"{{testKey}}:3-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:5-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
+        key3 = f"{{testKey}}3-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}5-{get_random_string(10)}"
 
         # Verify that attempting to rename a non-existing key throws an error
         with pytest.raises(RequestError):
@@ -2675,8 +2661,8 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_geosearchstore_by_box(self, glide_sync_client: TGlideClient):
-        key = f"{{testKey}}:{get_random_string(10)}"
-        destination_key = f"{{testKey}}:{get_random_string(8)}"
+        key = f"{{testKey}}{get_random_string(10)}"
+        destination_key = f"{{testKey}}{get_random_string(8)}"
         members_coordinates: Mapping[TEncodable, GeospatialData] = {
             "Palermo": GeospatialData(13.361389, 38.115556),
             "Catania": GeospatialData(15.087269, 37.502669),
@@ -2796,8 +2782,8 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_geosearchstore_by_radius(self, glide_sync_client: TGlideClient):
-        key = f"{{testKey}}:{get_random_string(10)}"
-        destination_key = f"{{testKey}}:{get_random_string(8)}"
+        key = f"{{testKey}}{get_random_string(10)}"
+        destination_key = f"{{testKey}}{get_random_string(8)}"
         # Checking when parts of the value contain bytes
         members_coordinates: Mapping[TEncodable, GeospatialData] = {
             b"Palermo": GeospatialData(13.361389, 38.115556),
@@ -2914,8 +2900,8 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_geosearchstore_no_result(self, glide_sync_client: TGlideClient):
-        key = f"{{testKey}}:{get_random_string(10)}"
-        destination_key = f"{{testKey}}:{get_random_string(8)}"
+        key = f"{{testKey}}{get_random_string(10)}"
+        destination_key = f"{{testKey}}{get_random_string(8)}"
         members_coordinates: Mapping[TEncodable, GeospatialData] = {
             "Palermo": GeospatialData(13.361389, 38.115556),
             "Catania": GeospatialData(15.087269, 37.502669),
@@ -3039,7 +3025,7 @@ class TestCommands:
             glide_sync_client.geodist(
                 key, "Palermo", "non-existing-member", GeoUnit.FEET
             )
-            == None
+            is None
         )
 
         assert glide_sync_client.set(key2, "value") == OK
@@ -3782,10 +3768,9 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_bzpopmin(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:{get_random_string(10)}"
-        key2 = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:non_existing_key"
-
+        key1 = f"{{testKey}}{get_random_string(10)}"
+        key2 = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = "{testKey}non_existing_key"
         assert glide_sync_client.zadd(key1, {"a": 1.0, "b": 1.5}) == 2
         assert glide_sync_client.zadd(key2, {"c": 2.0}) == 1
         assert glide_sync_client.bzpopmin(
@@ -3841,9 +3826,9 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_bzpopmax(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:{get_random_string(10)}"
-        key2 = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:non_existing_key"
+        key1 = f"{{testKey}}{get_random_string(10)}"
+        key2 = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = "{testKey}non_existing_key"
 
         assert glide_sync_client.zadd(key1, {"a": 1.0, "b": 1.5}) == 2
         assert glide_sync_client.zadd(key2, {"c": 2.0}) == 1
@@ -4034,9 +4019,7 @@ class TestCommands:
         assert glide_sync_client.zrange("non_existing_key", RangeByIndex(0, 1)) == []
 
         assert (
-            glide_sync_client.zrange_withscores(
-                "non_existing_key", RangeByIndex(0, -1)
-            )
+            glide_sync_client.zrange_withscores("non_existing_key", RangeByIndex(0, -1))
         ) == {}
 
         assert glide_sync_client.set(key, "value") == OK
@@ -4049,10 +4032,10 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_zrangestore_by_index(self, glide_sync_client: TGlideClient):
-        destination = f"{{testKey}}:{get_random_string(10)}"
-        source = f"{{testKey}}:{get_random_string(10)}"
-        string_key = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:{get_random_string(10)}"
+        destination = f"{{testKey}}{get_random_string(10)}"
+        source = f"{{testKey}}{get_random_string(10)}"
+        string_key = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}{get_random_string(10)}"
 
         member_scores: Mapping[TEncodable, float] = {
             "one": 1.0,
@@ -4063,8 +4046,7 @@ class TestCommands:
 
         # full range
         assert (
-            glide_sync_client.zrangestore(destination, source, RangeByIndex(0, -1))
-            == 3
+            glide_sync_client.zrangestore(destination, source, RangeByIndex(0, -1)) == 3
         )
         zrange_res = glide_sync_client.zrange_withscores(
             destination, RangeByIndex(0, -1)
@@ -4073,9 +4055,7 @@ class TestCommands:
 
         # range from rank 0 to 1, from highest to lowest score
         assert (
-            glide_sync_client.zrangestore(
-                destination, source, RangeByIndex(0, 1), True
-            )
+            glide_sync_client.zrangestore(destination, source, RangeByIndex(0, 1), True)
             == 2
         )
 
@@ -4111,10 +4091,10 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_zrangestore_by_score(self, glide_sync_client: TGlideClient):
-        destination = f"{{testKey}}:{get_random_string(10)}"
-        source = f"{{testKey}}:{get_random_string(10)}"
-        string_key = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:{get_random_string(10)}"
+        destination = f"{{testKey}}{get_random_string(10)}"
+        source = f"{{testKey}}{get_random_string(10)}"
+        string_key = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}{get_random_string(10)}"
 
         member_scores: Mapping[TEncodable, float] = {
             "one": 1.0,
@@ -4218,10 +4198,10 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_zrangestore_by_lex(self, glide_sync_client: TGlideClient):
-        destination = f"{{testKey}}:{get_random_string(10)}"
-        source = f"{{testKey}}:{get_random_string(10)}"
-        string_key = f"{{testKey}}:4-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:5-{get_random_string(10)}"
+        destination = f"{{testKey}}{get_random_string(10)}"
+        source = f"{{testKey}}{get_random_string(10)}"
+        string_key = f"{{testKey}}4-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}5-{get_random_string(10)}"
 
         member_scores: Mapping[TEncodable, float] = {"a": 1.0, "b": 2.0, "c": 3.0}
         assert glide_sync_client.zadd(source, member_scores) == 3
@@ -4361,8 +4341,7 @@ class TestCommands:
         if not sync_check_if_server_version_lt(glide_sync_client, "7.2.0"):
             assert glide_sync_client.zrevrank_withscore(key, "one") == [2, 1.0]
             assert (
-                glide_sync_client.zrevrank_withscore(key, "non_existing_member")
-                is None
+                glide_sync_client.zrevrank_withscore(key, "non_existing_member") is None
             )
             assert (
                 glide_sync_client.zrevrank_withscore(
@@ -4381,11 +4360,11 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_zdiff(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
-        key3 = f"{{testKey}}:3-{get_random_string(10)}"
-        string_key = f"{{testKey}}:4-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:5-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
+        key3 = f"{{testKey}}3-{get_random_string(10)}"
+        string_key = f"{{testKey}}4-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}5-{get_random_string(10)}"
 
         member_scores1: Mapping[TEncodable, float] = {
             "one": 1.0,
@@ -4440,12 +4419,12 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_zdiffstore(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
-        key3 = f"{{testKey}}:3-{get_random_string(10)}"
-        key4 = f"{{testKey}}:4-{get_random_string(10)}"
-        string_key = f"{{testKey}}:4-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:5-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
+        key3 = f"{{testKey}}3-{get_random_string(10)}"
+        key4 = f"{{testKey}}4-{get_random_string(10)}"
+        string_key = f"{{testKey}}4-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}5-{get_random_string(10)}"
 
         member_scores1: Mapping[TEncodable, float] = {
             "one": 1.0,
@@ -4494,7 +4473,7 @@ class TestCommands:
 
         key1 = f"{{test}}-1-f{get_random_string(10)}"
         key2 = f"{{test}}-2-f{get_random_string(10)}"
-        non_existing_key = f"{{test}}-non_existing_key"
+        non_existing_key = "{test}-non_existing_key"
         string_key = f"{{test}}-3-f{get_random_string(10)}"
 
         assert (
@@ -4650,10 +4629,10 @@ class TestCommands:
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
-        string_key = f"{{testKey}}:4-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:5-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
+        string_key = f"{{testKey}}4-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}5-{get_random_string(10)}"
 
         member_scores1: Mapping[TEncodable, float] = {
             "one": 1.0,
@@ -4694,7 +4673,7 @@ class TestCommands:
 
         key1 = f"{{test}}-1-f{get_random_string(10)}"
         key2 = f"{{test}}-2-f{get_random_string(10)}"
-        non_existing_key = f"{{test}}-non_existing_key"
+        non_existing_key = "{test}-non_existing_key"
         string_key = f"{{test}}-3-f{get_random_string(10)}"
 
         assert glide_sync_client.zadd(key1, {"a1": 1, "b1": 2}) == 2
@@ -4781,7 +4760,7 @@ class TestCommands:
             glide_sync_client, GlideClusterClient
         ) and sync_check_if_server_version_lt(glide_sync_client, "8.0.0"):
             return pytest.mark.skip(
-                reason=f"Valkey version required in cluster mode>= 8.0.0"
+                reason="Valkey version required in cluster mode>= 8.0.0"
             )
         key = "{user}" + get_random_string(10)
         store = "{user}" + get_random_string(10)
@@ -5215,15 +5194,11 @@ class TestCommands:
         stream_id3 = "0-3"
 
         assert (
-            glide_sync_client.xadd(
-                key, [("f1", "v1")], StreamAddOptions(id=stream_id1)
-            )
+            glide_sync_client.xadd(key, [("f1", "v1")], StreamAddOptions(id=stream_id1))
             == stream_id1.encode()
         )
         assert (
-            glide_sync_client.xadd(
-                key, [("f2", "v2")], StreamAddOptions(id=stream_id2)
-            )
+            glide_sync_client.xadd(key, [("f2", "v2")], StreamAddOptions(id=stream_id2))
             == stream_id2.encode()
         )
         assert glide_sync_client.xlen(key) == 2
@@ -5246,9 +5221,7 @@ class TestCommands:
         assert glide_sync_client.xrevrange(key, MinId(), MaxId()) == {}
 
         assert (
-            glide_sync_client.xadd(
-                key, [("f3", "v3")], StreamAddOptions(id=stream_id3)
-            )
+            glide_sync_client.xadd(key, [("f3", "v3")], StreamAddOptions(id=stream_id3))
             == stream_id3.encode()
         )
 
@@ -5300,9 +5273,9 @@ class TestCommands:
     def test_sync_xread(
         self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:3-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}3-{get_random_string(10)}"
         stream_id1_1 = "1-1"
         stream_id1_2 = "1-2"
         stream_id1_3 = "1-3"
@@ -5395,8 +5368,8 @@ class TestCommands:
     def test_sync_xread_edge_cases_and_failures(
         self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        string_key = f"{{testKey}}:2-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        string_key = f"{{testKey}}2-{get_random_string(10)}"
         stream_id0 = "0-0"
         stream_id1 = "1-1"
         stream_id2 = "1-2"
@@ -5419,9 +5392,7 @@ class TestCommands:
         )
         # ensure command doesn't time out even if timeout > request timeout
         assert (
-            test_sync_client.xread(
-                {key1: stream_id2}, StreamReadOptions(block_ms=1000)
-            )
+            test_sync_client.xread({key1: stream_id2}, StreamReadOptions(block_ms=1000))
             is None
         )
 
@@ -5546,9 +5517,9 @@ class TestCommands:
     def test_sync_xgroup_create_consumer_xreadgroup_xgroup_del_consumer(
         self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
-        key = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:{get_random_string(10)}"
-        string_key = f"{{testKey}}:{get_random_string(10)}"
+        key = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}{get_random_string(10)}"
+        string_key = f"{{testKey}}{get_random_string(10)}"
         group_name = get_random_string(10)
         consumer_name = get_random_string(10)
         stream_id0 = "0"
@@ -5703,18 +5674,16 @@ class TestCommands:
                 string_key, group_name, consumer_name
             )
         with pytest.raises(RequestError):
-            glide_sync_client.xgroup_del_consumer(
-                string_key, group_name, consumer_name
-            )
+            glide_sync_client.xgroup_del_consumer(string_key, group_name, consumer_name)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_xreadgroup_edge_cases_and_failures(
         self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
-        key = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:{get_random_string(10)}"
-        string_key = f"{{testKey}}:{get_random_string(10)}"
+        key = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}{get_random_string(10)}"
+        string_key = f"{{testKey}}{get_random_string(10)}"
         group_name = get_random_string(10)
         consumer_name = get_random_string(10)
         stream_id0 = "0"
@@ -5810,7 +5779,7 @@ class TestCommands:
         test_sync_client = create_sync_client(
             request=request, protocol=protocol, cluster_mode=cluster_mode, timeout=900
         )
-        timeout_key = f"{{testKey}}:{get_random_string(10)}"
+        timeout_key = f"{{testKey}}{get_random_string(10)}"
         timeout_group_name = get_random_string(10)
         timeout_consumer_name = get_random_string(10)
 
@@ -5877,9 +5846,9 @@ class TestCommands:
     def test_sync_xack(
         self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
-        key = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:{get_random_string(10)}"
-        string_key = f"{{testKey}}:{get_random_string(10)}"
+        key = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}{get_random_string(10)}"
+        string_key = f"{{testKey}}{get_random_string(10)}"
         group_name = get_random_string(10)
         consumer_name = get_random_string(10)
         stream_id0 = "0"
@@ -5928,9 +5897,7 @@ class TestCommands:
         )
 
         # attempting to acknowledge a non-existing key returns 0
-        assert (
-            glide_sync_client.xack(non_existing_key, group_name, [stream_id1_0]) == 0
-        )
+        assert glide_sync_client.xack(non_existing_key, group_name, [stream_id1_0]) == 0
         # attempting to acknowledge a non-existing group returns 0
         assert glide_sync_client.xack(key, "non_existing_group", [stream_id1_0]) == 0
         # attempting to acknowledge a non-existing ID returns 0
@@ -5972,12 +5939,10 @@ class TestCommands:
             == OK
         )
         assert (
-            glide_sync_client.xgroup_create_consumer(key, group_name, consumer1)
-            is True
+            glide_sync_client.xgroup_create_consumer(key, group_name, consumer1) is True
         )
         assert (
-            glide_sync_client.xgroup_create_consumer(key, group_name, consumer2)
-            is True
+            glide_sync_client.xgroup_create_consumer(key, group_name, consumer2) is True
         )
 
         # add two stream entries for consumer1
@@ -6082,9 +6047,7 @@ class TestCommands:
 
         # claiming non exists id
         assert (
-            glide_sync_client.xclaim(
-                key, group_name, consumer1, 0, ["1526569498055-0"]
-            )
+            glide_sync_client.xclaim(key, group_name, consumer1, 0, ["1526569498055-0"])
             == {}
         )
 
@@ -6163,7 +6126,9 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_xpending_edge_cases_and_failures(self, glide_sync_client: TGlideClient):
+    def test_sync_xpending_edge_cases_and_failures(
+        self, glide_sync_client: TGlideClient
+    ):
         key = get_random_string(10)
         non_existing_key = get_random_string(10)
         string_key = get_random_string(10)
@@ -6220,9 +6185,7 @@ class TestCommands:
             stream_id1_1.encode(),
             [[consumer.encode(), b"2"]],
         ]
-        result = glide_sync_client.xpending_range(
-            key, group_name, MinId(), MaxId(), 10
-        )
+        result = glide_sync_client.xpending_range(key, group_name, MinId(), MaxId(), 10)
         assert len(result[0]) > 0
 
         # returns empty if + before -
@@ -6284,8 +6247,7 @@ class TestCommands:
             == []
         )
         assert (
-            glide_sync_client.xpending_range(key, group_name, MinId(), MaxId(), 0)
-            == []
+            glide_sync_client.xpending_range(key, group_name, MinId(), MaxId(), 0) == []
         )
 
         # non-positive min-idle-time values are allowed
@@ -6343,7 +6305,6 @@ class TestCommands:
         consumer = get_random_string(10)
         stream_id0 = "0"
         stream_id1_0 = "1-0"
-        stream_id1_1 = "1-1"
 
         # create group and consumer for the group
         assert (
@@ -6374,9 +6335,7 @@ class TestCommands:
             glide_sync_client.xclaim_just_id(key, group_name, consumer, 1, ["invalid"])
 
         # claim with empty stream entry IDs returns no results
-        empty_claim = glide_sync_client.xclaim_just_id(
-            key, group_name, consumer, 1, []
-        )
+        empty_claim = glide_sync_client.xclaim_just_id(key, group_name, consumer, 1, [])
         assert len(empty_claim) == 0
 
         claim_options = StreamClaimOptions(idle=1)
@@ -6978,9 +6937,9 @@ class TestCommands:
     def test_sync_xgroup_set_id(
         self, glide_sync_client: TGlideClient, cluster_mode, protocol, request
     ):
-        key = f"{{testKey}}:{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:{get_random_string(10)}"
-        string_key = f"{{testKey}}:{get_random_string(10)}"
+        key = f"{{testKey}}{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}{get_random_string(10)}"
+        string_key = f"{{testKey}}{get_random_string(10)}"
         group_name = get_random_string(10)
         consumer_name = get_random_string(10)
         stream_id0 = "0"
@@ -7066,11 +7025,11 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_pfcount(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
-        key3 = f"{{testKey}}:3-{get_random_string(10)}"
-        string_key = f"{{testKey}}:4-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:5-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
+        key3 = f"{{testKey}}3-{get_random_string(10)}"
+        string_key = f"{{testKey}}4-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}5-{get_random_string(10)}"
 
         assert glide_sync_client.pfadd(key1, ["a", "b", "c"]) == 1
         assert glide_sync_client.pfadd(key2, ["b", "c", "d"]) == 1
@@ -7094,11 +7053,11 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_pfmerge(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
-        key3 = f"{{testKey}}:3-{get_random_string(10)}"
-        string_key = f"{{testKey}}:4-{get_random_string(10)}"
-        non_existing_key = f"{{testKey}}:5-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
+        key3 = f"{{testKey}}3-{get_random_string(10)}"
+        string_key = f"{{testKey}}4-{get_random_string(10)}"
+        non_existing_key = f"{{testKey}}5-{get_random_string(10)}"
 
         assert glide_sync_client.pfadd(key1, ["a", "b", "c"]) == 1
         assert glide_sync_client.pfadd(key2, ["b", "c", "d"]) == 1
@@ -7332,14 +7291,14 @@ class TestCommands:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_bitop(self, glide_sync_client: TGlideClient):
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
         keys: List[TEncodable] = [key1, key2]
-        destination: TEncodable = f"{{testKey}}:3-{get_random_string(10)}"
-        non_existing_key1 = f"{{testKey}}:4-{get_random_string(10)}"
-        non_existing_key2 = f"{{testKey}}:5-{get_random_string(10)}"
+        destination: TEncodable = f"{{testKey}}3-{get_random_string(10)}"
+        non_existing_key1 = f"{{testKey}}4-{get_random_string(10)}"
+        non_existing_key2 = f"{{testKey}}5-{get_random_string(10)}"
         non_existing_keys: List[TEncodable] = [non_existing_key1, non_existing_key2]
-        set_key = f"{{testKey}}:6-{get_random_string(10)}"
+        set_key = f"{{testKey}}6-{get_random_string(10)}"
         value1 = "foobar"
         value2 = "abcdef"
 
@@ -7380,9 +7339,7 @@ class TestCommands:
         )
         assert glide_sync_client.get(destination) is None
         assert (
-            glide_sync_client.bitop(
-                BitwiseOperation.OR, destination, non_existing_keys
-            )
+            glide_sync_client.bitop(BitwiseOperation.OR, destination, non_existing_keys)
             == 0
         )
         assert glide_sync_client.get(destination) is None
@@ -7755,78 +7712,16 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_function_load(self, glide_sync_client: TGlideClient):
-        min_version = "7.0.0"
-        if sync_check_if_server_version_lt(glide_sync_client, min_version):
-            return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
-
-        lib_name = f"mylib1C{get_random_string(5)}"
-        func_name = f"myfunc1c{get_random_string(5)}"
-        code = generate_lua_lib_code(lib_name, {func_name: "return args[1]"}, True)
-
-        # verify function does not yet exist
-        assert glide_sync_client.function_list(lib_name) == []
-
-        assert glide_sync_client.function_load(code) == lib_name.encode()
-
-        assert glide_sync_client.fcall(func_name, arguments=["one", "two"]) == b"one"
-        assert (
-            glide_sync_client.fcall_ro(func_name, arguments=["one", "two"]) == b"one"
-        )
-
-        # verify with FUNCTION LIST
-        check_function_list_response(
-            glide_sync_client.function_list(lib_name, with_code=True),
-            lib_name,
-            {func_name: None},
-            {func_name: {b"no-writes"}},
-            code,
-        )
-
-        # re-load library without replace
-        with pytest.raises(RequestError) as e:
-            glide_sync_client.function_load(code)
-        assert "Library '" + lib_name + "' already exists" in str(e)
-
-        # re-load library with replace
-        assert glide_sync_client.function_load(code, True) == lib_name.encode()
-
-        func2_name = f"myfunc2c{get_random_string(5)}"
-        new_code = f"""{code}\n redis.register_function({func2_name}, function(keys, args) return #args end)"""
-        new_code = generate_lua_lib_code(
-            lib_name, {func_name: "return args[1]", func2_name: "return #args"}, True
-        )
-
-        assert glide_sync_client.function_load(new_code, True) == lib_name.encode()
-
-        assert glide_sync_client.fcall(func2_name, arguments=["one", "two"]) == 2
-        assert glide_sync_client.fcall_ro(func2_name, arguments=["one", "two"]) == 2
-
-        assert glide_sync_client.function_flush(FlushMode.SYNC) is OK
-
-    @pytest.mark.parametrize("cluster_mode", [True])
-    @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
+    @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("single_route", [True, False])
-    def test_sync_function_load_cluster_with_route(
-        self, glide_sync_client: GlideClusterClient, single_route: bool
-    ):
-        min_version = "7.0.0"
-        if sync_check_if_server_version_lt(glide_sync_client, min_version):
-            return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
-
+    def test_sync_function_load(self, glide_sync_client: TGlideClient, single_route: bool):
         lib_name = f"mylib1C{get_random_string(5)}"
         func_name = f"myfunc1c{get_random_string(5)}"
         code = generate_lua_lib_code(lib_name, {func_name: "return args[1]"}, True)
         route = SlotKeyRoute(SlotType.PRIMARY, "1") if single_route else AllPrimaries()
 
         # verify function does not yet exist
-        function_list = glide_sync_client.function_list(lib_name, False, route)
-        if single_route:
-            assert function_list == []
-        else:
-            assert isinstance(function_list, dict)
-            for functions in function_list.values():
-                assert functions == []
+        self.verify_no_functions(glide_sync_client, single_route, lib_name, route)
 
         assert glide_sync_client.function_load(code, False, route) == lib_name.encode()
 
@@ -7917,6 +7812,15 @@ class TestCommands:
 
         assert glide_sync_client.function_flush(FlushMode.SYNC, route) is OK
 
+    async def verify_no_functions(self, glide_client, single_route, lib_name, route):
+        function_list = glide_client.function_list(lib_name, False, route)
+        if single_route:
+            assert function_list == []
+        else:
+            assert isinstance(function_list, dict)
+            for functions in function_list.values():
+                assert functions == []
+
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_function_list(self, glide_sync_client: TGlideClient):
@@ -7959,9 +7863,7 @@ class TestCommands:
         )
 
         no_args_response = glide_sync_client.function_list()
-        wildcard_pattern_response = glide_sync_client.function_list(
-            "*".encode(), False
-        )
+        wildcard_pattern_response = glide_sync_client.function_list("*".encode(), False)
         assert len(no_args_response) == original_functions_count + 1
         assert len(wildcard_pattern_response) == original_functions_count + 1
         check_function_list_response(
@@ -8300,9 +8202,7 @@ class TestCommands:
             {func_name + "_2": "return 'OK'", func_name + "_3": "return 42"},
             False,
         )
-        assert (
-            glide_sync_client.function_load(code, True) == (lib_name + "_2").encode()
-        )
+        assert glide_sync_client.function_load(code, True) == (lib_name + "_2").encode()
 
         response = glide_sync_client.function_stats()
         for node_response in response.values():
@@ -8560,8 +8460,8 @@ class TestCommands:
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
-        key1 = f"{{testKey}}:1-{get_random_string(10)}"
-        key2 = f"{{testKey}}:2-{get_random_string(10)}"
+        key1 = f"{{testKey}}1-{get_random_string(10)}"
+        key2 = f"{{testKey}}2-{get_random_string(10)}"
         keys: List[TEncodable] = [key1, key2]
         route = SlotKeyRoute(SlotType.PRIMARY, key1)
         lib_name = f"mylib1C{get_random_string(5)}"
@@ -8572,8 +8472,7 @@ class TestCommands:
         assert glide_sync_client.function_load(code, False, route) == lib_name.encode()
 
         assert (
-            glide_sync_client.fcall(func_name, keys=keys, arguments=[])
-            == key1.encode()
+            glide_sync_client.fcall(func_name, keys=keys, arguments=[]) == key1.encode()
         )
 
         assert (
@@ -8652,7 +8551,9 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_function_dump_restore_standalone(self, glide_sync_client: GlideClient):
+    def test_sync_function_dump_restore_standalone(
+        self, glide_sync_client: GlideClient
+    ):
         min_version = "7.0.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
@@ -8747,7 +8648,6 @@ class TestCommands:
             libname1, {name1: "return args[1]", name2: "return #args"}, True
         )
         assert glide_sync_client.function_load(code, True) == libname1.encode()
-        flist = glide_sync_client.function_list(with_code=True)
         dump = glide_sync_client.function_dump(RandomNode())
         assert dump is not None and isinstance(dump, bytes)
 
@@ -8965,8 +8865,8 @@ class TestCommands:
         if sync_check_if_server_version_lt(glide_sync_client, min_version):
             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
 
-        source = f"{{testKey}}:1-{get_random_string(10)}"
-        destination = f"{{testKey}}:2-{get_random_string(10)}"
+        source = f"{{testKey}}1-{get_random_string(10)}"
+        destination = f"{{testKey}}2-{get_random_string(10)}"
         value1 = get_random_string(5)
         value2 = get_random_string(5)
         value1_encoded = value1.encode()
@@ -9124,7 +9024,9 @@ class TestCommands:
 
     @pytest.mark.parametrize("cluster_mode", [True])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-    def test_sync_cluster_client_random_key(self, glide_sync_client: GlideClusterClient):
+    def test_sync_cluster_client_random_key(
+        self, glide_sync_client: GlideClusterClient
+    ):
         key = get_random_string(10)
 
         # setup: delete all keys
@@ -9536,7 +9438,9 @@ class TestMultiKeyCommandCrossSlot:
             glide_sync_client.zunion(["def", "ghi"]),
             glide_sync_client.zunion_withscores(cast(List[TEncodable], ["def", "ghi"])),
             glide_sync_client.sort_store("abc", "zxy"),
-            glide_sync_client.lmove("abc", "zxy", ListDirection.LEFT, ListDirection.LEFT),
+            glide_sync_client.lmove(
+                "abc", "zxy", ListDirection.LEFT, ListDirection.LEFT
+            ),
             glide_sync_client.blmove(
                 "abc", "zxy", ListDirection.LEFT, ListDirection.LEFT, 1
             ),
@@ -9562,7 +9466,9 @@ class TestMultiKeyCommandCrossSlot:
         if not sync_check_if_server_version_lt(glide_sync_client, "7.0.0"):
             promises.extend(
                 [
-                    glide_sync_client.bzmpop(["abc", "zxy", "lkn"], ScoreFilter.MAX, 0.1),
+                    glide_sync_client.bzmpop(
+                        ["abc", "zxy", "lkn"], ScoreFilter.MAX, 0.1
+                    ),
                     glide_sync_client.zintercard(["abc", "def"]),
                     glide_sync_client.zmpop(["abc", "zxy", "lkn"], ScoreFilter.MAX),
                     glide_sync_client.sintercard(["def", "ghi"]),
@@ -9741,9 +9647,7 @@ class TestClusterRoutes:
     def test_sync_cluster_route_custom_command_all_primaries(
         self, glide_sync_client: GlideClusterClient
     ):
-        self.cluster_route_custom_command_multi_nodes(
-            glide_sync_client, AllPrimaries()
-        )
+        self.cluster_route_custom_command_multi_nodes(glide_sync_client, AllPrimaries())
 
     @pytest.mark.parametrize("cluster_mode", [True])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
@@ -9814,7 +9718,8 @@ class TestClusterRoutes:
     def test_sync_cluster_route_by_address_reaches_correct_node(
         self, glide_sync_client: GlideClusterClient
     ):
-        # returns the line that contains the word "myself", up to that point. This is done because the values after it might change with time.
+        # returns the line that contains the word "myself", up to that point. This is done because the values after it might 
+        # change with time.
         def clean_result(value: TResult):
             assert type(value) is str
             for line in value.splitlines():
@@ -10007,9 +9912,8 @@ class TestClusterRoutes:
             "e": "4",
         }
 
-        convert_list_to_dict = lambda list: {
-            list[i]: list[i + 1] for i in range(0, len(list), 2)
-        }
+        def convert_list_to_dict(list: List) -> dict:
+            return {list[i]: list[i + 1] for i in range(0, len(list), 2)}
 
         # Empty set
         result = glide_sync_client.zscan(key1, initial_cursor)
@@ -10134,9 +10038,8 @@ class TestClusterRoutes:
             "field e": "value e",
         }
 
-        convert_list_to_dict = lambda list: {
-            list[i]: list[i + 1] for i in range(0, len(list), 2)
-        }
+        def convert_list_to_dict(list: List) -> dict:
+            return {list[i]: list[i + 1] for i in range(0, len(list), 2)}
 
         # Empty set
         result = glide_sync_client.hscan(key1, initial_cursor)
@@ -10240,335 +10143,3 @@ class TestClusterRoutes:
         # Negative count
         with pytest.raises(RequestError):
             glide_sync_client.hscan(key2, initial_cursor, count=-1)
-
-
-# def script_kill_tests(
-#     glide_sync_client: TGlideClient, test_sync_client: TGlideClient, route: Optional[Route] = None
-# ):
-#     """
-#     shared tests for SCRIPT KILL used in routed and non-routed variants, clients are created in
-#     respective tests with different test matrices.
-#     """
-#     # Verify that script_kill raises an error when no script is running
-#     with pytest.raises(RequestError) as e:
-#         glide_sync_client.script_kill()
-#     assert "No scripts in execution right now" in str(e)
-
-#     # Create a long-running script
-#     long_script = Script(create_long_running_lua_script(10))
-
-#     def run_long_script():
-#         with pytest.raises(RequestError) as e:
-#             if route is not None:
-#                 test_sync_client.invoke_script_route(long_script, route=route)
-#             else:
-#                 test_sync_client.invoke_script(long_script)
-#         assert "Script killed by user" in str(e)
-
-#     def wait_and_kill_script():
-#         asyncio.sleep(3)  # Give some time for the script to start
-#         timeout = 0
-#         while timeout <= 5:
-#             # keep trying to kill until we get an "OK"
-#             try:
-#                 if route is not None:
-#                     result = cast(GlideClusterClient, glide_sync_client).script_kill(
-#                         route=route
-#                     )
-#                 else:
-#                     result = glide_sync_client.script_kill()
-#                 #  we expect to get success
-#                 assert result == "OK"
-#                 break
-#             except RequestError:
-#                 # a RequestError may occur if the script is not yet running
-#                 # sleep and try again
-#                 timeout += 0.5
-#                 asyncio.sleep(0.5)
-
-#     # Run the long script and kill it
-#     asyncio.gather(
-#         run_long_script(),
-#         wait_and_kill_script(),
-#     )
-
-#     # Verify that script_kill raises an error when no script is running
-#     with pytest.raises(RequestError) as e:
-#         if route is not None:
-#             cast(GlideClusterClient, glide_sync_client).script_kill(route=route)
-#         else:
-#             glide_sync_client.script_kill()
-#     assert "No scripts in execution right now" in str(e)
-
-#     test_sync_client.close()
-
-
-
-# class TestScripts:
-#     @pytest.mark.smoke_test
-#     @pytest.mark.parametrize("cluster_mode", [True, False])
-#     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-#     def test_sync_script(self, glide_sync_client: TGlideClient):
-#         key1 = get_random_string(10)
-#         key2 = get_random_string(10)
-#         script = Script("return 'Hello'")
-#         assert glide_sync_client.invoke_script(script) == "Hello".encode()
-
-#         script = Script("return redis.call('SET', KEYS[1], ARGV[1])")
-#         assert (
-#             glide_sync_client.invoke_script(script, keys=[key1], args=["value1"])
-#             == "OK"
-#         )
-#         # Reuse the same script with different parameters.
-#         assert (
-#             glide_sync_client.invoke_script(script, keys=[key2], args=["value2"])
-#             == "OK"
-#         )
-#         script = Script("return redis.call('GET', KEYS[1])")
-#         assert (
-#             glide_sync_client.invoke_script(script, keys=[key1]) == "value1".encode()
-#         )
-#         assert (
-#             glide_sync_client.invoke_script(script, keys=[key2]) == "value2".encode()
-#         )
-
-#     @pytest.mark.smoke_test
-#     @pytest.mark.parametrize("cluster_mode", [True, False])
-#     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-#     def test_sync_script_binary(self, glide_sync_client: TGlideClient):
-#         key1 = bytes(get_random_string(10), "utf-8")
-#         key2 = bytes(get_random_string(10), "utf-8")
-#         script = Script(bytes("return 'Hello'", "utf-8"))
-#         assert glide_sync_client.invoke_script(script) == "Hello".encode()
-
-#         script = Script(bytes("return redis.call('SET', KEYS[1], ARGV[1])", "utf-8"))
-#         assert (
-#             glide_sync_client.invoke_script(
-#                 script, keys=[key1], args=[bytes("value1", "utf-8")]
-#             )
-#             == "OK"
-#         )
-#         # Reuse the same script with different parameters.
-#         assert (
-#             glide_sync_client.invoke_script(
-#                 script, keys=[key2], args=[bytes("value2", "utf-8")]
-#             )
-#             == "OK"
-#         )
-#         script = Script(bytes("return redis.call('GET', KEYS[1])", "utf-8"))
-#         assert (
-#             glide_sync_client.invoke_script(script, keys=[key1]) == "value1".encode()
-#         )
-#         assert (
-#             glide_sync_client.invoke_script(script, keys=[key2]) == "value2".encode()
-#         )
-
-#     @pytest.mark.parametrize("cluster_mode", [True, False])
-#     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-#     def test_sync_script_large_keys_no_args(self, request, cluster_mode, protocol):
-#         glide_sync_client = create_sync_client(
-#             request, cluster_mode=cluster_mode, protocol=protocol, timeout=5000
-#         )
-#         length = 2**13  # 8kb
-#         key = "0" * length
-#         script = Script("return KEYS[1]")
-#         assert glide_sync_client.invoke_script(script, keys=[key]) == key.encode()
-#         glide_sync_client.close()
-
-#     @pytest.mark.parametrize("cluster_mode", [True, False])
-#     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-#     def test_sync_script_large_args_no_keys(self, request, cluster_mode, protocol):
-#         glide_sync_client = create_sync_client(
-#             request, cluster_mode=cluster_mode, protocol=protocol, timeout=5000
-#         )
-#         length = 2**12  # 4kb
-#         arg1 = "0" * length
-#         arg2 = "1" * length
-
-#         script = Script("return ARGV[2]")
-#         assert (
-#             glide_sync_client.invoke_script(script, args=[arg1, arg2]) == arg2.encode()
-#         )
-#         glide_sync_client.close()
-
-#     @pytest.mark.parametrize("cluster_mode", [True, False])
-#     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-#     def test_sync_script_large_keys_and_args(self, request, cluster_mode, protocol):
-#         glide_sync_client = create_sync_client(
-#             request, cluster_mode=cluster_mode, protocol=protocol, timeout=5000
-#         )
-#         length = 2**12  # 4kb
-#         key = "0" * length
-#         arg = "1" * length
-
-#         script = Script("return KEYS[1]")
-#         assert (
-#             glide_sync_client.invoke_script(script, keys=[key], args=[arg])
-#             == key.encode()
-#         )
-#         glide_sync_client.close()
-
-#     @pytest.mark.parametrize("cluster_mode", [True, False])
-#     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-#     def test_sync_script_exists(self, glide_sync_client: TGlideClient, cluster_mode: bool):
-#         cluster_mode = isinstance(glide_sync_client, GlideClusterClient)
-#         script1 = Script("return 'Hello'")
-#         script2 = Script("return 'World'")
-#         script3 = Script("return 'Hello World'")
-
-#         # Load script1 to all nodes, do not load script2 and load script3 with a SlotKeyRoute
-#         glide_sync_client.invoke_script(script1)
-
-#         if cluster_mode:
-#             cast(GlideClusterClient, glide_sync_client).invoke_script_route(
-#                 script3, route=SlotKeyRoute(SlotType.PRIMARY, "1")
-#             )
-#         else:
-#             glide_sync_client.invoke_script(script3)
-
-#         # Get the SHA1 digests of the scripts
-#         sha1_1 = script1.get_hash()
-#         sha1_2 = script2.get_hash()
-#         sha1_3 = script3.get_hash()
-#         non_existent_sha1 = "0" * 40  # A SHA1 that doesn't exist
-#         # Check existence of scripts
-#         result = glide_sync_client.script_exists(
-#             [sha1_1, sha1_2, sha1_3, non_existent_sha1]
-#         )
-
-#         # script1 is loaded and returns true.
-#         # script2 is only cached and not loaded, returns false.
-#         # script3 is invoked with a SlotKeyRoute. Despite SCRIPT EXIST uses LogicalAggregate AND on the results,
-#         #   SCRIPT LOAD during internal execution so the script still gets loaded on all nodes, returns true.
-#         # non-existing sha1 returns false.
-#         assert result == [True, False, True, False]
-
-#     @pytest.mark.parametrize("cluster_mode", [True, False])
-#     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-#     def test_sync_script_flush(self, glide_sync_client: TGlideClient):
-#         # Load a script
-#         script = Script("return 'Hello'")
-#         glide_sync_client.invoke_script(script)
-
-#         # Check that the script exists
-#         assert glide_sync_client.script_exists([script.get_hash()]) == [True]
-
-#         # Flush the script cache
-#         assert glide_sync_client.script_flush() == OK
-
-#         # Check that the script no longer exists
-#         assert glide_sync_client.script_exists([script.get_hash()]) == [False]
-
-#         # Test with ASYNC mode
-#         glide_sync_client.invoke_script(script)
-#         assert glide_sync_client.script_flush(FlushMode.ASYNC) == OK
-#         assert glide_sync_client.script_exists([script.get_hash()]) == [False]
-
-#     @pytest.mark.parametrize("cluster_mode", [True])
-#     @pytest.mark.parametrize("single_route", [True])
-#     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-#     def test_sync_script_kill_route(
-#         self,
-#         request,
-#         cluster_mode,
-#         protocol,
-#         glide_sync_client: TGlideClient,
-#         single_route: bool,
-#     ):
-#         route = SlotKeyRoute(SlotType.PRIMARY, "1") if single_route else AllPrimaries()
-
-#         # Create a second client to run the script
-#         test_sync_client = create_sync_client(
-#             request, cluster_mode=cluster_mode, protocol=protocol, timeout=30000
-#         )
-
-#         script_kill_tests(glide_sync_client, test_sync_client, route)
-
-#     @pytest.mark.parametrize("cluster_mode", [True, False])
-#     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-#     def test_sync_script_kill_no_route(
-#         self,
-#         request,
-#         cluster_mode,
-#         protocol,
-#         glide_sync_client: TGlideClient,
-#     ):
-#         # Create a second client to run the script
-#         test_sync_client = create_sync_client(
-#             request, cluster_mode=cluster_mode, protocol=protocol, timeout=30000
-#         )
-
-#         script_kill_tests(glide_sync_client, test_sync_client)
-
-#     @pytest.mark.parametrize("cluster_mode", [True, False])
-#     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-#     def test_sync_script_kill_unkillable(
-#         self, request, cluster_mode, protocol, glide_sync_client: TGlideClient
-#     ):
-#         # Create a second client to run the script
-#         test_sync_client = create_sync_client(
-#             request, cluster_mode=cluster_mode, protocol=protocol, timeout=30000
-#         )
-
-#         # Create a second client to kill the script
-#         test_sync_client2 = create_sync_client(
-#             request, cluster_mode=cluster_mode, protocol=protocol, timeout=15000
-#         )
-
-#         # Add test for script_kill with writing script
-#         writing_script = Script(
-#             """
-#             redis.call('SET', KEYS[1], 'value')
-#             local start = redis.call('TIME')[1]
-#             while redis.call('TIME')[1] - start < 15 do
-#                 redis.call('SET', KEYS[1], 'value')
-#             end
-#         """
-#         )
-
-#         def run_writing_script():
-#             test_sync_client.invoke_script(writing_script, keys=[get_random_string(5)])
-
-#         def attempt_kill_writing_script():
-#             asyncio.sleep(3)  # Give some time for the script to start
-#             foundUnkillable = False
-#             while True:
-#                 try:
-#                     test_sync_client2.script_kill()
-#                 except RequestError as e:
-#                     if "UNKILLABLE" in str(e):
-#                         foundUnkillable = True
-#                         break
-#                     asyncio.sleep(0.5)
-
-#             assert foundUnkillable
-
-#         # Run the writing script and attempt to kill it
-#         asyncio.gather(
-#             run_writing_script(),
-#             attempt_kill_writing_script(),
-#         )
-
-#         test_sync_client.close()
-#         test_sync_client2.close()
-
-#     @pytest.mark.parametrize("cluster_mode", [True, False])
-#     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
-#     def test_sync_script_show(self, glide_sync_client: TGlideClient):
-#         min_version = "8.0.0"
-#         if sync_check_if_server_version_lt(glide_sync_client, min_version):
-#             return pytest.mark.skip(reason=f"Valkey version required >= {min_version}")
-
-#         code = f"return '{get_random_string(5)}'"
-#         script = Script(code)
-
-#         # Load the scripts
-#         glide_sync_client.invoke_script(script)
-
-#         # Get the SHA1 digests of the script
-#         sha1 = script.get_hash()
-
-#         assert glide_sync_client.script_show(sha1) == code.encode()
-
-#         with pytest.raises(RequestError):
-#             glide_sync_client.script_show("non existing sha1")

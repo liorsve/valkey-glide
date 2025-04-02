@@ -30,9 +30,7 @@ from glide.commands.server_modules.ft_options.ft_create_options import (
     VectorFieldAttributesHnsw,
     VectorType,
 )
-from glide.commands.server_modules.ft_options.ft_profile_options import (
-    FtProfileOptions,
-)
+from glide.commands.server_modules.ft_options.ft_profile_options import FtProfileOptions
 from glide.commands.server_modules.ft_options.ft_search_options import (
     FtSearchOptions,
     ReturnField,

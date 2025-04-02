@@ -4,14 +4,9 @@ from __future__ import annotations
 
 from typing import Dict, List, Mapping, Optional, Union, cast
 
-from glide.commands.command_args import ObjectType
-from glide.commands.core_options import (
-    FlushMode,
-    FunctionRestorePolicy,
-    InfoSection,
-)
 from glide.commands.async_commands import CoreCommands
-
+from glide.commands.command_args import ObjectType
+from glide.commands.core_options import FlushMode, FunctionRestorePolicy, InfoSection
 from glide.commands.transaction import Transaction
 from glide.constants import (
     TOK,

@@ -2,25 +2,8 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import (
-    Dict,
-    List,
-    Mapping,
-    Optional,
-    Protocol,
-    Set,
-    Tuple,
-    Union,
-    cast,
-)
-from glide.commands.core_options import (
-    ExpireOptions,
-    ExpiryGetEx,
-    InsertPosition,
-    OnlyIfEqual,
-    UpdateOptions,
-    _build_sort_args,   
-)
+from typing import Dict, List, Mapping, Optional, Protocol, Set, Tuple, Union, cast
+
 from glide.commands.bitmap import (
     BitFieldGet,
     BitFieldSubCommands,
@@ -30,6 +13,16 @@ from glide.commands.bitmap import (
     _create_bitfield_read_only_args,
 )
 from glide.commands.command_args import Limit, ListDirection, ObjectType, OrderBy
+from glide.commands.core_options import (
+    ConditionalChange,
+    ExpireOptions,
+    ExpiryGetEx,
+    ExpirySet,
+    InsertPosition,
+    OnlyIfEqual,
+    UpdateOptions,
+    _build_sort_args,
+)
 from glide.commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
@@ -68,7 +61,8 @@ from glide.constants import (
 )
 from glide.protobuf.command_request_pb2 import RequestType
 from glide.routes import Route
-from glide.commands.core_options import ConditionalChange, ExpirySet
+
+from ...glide import ClusterScanCursor
 
 
 class CoreCommands(Protocol):
@@ -93,14 +87,14 @@ class CoreCommands(Protocol):
         route: Optional[Route] = None,
     ) -> TResult: ...
 
-    # async def _cluster_scan(
-    #     self,
-    #     cursor: ClusterScanCursor,
-    #     match: Optional[TEncodable] = ...,
-    #     count: Optional[int] = ...,
-    #     type: Optional[ObjectType] = ...,
-    #     allow_non_covered_slots: bool = ...,
-    # ) -> TResult: ...
+    async def _cluster_scan(
+        self,
+        cursor: ClusterScanCursor,
+        match: Optional[TEncodable] = ...,
+        count: Optional[int] = ...,
+        type: Optional[ObjectType] = ...,
+        allow_non_covered_slots: bool = ...,
+    ) -> TResult: ...
 
     async def _update_connection_password(
         self, password: Optional[str], immediate_auth: bool

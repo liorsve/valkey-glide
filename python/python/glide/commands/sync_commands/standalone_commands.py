@@ -1,13 +1,8 @@
 from typing import Dict, List, Mapping, Optional, Union, cast
 
 from glide.commands.command_args import ObjectType
-from glide.commands.core_options import (
-    FlushMode,
-    FunctionRestorePolicy,
-    InfoSection,
-)
+from glide.commands.core_options import FlushMode, FunctionRestorePolicy, InfoSection
 from glide.commands.sync_commands.core import CoreCommands
-
 from glide.commands.transaction import Transaction
 from glide.constants import (
     TOK,
@@ -17,8 +12,6 @@ from glide.constants import (
     TResult,
 )
 from glide.protobuf.command_request_pb2 import RequestType
-
-from ...glide import Script
 
 
 class StandaloneCommands(CoreCommands):
@@ -239,9 +232,7 @@ class StandaloneCommands(CoreCommands):
         """
         return cast(bytes, self._execute_command(RequestType.Echo, [message]))
 
-    def function_load(
-        self, library_code: TEncodable, replace: bool = False
-    ) -> bytes:
+    def function_load(self, library_code: TEncodable, replace: bool = False) -> bytes:
         """
         Loads a library to Valkey.
 
@@ -567,9 +558,7 @@ class StandaloneCommands(CoreCommands):
             >>> client.publish("Hi all!", "global-channel")
                 1 # This message was posted to 1 subscription which is configured on primary node
         """
-        return cast(
-            int, self._execute_command(RequestType.Publish, [channel, message])
-        )
+        return cast(int, self._execute_command(RequestType.Publish, [channel, message]))
 
     def flushall(self, flush_mode: Optional[FlushMode] = None) -> TOK:
         """
@@ -853,9 +842,7 @@ class StandaloneCommands(CoreCommands):
             >>> client.script_exists(["sha1_digest1", "sha1_digest2"])
                 [True, False]
         """
-        return cast(
-            List[bool], self._execute_command(RequestType.ScriptExists, sha1s)
-        )
+        return cast(List[bool], self._execute_command(RequestType.ScriptExists, sha1s))
 
     def script_flush(self, mode: Optional[FlushMode] = None) -> TOK:
         """
@@ -898,33 +885,3 @@ class StandaloneCommands(CoreCommands):
                 "OK"
         """
         return cast(TOK, self._execute_command(RequestType.ScriptKill, []))
-
-    def invoke_script(
-        self,
-        script: Script,
-        keys: Optional[List[TEncodable]] = None,
-        args: Optional[List[TEncodable]] = None,
-    ) -> TResult:
-        """
-        Invokes a Lua script with its keys and arguments.
-        This method simplifies the process of invoking scripts on a the server by using an object that represents a Lua script.
-        The script loading, argument preparation, and execution will all be handled internally.
-        If the script has not already been loaded, it will be loaded automatically using the `SCRIPT LOAD` command.
-        After that, it will be invoked using the `EVALSHA` command.
-
-        See https://valkey.io/commands/script-load/ and https://valkey.io/commands/evalsha/ for more details.
-
-        Args:
-            script (Script): The Lua script to execute.
-            keys (Optional[List[TEncodable]]): The keys that are used in the script.
-            args (Optional[List[TEncodable]]): The arguments for the script.
-
-        Returns:
-            TResult: a value that depends on the script that was executed.
-
-        Examples:
-            >>> lua_script = Script("return { KEYS[1], ARGV[1] }")
-            >>> invoke_script(lua_script, keys=["foo"], args=["bar"] );
-                [b"foo", b"bar"]
-        """
-        return self._execute_script(script.get_hash(), keys, args)
