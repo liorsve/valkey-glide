@@ -1999,7 +1999,7 @@ class TestCommands:
                 "c",
                 "d",
                 "e",
-                "f",sdiff
+                "f",
                 "g",
             }
         )

@@ -37,13 +37,15 @@ class ClusterCommands(CoreCommands):
         See the [Valkey GLIDE Wiki](https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#custom-command)
         for details on the restrictions and limitations of the custom command API.
 
-            @example - Return a list of all pub/sub clients from all nodes:
+            For example - Return a list of all pub/sub clients from all nodes::
 
                 connection.customCommand(["CLIENT", "LIST","TYPE", "PUBSUB"], AllNodes())
+
         Args:
             command_args (List[TEncodable]): List of the command's arguments, where each argument is either a string or bytes.
             Every part of the command, including the command name and subcommands, should be added as a separate value in args.
-            route (Optional[Route]): The command will be routed automatically based on the passed command's default request policy, unless `route` is provided, in which
+            route (Optional[Route]): The command will be routed automatically based on the passed command's default request
+                policy, unless `route` is provided, in which
             case the client will route the command to the nodes defined by `route`. Defaults to None.
 
         Returns:
@@ -352,7 +354,7 @@ class ClusterCommands(CoreCommands):
             bytes: The library name that was loaded.
 
         Examples:
-            >>> code = "#!lua name=mylib \n redis.register_function('myfunc', function(keys, args) return args[1] end)"
+            >>> code = "#!lua name=mylib \\n redis.register_function('myfunc', function(keys, args) return args[1] end)"
             >>> client.function_load(code, True, RandomNode())
                 b"mylib"
 
@@ -398,7 +400,9 @@ class ClusterCommands(CoreCommands):
                         b"description": None,
                         b"flags": {b"no-writes"},
                     }],
-                    b"library_code": b"#!lua name=mylib \n redis.register_function('myfunc', function(keys, args) return args[1] end)"
+                    b"library_code":
+                        b"#!lua name=mylib \\n redis.register_function('myfunc', function(keys, args) " \\
+                        b"return args[1] end)"
                 }]
 
         Since: Valkey 7.0.0.
@@ -597,6 +601,7 @@ class ClusterCommands(CoreCommands):
             TClusterResponse[TFunctionStatsSingleNodeResponse]: A `Mapping` with two keys:
                 - `running_script` with information about the running script.
                 - `engines` with information about available engines and their stats.
+                
                 See example for more details.
 
         Examples:

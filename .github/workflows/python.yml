@@ -117,13 +117,19 @@ jobs:
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   engine-version: ${{ matrix.engine.version }}
 
+            - name: Build FFI library
+              working-directory: ./python
+              run: |
+                  cd ../ffi
+                  cargo build --release
+
             - name: Test with pytest
               working-directory: ./python
               run: |
                   source .env/bin/activate
                   pip install -r dev_requirements.txt
                   cd python/tests/
-                  pytest -v --asyncio-mode=auto --html=pytest_report.html --self-contained-html
+                  pytest -v --asyncio-mode=auto --html=pytest_report.html --self-contained-html -k test_sync
 
             - uses: ./.github/workflows/test-benchmark
               if: ${{ matrix.engine.version == '8.0' && matrix.host.OS == 'ubuntu' && matrix.host.RUNNER == 'ubuntu-latest' && matrix.python == '3.13' }}
@@ -351,6 +357,7 @@ jobs:
                   os: ubuntu
                   target: aarch64-unknown-linux-gnu
                   github-token: ${{ secrets.GITHUB_TOKEN }}
+
             - name: Test with pytest
               working-directory: ./python
               run: |

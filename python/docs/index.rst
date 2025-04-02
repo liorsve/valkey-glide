@@ -9,7 +9,7 @@ Valkey GLIDE documentation
 Welcome to the documentation page for Valkey GLIDE!
 
 .. toctree::
-   :maxdepth: 9
+   :maxdepth: 8
    :caption: Contents:
 
    glide

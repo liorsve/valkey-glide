@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from enum import Enum, IntEnum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
-from glide.commands.async_commands.core import CoreCommands
+from glide.commands.async_commands.core import CoreCommands as AsyncCoreCommands
+from glide.commands.sync_commands.core import CoreCommands as SyncCoreCommands
 from glide.exceptions import ConfigurationError
 from glide.protobuf.connection_request_pb2 import ConnectionRequest
 from glide.protobuf.connection_request_pb2 import ProtocolVersion as SentProtocolVersion
 from glide.protobuf.connection_request_pb2 import ReadFrom as ProtobufReadFrom
 from glide.protobuf.connection_request_pb2 import TlsMode
+PubSubMsg = Union[AsyncCoreCommands.PubSubMsg, SyncCoreCommands.SyncPubSubMsg]
 
 
 class NodeAddress:
@@ -282,7 +284,7 @@ class BaseClientConfiguration:
 
     def _get_pubsub_callback_and_context(
         self,
-    ) -> Tuple[Optional[Callable[[CoreCommands.PubSubMsg, Any], None]], Any]:
+    ) -> Tuple[Optional[Callable[[PubSubMsg, Any], None]], Any]:
         return None, None
 
 
@@ -361,7 +363,7 @@ class GlideClientConfiguration(BaseClientConfiguration):
         Attributes:
             channels_and_patterns (Dict[GlideClientConfiguration.PubSubChannelModes, Set[str]]):
                 Channels and patterns by modes.
-            callback (Optional[Callable[[CoreCommands.PubSubMsg, Any], None]]):
+            callback (Optional[Callable[[Union[AsyncCoreCommands.PubSubMsg, SyncCoreCommands.PubSubMsg], Any], None]]):
                 Optional callback to accept the incomming messages.
             context (Any):
                 Arbitrary context to pass to the callback.
@@ -370,7 +372,7 @@ class GlideClientConfiguration(BaseClientConfiguration):
         channels_and_patterns: Dict[
             GlideClientConfiguration.PubSubChannelModes, Set[str]
         ]
-        callback: Optional[Callable[[CoreCommands.PubSubMsg, Any], None]]
+        callback: Optional[Callable[[PubSubMsg, Any], None]]
         context: Any
 
     def __init__(
@@ -450,7 +452,7 @@ class GlideClientConfiguration(BaseClientConfiguration):
 
     def _get_pubsub_callback_and_context(
         self,
-    ) -> Tuple[Optional[Callable[[CoreCommands.PubSubMsg, Any], None]], Any]:
+    ) -> Tuple[Optional[Callable[[PubSubMsg, Any], None]], Any]:
         if self.pubsub_subscriptions:
             return self.pubsub_subscriptions.callback, self.pubsub_subscriptions.context
         return None, None
@@ -536,7 +538,7 @@ class GlideClusterClientConfiguration(BaseClientConfiguration):
         Attributes:
             channels_and_patterns (Dict[GlideClusterClientConfiguration.PubSubChannelModes, Set[str]]):
                 Channels and patterns by modes.
-            callback (Optional[Callable[[CoreCommands.PubSubMsg, Any], None]]):
+            callback (Optional[Callable[[Union[AsyncCoreCommands.PubSubMsg, SyncCoreCommands.PubSubMsg], Any], None]]):
                 Optional callback to accept the incoming messages.
             context (Any):
                 Arbitrary context to pass to the callback.
@@ -545,7 +547,7 @@ class GlideClusterClientConfiguration(BaseClientConfiguration):
         channels_and_patterns: Dict[
             GlideClusterClientConfiguration.PubSubChannelModes, Set[str]
         ]
-        callback: Optional[Callable[[CoreCommands.PubSubMsg, Any], None]]
+        callback: Optional[Callable[[PubSubMsg, Any], None]]
         context: Any
 
     def __init__(
@@ -621,7 +623,7 @@ class GlideClusterClientConfiguration(BaseClientConfiguration):
 
     def _get_pubsub_callback_and_context(
         self,
-    ) -> Tuple[Optional[Callable[[CoreCommands.PubSubMsg, Any], None]], Any]:
+    ) -> Tuple[Optional[Callable[[PubSubMsg, Any], None]], Any]:
         if self.pubsub_subscriptions:
             return self.pubsub_subscriptions.callback, self.pubsub_subscriptions.context
         return None, None

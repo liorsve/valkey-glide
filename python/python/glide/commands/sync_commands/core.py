@@ -2972,11 +2972,15 @@ class CoreCommands(Protocol):
             options (Optional[StreamClaimOptions]): Stream claim options.
 
         Returns:
-            Mapping[bytes, List[List[bytes]]]: A Mapping of message entries with the format
-                {"entryId": [["entry", "data"], ...], ...} that are claimed by the consumer.
+            Mapping[bytes, List[List[bytes]]]: A Mapping of message entries with the format::
+
+                {"entryId": [["entry", "data"], ...], ...}
+
+            that are claimed by the consumer.
 
         Examples:
-            # read messages from streamId for consumer1
+            read messages from streamId for consumer1:
+
             >>> client.xreadgroup({"mystream": ">"}, "mygroup", "consumer1")
                 {
                     b"mystream": {
@@ -3025,7 +3029,8 @@ class CoreCommands(Protocol):
             List[bytes]: A List of message ids claimed by the consumer.
 
         Examples:
-            # read messages from streamId for consumer1
+            read messages from streamId for consumer1:
+
             >>> client.xreadgroup({"mystream": ">"}, "mygroup", "consumer1")
                 {
                     b"mystream": {
@@ -3079,17 +3084,19 @@ class CoreCommands(Protocol):
 
         Returns:
             List[Union[bytes, Mapping[bytes, List[List[bytes]]], List[bytes]]]: A list containing the following elements:
+
                 - A stream ID to be used as the start argument for the next call to `XAUTOCLAIM`. This ID is equivalent
-                to the next ID in the stream after the entries that were scanned, or "0-0" if the entire stream was
-                scanned.
+                  to the next ID in the stream after the entries that were scanned, or "0-0" if the entire stream was
+                  scanned.
                 - A mapping of the claimed entries, with the keys being the claimed entry IDs and the values being a
-                2D list of the field-value pairs in the format `[[field1, value1], [field2, value2], ...]`.
+                  2D list of the field-value pairs in the format `[[field1, value1], [field2, value2], ...]`.
                 - If you are using Valkey 7.0.0 or above, the response list will also include a list containing the
-                message IDs that were in the Pending Entries List but no longer exist in the stream. These IDs are
-                deleted from the Pending Entries List.
+                  message IDs that were in the Pending Entries List but no longer exist in the stream. These IDs are
+                  deleted from the Pending Entries List.
 
         Examples:
-            # Valkey version < 7.0.0:
+            Valkey version < 7.0.0:
+
             >>> client.xautoclaim("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
                 [
                     b"0-0",
@@ -3103,7 +3110,8 @@ class CoreCommands(Protocol):
                 # Stream entry "1-1" was idle for over an hour and was thus claimed by "my_consumer". The entire stream
                 # was scanned.
 
-            # Valkey version 7.0.0 and above:
+            Valkey version 7.0.0 and above:
+
             >>> client.xautoclaim("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
                 [
                     b"0-0",
@@ -3163,22 +3171,25 @@ class CoreCommands(Protocol):
 
         Returns:
             List[Union[bytes, List[bytes]]]: A list containing the following elements:
+
                 - A stream ID to be used as the start argument for the next call to `XAUTOCLAIM`. This ID is equivalent
-                to the next ID in the stream after the entries that were scanned, or "0-0" if the entire stream was
-                scanned.
+                  to the next ID in the stream after the entries that were scanned, or "0-0" if the entire stream was
+                  scanned.
                 - A list of the IDs for the claimed entries.
                 - If you are using Valkey 7.0.0 or above, the response list will also include a list containing the
-                message IDs that were in the Pending Entries List but no longer exist in the stream. These IDs are
-                deleted from the Pending Entries List.
+                  message IDs that were in the Pending Entries List but no longer exist in the stream. These IDs are
+                  deleted from the Pending Entries List.
 
         Examples:
-            # Valkey version < 7.0.0:
+            Valkey version < 7.0.0:
+
             >>> client.xautoclaim_just_id("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
                 [b"0-0", [b"1-1"]]
                 # Stream entry "1-1" was idle for over an hour and was thus claimed by "my_consumer". The entire stream
                 # was scanned.
 
-            # Valkey version 7.0.0 and above:
+            Valkey version 7.0.0 and above:
+
             >>> client.xautoclaim_just_id("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
                 [b"0-0", [b"1-1"], [b"1-2"]]
                 # Stream entry "1-1" was idle for over an hour and was thus claimed by "my_consumer". The entire stream
@@ -3589,7 +3600,8 @@ class CoreCommands(Protocol):
         with_hash: bool = False,
     ) -> List[Union[bytes, List[Union[bytes, float, int, List[float]]]]]:
         """
-        Searches for members in a sorted set stored at `key` representing geospatial data within a circular or rectangular area.
+        Searches for members in a sorted set stored at `key` representing geospatial data within a circular or rectangular
+        area.
 
         See https://valkey.io/commands/geosearch/ for more details.
 
@@ -3601,8 +3613,10 @@ class CoreCommands(Protocol):
                 For circular area search, see `GeoSearchByRadius`.
                 For rectangular area search, see `GeoSearchByBox`.
             order_by (Optional[OrderBy]): Specifies the order in which the results should be returned.
-                    - `ASC`: Sorts items from the nearest to the farthest, relative to the center point.
-                    - `DESC`: Sorts items from the farthest to the nearest, relative to the center point.
+
+                - `ASC`: Sorts items from the nearest to the farthest, relative to the center point.
+                - `DESC`: Sorts items from the farthest to the nearest, relative to the center point.
+
                 If not specified, the results would be unsorted.
             count (Optional[GeoSearchCount]): Specifies the maximum number of results to return. See `GeoSearchCount`.
                 If not specified, return all results.
@@ -3612,19 +3626,45 @@ class CoreCommands(Protocol):
             with_hash (bool): Whether to include geohash of the returned items. Defaults to False.
 
         Returns:
-            List[Union[bytes, List[Union[bytes, float, int, List[float]]]]]: By default, returns a list of members (locations) names.
-            If any of `with_coord`, `with_dist` or `with_hash` are True, returns an array of arrays, we're each sub array represents a single item in the following order:
-                (bytes): The member (location) name.
-                (float): The distance from the center as a floating point number, in the same unit specified in the radius, if `with_dist` is set to True.
-                (int): The Geohash integer, if `with_hash` is set to True.
-                List[float]: The coordinates as a two item [longitude,latitude] array, if `with_coord` is set to True.
+            List[Union[bytes, List[Union[bytes, float, int, List[float]]]]]: By default, returns a list of members (locations)
+            names.
+
+            If any of `with_coord`, `with_dist` or `with_hash` are True, returns an array of arrays, we're each sub array
+            represents a single item in the following order:
+
+                - (bytes): The member (location) name.
+                - (float): The distance from the center as a floating point number, in the same unit specified in the radius,
+                  if `with_dist` is set to True.
+                - (int): The Geohash integer, if `with_hash` is set to True.
+                - List[float]: The coordinates as a two item [longitude,latitude] array, if `with_coord` is set to True.
 
         Examples:
-            >>> client.geoadd("my_geo_sorted_set", {"edge1": GeospatialData(12.758489, 38.788135), "edge2": GeospatialData(17.241510, 38.788135)}})
-            >>> client.geoadd("my_geo_sorted_set", {"Palermo": GeospatialData(13.361389, 38.115556), "Catania": GeospatialData(15.087269, 37.502669)})
+            >>> client.geoadd(
+            ...     "my_geo_sorted_set",
+            ...     {
+            ...         "edge1": GeospatialData(12.758489, 38.788135),
+            ...         "edge2": GeospatialData(17.241510, 38.788135)
+            ...     }
+            ... )
+            >>> client.geoadd(
+            ...     "my_geo_sorted_set",
+            ...     {
+            ...         "Palermo": GeospatialData(13.361389, 38.115556),
+            ...         "Catania": GeospatialData(15.087269, 37.502669)
+            ...     }
+            ... )
             >>> client.geosearch("my_geo_sorted_set", "Catania", GeoSearchByRadius(175, GeoUnit.MILES), OrderBy.DESC)
-                ['Palermo', 'Catania'] # Returned the locations names within the radius of 175 miles, with the center being 'Catania' from farthest to nearest.
-            >>> client.geosearch("my_geo_sorted_set", GeospatialData(15, 37), GeoSearchByBox(400, 400, GeoUnit.KILOMETERS), OrderBy.DESC, with_coord=true, with_dist=true, with_hash=true)
+                ['Palermo', 'Catania'] # Returned the locations names within the radius of 175 miles, with the center being
+                                       # 'Catania' from farthest to nearest.
+            >>> client.geosearch(
+            ...     "my_geo_sorted_set",
+            ...     GeospatialData(15, 37),
+            ...     GeoSearchByBox(400, 400, GeoUnit.KILOMETERS),
+            ...     OrderBy.DESC,
+            ...     with_coord=true,
+            ...     with_dist=true,
+            ...     with_hash=true
+            ... )
                 [
                     [
                         b"Catania",
@@ -3642,7 +3682,8 @@ class CoreCommands(Protocol):
                         b"edge1",
                         [279.7405, 3479273021651468, [12.75848776102066, 38.78813451624225]],
                     ],
-                ]  # Returns locations within the square box of 400 km, with the center being a specific point, from nearest to farthest with the dist, hash and coords.
+                ]  # Returns locations within the square box of 400 km, with the center being a specific point, from nearest
+                   # to farthest with the dist, hash and coords.
 
         Since: Valkey version 6.2.0.
         """
@@ -3672,7 +3713,8 @@ class CoreCommands(Protocol):
         store_dist: bool = False,
     ) -> int:
         """
-        Searches for members in a sorted set stored at `key` representing geospatial data within a circular or rectangular area and stores the result in `destination`.
+        Searches for members in a sorted set stored at `key` representing geospatial data within a circular or rectangular
+        area and stores the result in `destination`.
         If `destination` already exists, it is overwritten. Otherwise, a new sorted set will be created.
 
         To get the result directly, see `geosearch`.
@@ -3680,34 +3722,55 @@ class CoreCommands(Protocol):
         Note:
             When in cluster mode, both `source` and `destination` must map to the same hash slot.
 
-            Args:
-                destination (TEncodable): The key to store the search results.
-                source (TEncodable): The key of the sorted set representing geospatial data to search from.
-                search_from (Union[str, bytes, GeospatialData]): The location to search from. Can be specified either as a member
-                    from the sorted set or as a geospatial data (see `GeospatialData`).
-                search_by (Union[GeoSearchByRadius, GeoSearchByBox]): The search criteria.
-                    For circular area search, see `GeoSearchByRadius`.
-                    For rectangular area search, see `GeoSearchByBox`.
-                count (Optional[GeoSearchCount]): Specifies the maximum number of results to store. See `GeoSearchCount`.
-                    If not specified, stores all results.
-                store_dist (bool): Determines what is stored as the sorted set score. Defaults to False.
-                    - If set to False, the geohash of the location will be stored as the sorted set score.
-                    - If set to True, the distance from the center of the shape (circle or box) will be stored as the sorted set score.
-                        The distance is represented as a floating-point number in the same unit specified for that shape.
+        Args:
+            destination (TEncodable): The key to store the search results.
+            source (TEncodable): The key of the sorted set representing geospatial data to search from.
+            search_from (Union[str, bytes, GeospatialData]): The location to search from. Can be specified either as a
+                member from the sorted set or as a geospatial data (see `GeospatialData`).
+            search_by (Union[GeoSearchByRadius, GeoSearchByBox]): The search criteria.
+                For circular area search, see `GeoSearchByRadius`.
+                For rectangular area search, see `GeoSearchByBox`.
+            count (Optional[GeoSearchCount]): Specifies the maximum number of results to store. See `GeoSearchCount`.
+                If not specified, stores all results.
+            store_dist (bool): Determines what is stored as the sorted set score. Defaults to False.
+
+                - If set to False, the geohash of the location will be stored as the sorted set score.
+                - If set to True, the distance from the center of the shape (circle or box) will be stored as the sorted
+                  set score.
+                  The distance is represented as a floating-point number in the same unit specified for that shape.
 
         Returns:
             int: The number of elements in the resulting sorted set stored at `destination`.
 
         Examples:
-            >>> client.geoadd("my_geo_sorted_set", {"Palermo": GeospatialData(13.361389, 38.115556), "Catania": GeospatialData(15.087269, 37.502669)})
-            >>> client.geosearchstore("my_dest_sorted_set", "my_geo_sorted_set", "Catania", GeoSearchByRadius(175, GeoUnit.MILES))
+            >>> client.geoadd(
+            ...     "my_geo_sorted_set",
+            ...     {
+            ...         "Palermo": GeospatialData(13.361389, 38.115556),
+            ...         "Catania": GeospatialData(15.087269, 37.502669)
+            ...     }
+            ... )
+            >>> client.geosearchstore(
+            ...     "my_dest_sorted_set",
+            ...     "my_geo_sorted_set",
+            ...     "Catania",
+            ...     GeoSearchByRadius(175, GeoUnit.MILES)
+            ... )
                 2 # Number of elements stored in "my_dest_sorted_set".
             >>> client.zrange_withscores("my_dest_sorted_set", RangeByIndex(0, -1))
-                {b"Palermo": 3479099956230698.0, b"Catania": 3479447370796909.0} # The elements within te search area, with their geohash as score.
-            >>> client.geosearchstore("my_dest_sorted_set", "my_geo_sorted_set", GeospatialData(15, 37), GeoSearchByBox(400, 400, GeoUnit.KILOMETERS), store_dist=True)
+                {b"Palermo": 3479099956230698.0, b"Catania": 3479447370796909.0} # The elements within te search area, with
+                                                                                 # their geohash as score.
+            >>> client.geosearchstore(
+            ...     "my_dest_sorted_set",
+            ...     "my_geo_sorted_set",
+            ...     GeospatialData(15, 37),
+            ...     GeoSearchByBox(400, 400, GeoUnit.KILOMETERS),
+            ...     store_dist=True
+            ... )
                 2 # Number of elements stored in "my_dest_sorted_set", with distance as score.
             >>> client.zrange_withscores("my_dest_sorted_set", RangeByIndex(0, -1))
-                {b"Catania": 56.4412578701582, b"Palermo": 190.44242984775784} # The elements within te search area, with the distance as score.
+                {b"Catania": 56.4412578701582, b"Palermo": 190.44242984775784} # The elements within te search area, with the
+                                                                               # distance as score.
 
         Since: Valkey version 6.2.0.
         """
@@ -4212,9 +4275,10 @@ class CoreCommands(Protocol):
 
         Returns:
             Optional[int]: The rank of `member` in the sorted set.
+
             If `key` doesn't exist, or if `member` is not present in the set, None will be returned.
 
-            Examples:
+        Examples:
             >>> client.zrank("my_sorted_set", "member2")
                 1  # Indicates that "member2" has the second-lowest score in the sorted set "my_sorted_set".
             >>> client.zrank("my_sorted_set", "non_existing_member")
@@ -5412,6 +5476,7 @@ class CoreCommands(Protocol):
             key (TEncodable): The key of the string.
             subcommands (List[BitFieldSubCommands]): The subcommands to be performed on the binary value of the string
                 at `key`, which could be any of the following:
+
                     - `BitFieldGet`
                     - `BitFieldSet`
                     - `BitFieldIncrBy`
@@ -5419,6 +5484,7 @@ class CoreCommands(Protocol):
 
         Returns:
             List[Optional[int]]: An array of results from the executed subcommands:
+
                 - `BitFieldGet` returns the value in `BitOffset` or `BitOffsetMultiplier`.
                 - `BitFieldSet` returns the old value in `BitOffset` or `BitOffsetMultiplier`.
                 - `BitFieldIncrBy` returns the new value in `BitOffset` or `BitOffsetMultiplier`.
@@ -5428,8 +5494,12 @@ class CoreCommands(Protocol):
 
         Examples:
             >>> client.set("my_key", "A")  # "A" has binary value 01000001
-            >>> client.bitfield("my_key", [BitFieldSet(UnsignedEncoding(2), BitOffset(1), 3), BitFieldGet(UnsignedEncoding(2), BitOffset(1))])
-                [2, 3]  # The old value at offset 1 with an unsigned encoding of 2 was 2. The new value at offset 1 with an unsigned encoding of 2 is 3.
+            >>> client.bitfield(
+            ...     "my_key",
+            ...     [BitFieldSet(UnsignedEncoding(2), BitOffset(1), 3), BitFieldGet(UnsignedEncoding(2), BitOffset(1))]
+            ... )
+                [2, 3]  # The old value at offset 1 with an unsigned encoding of 2 was 2. The new value at offset 1 with an
+                        # unsigned encoding of 2 is 3.
         """
         args = [key] + _create_bitfield_args(subcommands)
         return cast(
@@ -5963,8 +6033,12 @@ class CoreCommands(Protocol):
     ) -> TResult:
         """
         Invokes a previously loaded function.
+
         See https://valkey.io/commands/fcall/ for more details.
-        When in cluster mode, all keys in `keys` must map to the same hash slot.
+
+        Note:
+            When in cluster mode, all keys in `keys` must map to the same hash slot.
+
         Args:
             function (TEncodable): The function name.
             keys (Optional[List[TEncodable]]): A list of keys accessed by the function. To ensure the correct
@@ -5972,9 +6046,10 @@ class CoreCommands(Protocol):
                 that a function accesses must be explicitly provided as `keys`.
             arguments (Optional[List[TEncodable]]): A list of `function` arguments. `Arguments`
                 should not represent names of keys.
+
         Returns:
-            TResult:
-                The invoked function's return value.
+            TResult: The invoked function's return value.
+
         Example:
             >>> client.fcall("Deep_Thought")
                 b'new_value' # Returns the function's return value.
@@ -6081,7 +6156,7 @@ class CoreCommands(Protocol):
         )
 
     @dataclass
-    class PubSubMsg:
+    class SyncPubSubMsg:
         """
         Describes the incoming pubsub message
 
@@ -6095,7 +6170,7 @@ class CoreCommands(Protocol):
         channel: TEncodable
         pattern: Optional[TEncodable]
 
-    def get_pubsub_message(self) -> PubSubMsg:
+    def get_pubsub_message(self) -> SyncPubSubMsg:
         """
         Returns the next pubsub message.
         Throws WrongConfiguration in cases:
@@ -6105,14 +6180,14 @@ class CoreCommands(Protocol):
         See https://valkey.io/docs/topics/pubsub/ for more details.
 
         Returns:
-            PubSubMsg: The next pubsub message
+            SyncPubSubMsg: The next pubsub message
 
         Examples:
             >>> pubsub_msg = listening_client.get_pubsub_message()
         """
         ...
 
-    def try_get_pubsub_message(self) -> Optional[PubSubMsg]:
+    def try_get_pubsub_message(self) -> Optional[SyncPubSubMsg]:
         """
         Tries to return the next pubsub message.
         Throws WrongConfiguration in cases:
@@ -6122,7 +6197,7 @@ class CoreCommands(Protocol):
         See https://valkey.io/docs/topics/pubsub/ for more details.
 
         Returns:
-            Optional[PubSubMsg]: The next pubsub message or None
+            Optional[SyncPubSubMsg]: The next pubsub message or None
 
         Examples:
             >>> pubsub_msg = listening_client.try_get_pubsub_message()
@@ -6216,11 +6291,12 @@ class CoreCommands(Protocol):
         """
         Returns the indices and length of the longest common subsequence between strings stored at key1 and key2.
 
-        Note that this is different than the longest common string algorithm, since
-        matching characters in the two strings do not need to be contiguous.
+        Note:
+            This is different than the longest common string algorithm, since
+            matching characters in the two strings do not need to be contiguous.
 
-        For instance the LCS between "foo" and "fao" is "fo", since scanning the two strings
-        from left to right, the longest common set of characters is composed of the first "f" and then the "o".
+            For instance the LCS between "foo" and "fao" is "fo", since scanning the two strings
+            from left to right, the longest common set of characters is composed of the first "f" and then the "o".
 
         See https://valkey.io/commands/lcs for more details.
 
@@ -6234,6 +6310,7 @@ class CoreCommands(Protocol):
             A Mapping containing the indices of the longest common subsequence between the
             2 strings and the length of the longest common subsequence. The resulting map contains two
             keys, "matches" and "len":
+
                 - "len" is mapped to the length of the longest common subsequence between the 2 strings.
                 - "matches" is mapped to a three dimensional int array that stores pairs of indices that
                   represent the location of the common subsequences in the strings held by key1 and key2,

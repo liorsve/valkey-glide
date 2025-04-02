@@ -369,7 +369,6 @@ async def create_client(
     reconnect_strategy: Optional[BackoffStrategy] = None,
     valkey_cluster: Optional[ValkeyCluster] = None,
 ) -> Union[GlideClient, GlideClusterClient]:
-    # Create async socket client
     config = create_client_config(
         request,
         cluster_mode,
@@ -378,7 +377,7 @@ async def create_client(
         addresses,
         client_name,
         protocol,
-        timeout,
+        request_timeout,
         cluster_mode_pubsub,
         standalone_mode_pubsub,
         inflight_requests_limit,
@@ -387,51 +386,10 @@ async def create_client(
         valkey_cluster,
     )
     if cluster_mode:
-        valkey_cluster = valkey_cluster or pytest.valkey_cluster  # type: ignore
-        assert type(valkey_cluster) is ValkeyCluster
-        assert database_id == 0
-        k = min(3, len(valkey_cluster.nodes_addr))
-        seed_nodes = random.sample(valkey_cluster.nodes_addr, k=k)
-        cluster_config = GlideClusterClientConfiguration(
-            addresses=seed_nodes if addresses is None else addresses,
-            use_tls=use_tls,
-            credentials=credentials,
-            client_name=client_name,
-            protocol=protocol,
-            request_timeout=request_timeout,
-            pubsub_subscriptions=cluster_mode_pubsub,
-            inflight_requests_limit=inflight_requests_limit,
-            read_from=read_from,
-            client_az=client_az,
-            advanced_config=AdvancedGlideClusterClientConfiguration(connection_timeout),
-        )
-        return await GlideClusterClient.create(cluster_config)
+        return await GlideClusterClient.create(config)
     else:
-        assert type(pytest.standalone_cluster) is ValkeyCluster  # type: ignore
-        config = GlideClientConfiguration(
-            addresses=(
-                pytest.standalone_cluster.nodes_addr if addresses is None else addresses  # type: ignore
-            ),
-            use_tls=use_tls,
-            credentials=credentials,
-            database_id=database_id,
-            client_name=client_name,
-            protocol=protocol,
-            request_timeout=request_timeout,
-            pubsub_subscriptions=standalone_mode_pubsub,
-            inflight_requests_limit=inflight_requests_limit,
-            read_from=read_from,
-            client_az=client_az,
-            advanced_config=AdvancedGlideClientConfiguration(connection_timeout),
-            reconnect_strategy=reconnect_strategy,
-        )
         return await GlideClient.create(config)
-
-
-USERNAME = "username"
-INITIAL_PASSWORD = "initial_password"
-
-
+    
 def create_sync_client(
     request,
     cluster_mode: bool,
@@ -474,7 +432,8 @@ def create_sync_client(
     else:
         return SyncGlideClient.create(config)
 
-
+USERNAME = "username"
+INITIAL_PASSWORD = "initial_password"
 NEW_PASSWORD = "new_secure_password"
 WRONG_PASSWORD = "wrong_password"
 

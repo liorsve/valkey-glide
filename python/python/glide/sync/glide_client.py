@@ -1,5 +1,6 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 
+import os
 import sys
 from typing import List, Optional, Union, cast
 
@@ -20,6 +21,8 @@ from glide.routes import Route
 
 if sys.version_info >= (3, 11):
     from typing import Self
+else:
+    from typing_extensions import Self
 
 
 # Enum values must match the Rust definition
@@ -164,9 +167,11 @@ class BaseClient(CoreCommands):
         )
 
         # Load the shared library (adjust the path to your compiled Rust library)
-        self.lib = self.ffi.dlopen(
-            "/home/ubuntu/glide-for-redis/ffi/target/debug/libglide_ffi.so"
-        )
+        this_dir = os.path.dirname(__file__)
+        so_path = os.path.abspath(
+        os.path.join(this_dir, "../../../../ffi/target/release/libglide_ffi.so")
+)
+        self.lib = self.ffi.dlopen(so_path)
 
     def _handle_response(self, message):
         if message == self.ffi.NULL:

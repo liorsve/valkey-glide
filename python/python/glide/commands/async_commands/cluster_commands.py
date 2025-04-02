@@ -29,7 +29,7 @@ class ClusterCommands(CoreCommands):
     ) -> TClusterResponse[TResult]:
         """
         Executes a single command, without checking inputs.
-        See the `Valkey GLIDE Wiki <https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#custom-command>`_
+        See the [Valkey GLIDE Wiki](https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#custom-command)
         for details on the restrictions and limitations of the custom command API.
 
             For example - Return a list of all pub/sub clients from all nodes::
