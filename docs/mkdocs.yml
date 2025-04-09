@@ -1,5 +1,5 @@
 site_name: GLIDE for Valkey - API Documentation
-site_url: http://localhost:8000/
+site_url: https://liorsve.github.io/valkey-glide
 repo_url: https://github.com/valkey-io/valkey-glide
 repo_name: GitHub
 docs_dir: markdown
@@ -13,7 +13,7 @@ nav:
           - ClusterCommands: python/cluster_commands.md
           - StandaloneCommands: python/standalone_commands.md
           - BaseTransaction: python/base_transaction.md
-          - Transaction (Standalone): python/standalone_transaction.md
+          - StandaloneTransaction: python/standalone_transaction.md
           - ClusterTransaction: python/cluster_transaction.md
       - Exceptions: python/exceptions.md
   - TypeScript:
