@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Set, Union, cast
+from typing import Dict, List, Mapping, Optional, cast
 
-from glide.commands.command_args import Limit, ObjectType, OrderBy
 from glide.commands.core_options import (
     FlushMode,
     FunctionRestorePolicy,
     InfoSection,
-    _build_sort_args,
 )
 from glide.commands.sync_commands.core import CoreCommands
 from glide.commands.transaction import ClusterTransaction
@@ -24,8 +22,6 @@ from glide.constants import (
 )
 from glide.protobuf.command_request_pb2 import RequestType
 from glide.routes import Route
-
-from ...glide import ClusterScanCursor, Script
 
 
 class ClusterCommands(CoreCommands):
@@ -91,19 +87,21 @@ class ClusterCommands(CoreCommands):
     ) -> Optional[List[TResult]]:
         """
         Execute a transaction by processing the queued commands.
+
         See https://valkey.io/docs/topics/transactions/ for details on Transactions.
 
         Args:
             transaction (ClusterTransaction): A `ClusterTransaction` object containing a list of commands to be executed.
-            route (Optional[TSingleNodeRoute]): If `route` is not provided, the transaction will be routed to the slot owner of the
-                first key found in the transaction. If no key is found, the command will be sent to a random node.
+            route (Optional[TSingleNodeRoute]): If `route` is not provided, the transaction will be routed to the slot owner
+                of the first key found in the transaction. If no key is found, the command will be sent to a random node.
                 If `route` is provided, the client will route the command to the nodes defined by `route`.
 
         Returns:
             Optional[List[TResult]]: A list of results corresponding to the execution of each command
-                in the transaction. If a command returns a value, it will be included in the list. If a command
-                doesn't return a value, the list entry will be `None`.
-                If the transaction failed due to a WATCH command, `exec` will return `None`.
+            in the transaction. If a command returns a value, it will be included in the list. If a command
+            doesn't return a value, the list entry will be `None`.
+
+            If the transaction failed due to a WATCH command, `exec` will return `None`.
         """
         commands = transaction.commands[:]
         return self._execute_transaction(commands, route)
@@ -117,8 +115,8 @@ class ClusterCommands(CoreCommands):
         See https://valkey.io/commands/config-resetstat/ for details.
 
         Args:
-            route (Optional[Route]): The command will be routed automatically to all nodes, unless `route` is provided, in which
-            case the client will route the command to the nodes defined by `route`. Defaults to None.
+            route (Optional[Route]): The command will be routed automatically to all nodes, unless `route` is provided, in
+            which case the client will route the command to the nodes defined by `route`. Defaults to None.
 
         Returns:
             OK: Returns "OK" to confirm that the statistics were successfully reset.
@@ -134,8 +132,8 @@ class ClusterCommands(CoreCommands):
         See https://valkey.io/commands/config-rewrite/ for details.
 
         Args:
-            route (Optional[TRoute]): The command will be routed automatically to all nodes, unless `route` is provided, in which
-            case the client will route the command to the nodes defined by `route`. Defaults to None.
+            route (Optional[TRoute]): The command will be routed automatically to all nodes, unless `route` is provided, in
+            which case the client will route the command to the nodes defined by `route`. Defaults to None.
 
         Returns:
             OK: OK is returned when the configuration was rewritten properly. Otherwise an error is raised.
@@ -211,7 +209,8 @@ class ClusterCommands(CoreCommands):
         Returns:
             TClusterResponse[Dict[bytes, bytes]]: A dictionary of values corresponding to the
             configuration parameters.
-            When specifying a route other than a single node, response will be : {Address (bytes) : response (Dict[bytes, bytes]) , ... }
+            When specifying a route other than a single node, response will be :
+            {Address (bytes) : response (Dict[bytes, bytes]) , ... }
             with type of Dict[bytes, Dict[bytes, bytes]].
 
         Examples:
@@ -295,7 +294,8 @@ class ClusterCommands(CoreCommands):
 
         Returns:
             int: The number of keys in the database.
-            In the case of routing the query to multiple nodes, returns the aggregated number of keys across the different nodes.
+            In the case of routing the query to multiple nodes, returns the aggregated number of keys across the
+            different nodes.
 
         Examples:
             >>> client.dbsize()
@@ -536,7 +536,11 @@ class ClusterCommands(CoreCommands):
                 the queried node and the value contains the function's return value.
 
         Example:
-            >>> client.fcall("Deep_Thought", ["Answer", "to", "the", "Ultimate", "Question", "of", "Life,", "the", "Universe,", "and", "Everything"], RandomNode())
+            >>> await client.fcall(
+            ...     "Deep_Thought",
+            ...     ["Answer", "to", "the", "Ultimate", "Question", "of", "Life,", "the", "Universe,", "and", "Everything"],
+            ...     RandomNode()
+            ... )
                 b'new_value' # Returns the function's return value.
 
         Since: Valkey version 7.0.0.
@@ -594,14 +598,14 @@ class ClusterCommands(CoreCommands):
         See https://valkey.io/commands/function-stats/ for more details
 
         Args:
-            route (Optional[Route]): The command will be routed automatically to all nodes, unless `route` is provided, in which
-                case the client will route the command to the nodes defined by `route`. Defaults to None.
+            route (Optional[Route]): The command will be routed automatically to all nodes, unless `route` is provided, in
+            which case the client will route the command to the nodes defined by `route`. Defaults to None.
 
         Returns:
             TClusterResponse[TFunctionStatsSingleNodeResponse]: A `Mapping` with two keys:
                 - `running_script` with information about the running script.
                 - `engines` with information about available engines and their stats.
-                
+
                 See example for more details.
 
         Examples:
@@ -715,8 +719,12 @@ class ClusterCommands(CoreCommands):
         Examples:
             >>> client.time()
                 [b'1710925775', b'913580']
-            >>> client.time(AllNodes())
-                {b'addr': [b'1710925775', b'913580'], b'addr2': [b'1710925775', b'913580'], b'addr3': [b'1710925775', b'913580']}
+            >>> await client.time(AllNodes())
+                {
+                    b'addr': [b'1710925775', b'913580'],
+                    b'addr2': [b'1710925775', b'913580'],
+                    b'addr3': [b'1710925775', b'913580']
+                }
         """
         return cast(
             TClusterResponse[List[bytes]],
@@ -742,8 +750,9 @@ class ClusterCommands(CoreCommands):
         Examples:
             >>> client.lastsave()
                 1710925775  # Unix time of the last DB save
-            >>> client.lastsave(AllNodes())
-                {b'addr1': 1710925775, b'addr2': 1710925775, b'addr3': 1710925775}  # Unix time of the last DB save on each node
+            >>> await client.lastsave(AllNodes())
+                {b'addr1': 1710925775, b'addr2': 1710925775, b'addr3': 1710925775}  # Unix time of the last DB save on
+                                                                                    # each node
         """
         return cast(
             TClusterResponse[int],
@@ -817,7 +826,8 @@ class ClusterCommands(CoreCommands):
         Returns the number of subscribers (exclusive of clients subscribed to patterns) for the specified shard channels.
 
         Note that it is valid to call this command without channels. In this case, it will just return an empty map.
-        The command is routed to all nodes, and aggregates the response to a single map of the channels and their number of subscriptions.
+        The command is routed to all nodes, and aggregates the response to a single map of the channels and their number of
+        subscriptions.
 
         See https://valkey.io/commands/pubsub-shardnumsub for more details.
 
@@ -1055,7 +1065,7 @@ class ClusterCommands(CoreCommands):
             TOK: A simple "OK" response.
 
         Examples:
-            >>> client.unwatch()
+            >>> await client.unwatch()
                 'OK'
         """
         return cast(

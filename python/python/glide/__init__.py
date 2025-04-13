@@ -161,7 +161,7 @@ from glide.routes import (
     SlotKeyRoute,
     SlotType,
 )
-from glide.sync import GlideClient
+from glide.sync import GlideClient  # noqa: F811
 
 from .glide import ClusterScanCursor, Script
 

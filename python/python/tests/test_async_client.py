@@ -309,7 +309,7 @@ class TestGlideClients:
         )
         assert isinstance(client, (GlideClient, GlideClusterClient))
 
-        assert await client.set("key", "value") == "OK"
+        assert await client.set("key", "value") == OK
 
         await client.close()
 
@@ -365,7 +365,7 @@ class TestGlideClients:
             )
 
             # Ensure the second client can connect and perform a simple operation
-            assert await timeout_client.set("key", "value") == "OK"
+            assert await timeout_client.set("key", "value") == OK
             await timeout_client.close()
 
         # Run tests
@@ -650,7 +650,7 @@ class TestCommands:
         value = get_random_string(10)
         non_existing_key = get_random_string(10)
         list_key = get_random_string(10)
-        assert await glide_client.set(key, value) == "OK"
+        assert await glide_client.set(key, value) == OK
 
         # Retrieve and delete existing key
         assert await glide_client.getdel(key) == value.encode()
@@ -2114,7 +2114,7 @@ class TestCommands:
             await glide_client.sintercard([])
 
         # Non-set key
-        assert await glide_client.set(string_key, "value") == "OK"
+        assert await glide_client.set(string_key, "value") == OK
         with pytest.raises(RequestError):
             await glide_client.sintercard([string_key])
 
@@ -8569,7 +8569,7 @@ class TestCommands:
                 try:
                     result = await glide_client.function_kill()
                     #  we expect to get success
-                    assert result == "OK"
+                    assert result == OK
                     break
                 except RequestError:
                     # a RequestError may occur if the function is not yet running
@@ -9488,7 +9488,7 @@ class TestCommands:
         assert result is not None
         assert isinstance(result, list)
         assert len(result) == 2
-        assert result[0] == "OK"
+        assert result[0] == OK
         assert result[1] == b"transaction_value"
 
         # UNWATCH returns OK when there no watched keys
@@ -10345,7 +10345,7 @@ async def script_kill_tests(
                 else:
                     result = await glide_client.script_kill()
                 #  we expect to get success
-                assert result == "OK"
+                assert result == OK
                 break
             except RequestError:
                 # a RequestError may occur if the script is not yet running
@@ -10383,13 +10383,11 @@ class TestScripts:
 
         script = Script("return redis.call('SET', KEYS[1], ARGV[1])")
         assert (
-            await glide_client.invoke_script(script, keys=[key1], args=["value1"])
-            == "OK"
+            await glide_client.invoke_script(script, keys=[key1], args=["value1"]) == OK
         )
         # Reuse the same script with different parameters.
         assert (
-            await glide_client.invoke_script(script, keys=[key2], args=["value2"])
-            == "OK"
+            await glide_client.invoke_script(script, keys=[key2], args=["value2"]) == OK
         )
         script = Script("return redis.call('GET', KEYS[1])")
         assert (
@@ -10413,14 +10411,14 @@ class TestScripts:
             await glide_client.invoke_script(
                 script, keys=[key1], args=[bytes("value1", "utf-8")]
             )
-            == "OK"
+            == OK
         )
         # Reuse the same script with different parameters.
         assert (
             await glide_client.invoke_script(
                 script, keys=[key2], args=[bytes("value2", "utf-8")]
             )
-            == "OK"
+            == OK
         )
         script = Script(bytes("return redis.call('GET', KEYS[1])", "utf-8"))
         assert (

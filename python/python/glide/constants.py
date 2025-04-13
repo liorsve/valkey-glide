@@ -6,7 +6,7 @@ from glide.protobuf.command_request_pb2 import CommandRequest
 from glide.protobuf.connection_request_pb2 import ConnectionRequest
 from glide.routes import ByAddressRoute, RandomNode, SlotIdRoute, SlotKeyRoute
 
-OK: str = b"OK"
+OK: str = "OK"
 DEFAULT_READ_BYTES_SIZE: int = pow(2, 16)
 # Typing
 T = TypeVar("T")

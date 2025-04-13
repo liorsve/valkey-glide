@@ -2,7 +2,7 @@
 
 import os
 import sys
-from typing import List, Optional, Union, cast
+from typing import List, Optional, Union
 
 from cffi import FFI
 from glide.commands.sync_commands.cluster_commands import ClusterCommands
@@ -10,13 +10,12 @@ from glide.commands.sync_commands.core import CoreCommands
 from glide.commands.sync_commands.standalone_commands import StandaloneCommands
 from glide.config import (
     BaseClientConfiguration,
-    GlideClientConfiguration,
     GlideClusterClientConfiguration,
 )
-from glide.constants import DEFAULT_READ_BYTES_SIZE, OK, TEncodable, TRequest, TResult
+from glide.constants import TEncodable, TResult
 from glide.exceptions import ClosingError, RequestError
 from glide.glide_client import get_request_error_class
-from glide.protobuf.command_request_pb2 import Command, CommandRequest, RequestType
+from glide.protobuf.command_request_pb2 import RequestType
 from glide.routes import Route
 
 if sys.version_info >= (3, 11):
@@ -45,7 +44,7 @@ class BaseClient(CoreCommands):
         self._init_ffi()
         self.config = config
         conn_req = config._create_a_protobuf_conn_request(
-            cluster_mode=type(config) == GlideClusterClientConfiguration
+            cluster_mode=type(config) is GlideClusterClientConfiguration
         )
         conn_req_bytes = conn_req.SerializeToString()
         client_type = self.ffi.new(
@@ -84,7 +83,7 @@ class BaseClient(CoreCommands):
         # Define the CommandResponse struct and related types
         self.ffi.cdef(
             """
-            typedef struct {
+            struct CommandResponse {
                 int response_type;
                 long int_value;
                 double float_value;
@@ -97,7 +96,9 @@ class BaseClient(CoreCommands):
                 struct CommandResponse* map_value;
                 struct CommandResponse* sets_value;
                 long sets_value_len;
-            } CommandResponse;
+            };
+
+            typedef struct CommandResponse CommandResponse;
 
             typedef enum {
                 Null = 0,
@@ -161,7 +162,11 @@ class BaseClient(CoreCommands):
             void free_command_response(CommandResponse* command_response_ptr);
             void free_error_message(char* error_message);
             void free_command_result(CommandResult* command_result_ptr);
-            CommandResult* command(const void* client_adapter_ptr, uintptr_t channel, int command_type, unsigned long arg_count, const size_t *args, const unsigned long* args_len, const unsigned char* route_bytes, size_t route_bytes_len);
+            CommandResult* command(
+                const void* client_adapter_ptr, uintptr_t channel, int command_type,
+                unsigned long arg_count, const size_t *args, const unsigned long* args_len,
+                const unsigned char* route_bytes, size_t route_bytes_len
+            );
 
         """
         )
@@ -169,69 +174,85 @@ class BaseClient(CoreCommands):
         # Load the shared library (adjust the path to your compiled Rust library)
         this_dir = os.path.dirname(__file__)
         so_path = os.path.abspath(
-        os.path.join(this_dir, "../../../../ffi/target/release/libglide_ffi.so")
-)
+            os.path.join(this_dir, "../../../../ffi/target/release/libglide_ffi.so")
+        )
         self.lib = self.ffi.dlopen(so_path)
 
     def _handle_response(self, message):
         if message == self.ffi.NULL:
             raise RequestError("Received NULL message.")
 
-        # Identify the type of the message
         message_type = self.ffi.typeof(message).cname
-
-        # If message is a pointer to CommandResponse, dereference it
         if message_type == "CommandResponse *":
-            message = message[0]  # Dereference the pointer
+            message = message[0]
             message_type = self.ffi.typeof(message).cname
-        # Check if message is now a CommandResponse
-        if message_type == "CommandResponse":
-            msg = message
-            if msg.response_type == 0:  # Null
-                return None
-            elif msg.response_type == 1:  # Int
-                return msg.int_value
-            elif msg.response_type == 2:  # Float
-                return msg.float_value
-            elif msg.response_type == 3:  # Bool
-                return bool(msg.bool_value)
-            elif msg.response_type == 4:  # String
-                try:
-                    string_value = self.ffi.buffer(
-                        msg.string_value, msg.string_value_len
-                    )[:]
-                    return string_value
-                except Exception as e:
-                    # TODO: Add memory cleanup in case of failures
-                    raise RequestError(f"Error decoding string value: {e}")
-            elif msg.response_type == 5:  # Array
-                array = []
-                for i in range(msg.array_value_len):
-                    element = self.ffi.cast(
-                        "struct CommandResponse*", msg.array_value + i
-                    )
-                    array.append(self._handle_response(element))
-                return array
-            elif msg.response_type == 6:  # Map
-                map_dict = {}
-                for i in range(msg.array_value_len):
-                    key = self.ffi.cast("struct CommandResponse*", msg.map_key + i)
-                    value = self.ffi.cast("struct CommandResponse*", msg.map_value + i)
-                    map_dict[self._handle_response(key)] = self._handle_response(value)
-                return map_dict
-            elif msg.response_type == 7:  # Sets
-                result_set = set()
-                sets_array = self.ffi.cast(
-                    f"struct CommandResponse[{msg.sets_value_len}]", msg.sets_value
-                )
-                for i in range(msg.sets_value_len):
-                    element = sets_array[i]  # Already a struct
-                    result_set.add(self._handle_response(element))
-                return result_set
-            else:
-                raise RequestError(f"Unhandled response type = {msg.response_type}")
-        else:
+
+        if message_type != "CommandResponse":
             raise RequestError(f"Unexpected message type = {message_type}")
+
+        return self._handle_command_response(message)
+
+    def _handle_command_response(self, msg):
+        """Handle a CommandResponse message based on its response type."""
+        handlers = {
+            0: self._handle_null_response,
+            1: self._handle_int_response,
+            2: self._handle_float_response,
+            3: self._handle_bool_response,
+            4: self._handle_string_response,
+            5: self._handle_array_response,
+            6: self._handle_map_response,
+            7: self._handle_set_response,
+        }
+
+        handler = handlers.get(msg.response_type)
+        if handler is None:
+            raise RequestError(f"Unhandled response type = {msg.response_type}")
+
+        return handler(msg)
+
+    def _handle_null_response(self, msg):
+        return None
+
+    def _handle_int_response(self, msg):
+        return msg.int_value
+
+    def _handle_float_response(self, msg):
+        return msg.float_value
+
+    def _handle_bool_response(self, msg):
+        return bool(msg.bool_value)
+
+    def _handle_string_response(self, msg):
+        try:
+            return self.ffi.buffer(msg.string_value, msg.string_value_len)[:]
+        except Exception as e:
+            raise RequestError(f"Error decoding string value: {e}")
+
+    def _handle_array_response(self, msg):
+        array = []
+        for i in range(msg.array_value_len):
+            element = self.ffi.cast("struct CommandResponse*", msg.array_value + i)
+            array.append(self._handle_response(element))
+        return array
+
+    def _handle_map_response(self, msg):
+        map_dict = {}
+        for i in range(msg.array_value_len):
+            key = self.ffi.cast("struct CommandResponse*", msg.map_key + i)
+            value = self.ffi.cast("struct CommandResponse*", msg.map_value + i)
+            map_dict[self._handle_response(key)] = self._handle_response(value)
+        return map_dict
+
+    def _handle_set_response(self, msg):
+        result_set = set()
+        sets_array = self.ffi.cast(
+            f"struct CommandResponse[{msg.sets_value_len}]", msg.sets_value
+        )
+        for i in range(msg.sets_value_len):
+            element = sets_array[i]
+            result_set.add(self._handle_response(element))
+        return result_set
 
     def _to_c_strings(self, args):
         """Convert Python arguments to C-compatible pointers and lengths."""

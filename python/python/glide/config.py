@@ -13,6 +13,7 @@ from glide.protobuf.connection_request_pb2 import ConnectionRequest
 from glide.protobuf.connection_request_pb2 import ProtocolVersion as SentProtocolVersion
 from glide.protobuf.connection_request_pb2 import ReadFrom as ProtobufReadFrom
 from glide.protobuf.connection_request_pb2 import TlsMode
+
 PubSubMsg = Union[AsyncCoreCommands.PubSubMsg, SyncCoreCommands.SyncPubSubMsg]
 
 

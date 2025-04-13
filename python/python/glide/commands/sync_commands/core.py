@@ -1,7 +1,5 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from enum import Enum
 from typing import (
     Dict,
     List,
@@ -10,16 +8,13 @@ from typing import (
     Protocol,
     Set,
     Tuple,
-    Type,
     Union,
     cast,
-    get_args,
 )
 
 from glide.commands.bitmap import (
     BitFieldGet,
     BitFieldSubCommands,
-    BitmapIndexType,
     BitwiseOperation,
     OffsetOptions,
     _create_bitfield_args,
@@ -131,9 +126,9 @@ class CoreCommands(Protocol):
             password (`Optional[str]`): The new password to use for the connection,
             if `None` the password will be removed.
             immediate_auth (`bool`):
-                - `True`: The client will authenticate immediately with the new password against all connections, Using `AUTH` command.
-                          If password supplied is an empty string, auth will not be performed and warning will be returned.
-                          The default is `False`.
+                `True`: The client will authenticate immediately with the new password against all connections, Using `AUTH`
+                command. If password supplied is an empty string, auth will not be performed and warning will be returned.
+                The default is `False`.
 
         Returns:
             TOK: A simple OK response. If `immediate_auth=True` returns OK if the reauthenticate succeed.
@@ -154,13 +149,14 @@ class CoreCommands(Protocol):
     ) -> Optional[bytes]:
         """
         Set the given key with the given value. Return value is dependent on the passed options.
+
         See https://valkey.io/commands/set/ for more details.
 
         Args:
             key (TEncodable): the key to store.
             value (TEncodable): the value to store with the given key.
             conditional_set (Optional[ConditionalChange], optional): set the key only if the given condition is met.
-                Equivalent to [`XX` | `NX`] in the Valkey API. Defaults to None.
+                Equivalent to [`XX` | `NX` | `IFEQ` comparison-value] in the Valkey API. Defaults to None.
             expiry (Optional[ExpirySet], optional): set expiriation to the given key.
                 Equivalent to [`EX` | `PX` | `EXAT` | `PXAT` | `KEEPTTL`] in the Valkey API. Defaults to None.
             return_old_value (bool, optional): Return the old value stored at key, or None if key did not exist.
@@ -168,20 +164,45 @@ class CoreCommands(Protocol):
                 Equivalent to `GET` in the Valkey API. Defaults to False.
 
         Returns:
-            Optional[bytes]:
-                If the value is successfully set, return OK.
-                If value isn't set because of only_if_exists or only_if_does_not_exist conditions, return None.
-                If return_old_value is set, return the old value as a bytes string.
+            Optional[bytes]: If the value is successfully set, return OK.
+
+            If value isn't set because of `only_if_exists` or `only_if_does_not_exist` conditions, return `None`.
+
+            If return_old_value is set, return the old value as a bytes string.
 
         Example:
             >>> client.set(b"key", b"value")
                 'OK'
-            >>> client.set("key", "new_value",conditional_set=ConditionalChange.ONLY_IF_EXISTS, expiry=Expiry(ExpiryType.SEC, 5))
+                # ONLY_IF_EXISTS -> Only set the key if it already exists
+                # expiry -> Set the amount of time until key expires
+            >>> client.set(
+            ...     "key",
+            ...     "new_value",
+            ...     conditional_set=ConditionalChange.ONLY_IF_EXISTS,
+            ...     expiry=ExpirySet(ExpiryType.SEC, 5)
+            ... )
                 'OK' # Set "new_value" to "key" only if "key" already exists, and set the key expiration to 5 seconds.
-            >>> client.set("key", "value", conditional_set=ConditionalChange.ONLY_IF_DOES_NOT_EXIST,return_old_value=True)
+                # ONLY_IF_DOES_NOT_EXIST -> Only set key if it does not already exist
+            >>> client.set(
+            ...     "key",
+            ...     "value",
+            ...     conditional_set=ConditionalChange.ONLY_IF_DOES_NOT_EXIST,
+            ...     return_old_value=True
+            ... )
                 b'new_value' # Returns the old value of "key".
             >>> client.get("key")
                 b'new_value' # Value wasn't modified back to being "value" because of "NX" flag.
+                # ONLY_IF_EQUAL -> Only set key if provided value is equal to current value of the key
+            >>> client.set("key", "value")
+                'OK' # Reset "key" to "value"
+            >>> client.set("key", "new_value", conditional_set=OnlyIfEqual("different_value")
+                'None' # Did not rewrite value of "key" because provided value was not equal to the previous value of "key"
+            >>> client.get("key")
+                b'value' # Still the original value because nothing got rewritten in the last call
+            >>> client.set("key", "new_value", conditional_set=OnlyIfEqual("value")
+                'OK'
+            >>> client.get("key")
+                b'newest_value" # Set "key" to "new_value" because the provided value was equal to the previous value of "key"
         """
         args = [key, value]
         if conditional_set:
@@ -269,7 +290,8 @@ class CoreCommands(Protocol):
     def append(self, key: TEncodable, value: TEncodable) -> int:
         """
         Appends a value to a key.
-        If `key` does not exist it is created and set as an empty string, so `APPEND` will be similar to `SET` in this special case.
+        If `key` does not exist it is created and set as an empty string, so `APPEND` will be similar to `SET` in this special
+        case.
 
         See https://valkey.io/commands/append for more details.
 
@@ -282,9 +304,11 @@ class CoreCommands(Protocol):
 
         Examples:
             >>> client.append("key", "Hello")
-                5  # Indicates that "Hello" has been appended to the value of "key", which was initially empty, resulting in a new value of "Hello" with a length of 5 - similar to the set operation.
+                5  # Indicates that "Hello" has been appended to the value of "key", which was initially empty, resulting in a
+                   # new value of "Hello" with a length of 5 - similar to the set operation.
             >>> client.append("key", " world")
-                11  # Indicates that " world" has been appended to the value of "key", resulting in a new value of "Hello world" with a length of 11.
+                11  # Indicates that " world" has been appended to the value of "key", resulting in a new value of
+                    # "Hello world" with a length of 11.
             >>> client.get("key")
                 b"Hello world"  # Returns the value stored in "key", which is now "Hello world".
         """
@@ -512,7 +536,8 @@ class CoreCommands(Protocol):
         See https://valkey.io/commands/msetnx/ for more details.
 
         Args:
-            key_value_map (Mapping[TEncodable, TEncodable]): A key-value map consisting of keys and their respective values to set.
+            key_value_map (Mapping[TEncodable, TEncodable]): A key-value map consisting of keys and their respective values to
+                set.
 
         Returns:
             bool: True if all keys were set. False if no key was set.
@@ -641,8 +666,8 @@ class CoreCommands(Protocol):
 
         Args:
             key (TEncodable): The key of the hash.
-            field_value_map (Mapping[TEncodable, TEncodable]): A field-value map consisting of fields and their corresponding values
-            to be set in the hash stored at the specified key.
+            field_value_map (Mapping[TEncodable, TEncodable]): A field-value map consisting of fields and their corresponding
+                values to be set in the hash stored at the specified key.
 
         Returns:
             int: The number of fields that were added to the hash.
@@ -796,8 +821,9 @@ class CoreCommands(Protocol):
             key (TEncodable): The key of the hash.
 
         Returns:
-            Dict[bytes, bytes]: A dictionary of fields and their values stored in the hash. Every field name in the list is followed by
-            its value.
+            Dict[bytes, bytes]: A dictionary of fields and their values stored in the hash. Every field name in the list is
+            followed by its value.
+
             If `key` does not exist, it returns an empty dictionary.
 
         Examples:
@@ -1104,17 +1130,22 @@ class CoreCommands(Protocol):
         order that they are given. Blocks the connection when there are no elements to pop from any of the given lists.
         See https://valkey.io/commands/blpop for details.
 
-        Notes:
+        Note:
             1. When in cluster mode, all `keys` must map to the same hash slot.
-            2. `BLPOP` is a client blocking command, see https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands for more details and best practices.
+            2. `BLPOP` is a client blocking command, see
+               https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands
+               for more details and best practices.
 
         Args:
             keys (List[TEncodable]): The keys of the lists to pop from.
-            timeout (float): The number of seconds to wait for a blocking operation to complete. A value of 0 will block indefinitely.
+            timeout (float): The number of seconds to wait for a blocking operation to complete.
+                A value of 0 will block indefinitely.
 
         Returns:
             Optional[List[bytes]]: A two-element list containing the key from which the element was popped and the value of the
-                popped element, formatted as `[key, value]`. If no element could be popped and the `timeout` expired, returns None.
+            popped element, formatted as `[key, value]`.
+
+            If no element could be popped and the `timeout` expired, returns None.
 
         Examples:
             >>> client.blpop(["list1", "list2"], 0.5)
@@ -1140,11 +1171,15 @@ class CoreCommands(Protocol):
 
         Args:
             keys (List[TEncodable]): An array of keys of lists.
-            direction (ListDirection): The direction based on which elements are popped from (`ListDirection.LEFT` or `ListDirection.RIGHT`).
-            count (Optional[int]): The maximum number of popped elements. If not provided, defaults to popping a single element.
+            direction (ListDirection): The direction based on which elements are popped from
+                (`ListDirection.LEFT` or `ListDirection.RIGHT`).
+            count (Optional[int]): The maximum number of popped elements. If not provided, defaults to popping a
+                single element.
 
         Returns:
-            Optional[Mapping[bytes, List[bytes]]]: A map of `key` name mapped to an array of popped elements, or None if no elements could be popped.
+            Optional[Mapping[bytes, List[bytes]]]: A `map` of `key` name mapped to an array of popped elements,
+
+            `None` if no elements could be popped.
 
         Examples:
             >>> client.lpush("testKey", ["one", "two", "three"])
@@ -1174,20 +1209,27 @@ class CoreCommands(Protocol):
 
         `BLMPOP` is the blocking variant of `LMPOP`.
 
-        Notes:
+        Note:
             1. When in cluster mode, all `keys` must map to the same hash slot.
-            2. `BLMPOP` is a client blocking command, see https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands for more details and best practices.
+            2. `BLMPOP` is a client blocking command, see
+               https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands
+               for more details and best practices.
 
         See https://valkey.io/commands/blmpop/ for details.
 
         Args:
             keys (List[TEncodable]): An array of keys of lists.
-            direction (ListDirection): The direction based on which elements are popped from (`ListDirection.LEFT` or `ListDirection.RIGHT`).
-            timeout (float): The number of seconds to wait for a blocking operation to complete. A value of `0` will block indefinitely.
-            count (Optional[int]): The maximum number of popped elements. If not provided, defaults to popping a single element.
+            direction (ListDirection): The direction based on which elements are popped from
+                (`ListDirection.LEFT` or `ListDirection.RIGHT`).
+            timeout (float): The number of seconds to wait for a blocking operation to complete.
+                A value of `0` will block indefinitely.
+            count (Optional[int]): The maximum number of popped elements. If not provided, defaults to popping a single
+                element.
 
         Returns:
-            Optional[Mapping[bytes, List[bytes]]]: A map of `key` name mapped to an array of popped elements, or None if no elements could be popped and the timeout expired.
+            Optional[Mapping[bytes, List[bytes]]]: A `map` of `key` name mapped to an array of popped elements.
+
+            `None` if no elements could be popped and the timeout expired.
 
         Examples:
             >>> client.lpush("testKey", ["one", "two", "three"])
@@ -1393,19 +1435,25 @@ class CoreCommands(Protocol):
         """
         Pops an element from the tail of the first list that is non-empty, with the given keys being checked in the
         order that they are given. Blocks the connection when there are no elements to pop from any of the given lists.
+
         See https://valkey.io/commands/brpop for details.
 
         Notes:
             1. When in cluster mode, all `keys` must map to the same hash slot.
-            2. `BRPOP` is a client blocking command, see https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands for more details and best practices.
+            2. `BRPOP` is a client blocking command, see
+               https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands
+               for more details and best practices.
 
         Args:
             keys (List[TEncodable]): The keys of the lists to pop from.
-            timeout (float): The number of seconds to wait for a blocking operation to complete. A value of 0 will block indefinitely.
+            timeout (float): The number of seconds to wait for a blocking operation to complete.
+                A value of 0 will block indefinitely.
 
         Returns:
             Optional[List[bytes]]: A two-element list containing the key from which the element was popped and the value of the
-                popped element, formatted as `[key, value]`. If no element could be popped and the `timeout` expired, returns None.
+            popped element, formatted as `[key, value]`.
+
+            If no element could be popped and the `timeout` expired, returns None.
 
         Examples:
             >>> client.brpop(["list1", "list2"], 0.5)
@@ -1470,18 +1518,22 @@ class CoreCommands(Protocol):
         Args:
             source (TEncodable): The key to the source list.
             destination (TEncodable): The key to the destination list.
-            where_from (ListDirection): The direction to remove the element from (`ListDirection.LEFT` or `ListDirection.RIGHT`).
-            where_to (ListDirection): The direction to add the element to (`ListDirection.LEFT` or `ListDirection.RIGHT`).
+            where_from (ListDirection): The direction to remove the element from
+                (`ListDirection.LEFT` or `ListDirection.RIGHT`).
+            where_to (ListDirection): The direction to add the element to
+                (`ListDirection.LEFT` or `ListDirection.RIGHT`).
 
         Returns:
-            Optional[bytes]: The popped element, or None if `source` does not exist.
+            Optional[bytes]: The popped element.
+
+            `None` if `source` does not exist.
 
         Examples:
             >>> client.lpush("testKey1", ["two", "one"])
             >>> client.lpush("testKey2", ["four", "three"])
             >>> client.lmove("testKey1", "testKey2", ListDirection.LEFT, ListDirection.LEFT)
                 b"one"
-            >>> updated_array1 = client.lrange("testKey1", 0, -1)
+            >>> updated_array1 =  client.lrange("testKey1", 0, -1)
                 [b"two"]
             >>> client.lrange("testKey2", 0, -1)
                 [b"one", b"three", b"four"]
@@ -1512,19 +1564,26 @@ class CoreCommands(Protocol):
 
         Notes:
             1. When in cluster mode, both `source` and `destination` must map to the same hash slot.
-            2. `BLMOVE` is a client blocking command, see https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands for more details and best practices.
+            2. `BLMOVE` is a client blocking command, see
+               https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands
+               for more details and best practices.
 
         See https://valkey.io/commands/blmove/ for details.
 
         Args:
             source (TEncodable): The key to the source list.
             destination (TEncodable): The key to the destination list.
-            where_from (ListDirection): The direction to remove the element from (`ListDirection.LEFT` or `ListDirection.RIGHT`).
-            where_to (ListDirection): The direction to add the element to (`ListDirection.LEFT` or `ListDirection.RIGHT`).
-            timeout (float): The number of seconds to wait for a blocking operation to complete. A value of `0` will block indefinitely.
+            where_from (ListDirection): The direction to remove the element from
+                (`ListDirection.LEFT` or `ListDirection.RIGHT`).
+            where_to (ListDirection): The direction to add the element to
+                (`ListDirection.LEFT` or `ListDirection.RIGHT`).
+            timeout (float): The number of seconds to wait for a blocking operation to complete.
+                A value of `0` will block indefinitely.
 
         Returns:
-            Optional[bytes]: The popped element, or None if `source` does not exist or if the operation timed-out.
+            Optional[bytes]: The popped element.
+
+            `None` if `source` does not exist or if the operation timed-out.
 
         Examples:
             >>> client.lpush("testKey1", ["two", "one"])
@@ -1533,7 +1592,7 @@ class CoreCommands(Protocol):
                 b"one"
             >>> client.lrange("testKey1", 0, -1)
                 [b"two"]
-            >>> updated_array2 = client.lrange("testKey2", 0, -1)
+            >>> updated_array2 =  client.lrange("testKey2", 0, -1)
                 [b"one", b"three", bb"four"]
 
         Since: Valkey version 6.2.0.
@@ -1718,7 +1777,9 @@ class CoreCommands(Protocol):
             member (TEncodable): The set element to move.
 
         Returns:
-            bool: True on success, or False if the `source` set does not exist or the element is not a member of the source set.
+            bool: `True` on success.
+
+            `False` if the `source` set does not exist or the element is not a member of the source set.
 
         Examples:
             >>> client.smove("set1", "set2", "member1")
@@ -1870,7 +1931,8 @@ class CoreCommands(Protocol):
     def sintercard(self, keys: List[TEncodable], limit: Optional[int] = None) -> int:
         """
         Gets the cardinality of the intersection of all the given sets.
-        Optionally, a `limit` can be specified to stop the computation early if the intersection cardinality reaches the specified limit.
+        Optionally, a `limit` can be specified to stop the computation early if the intersection cardinality reaches the
+        specified limit.
 
         When in cluster mode, all keys in `keys` must map to the same hash slot.
 
@@ -2094,6 +2156,7 @@ class CoreCommands(Protocol):
         If `key` already has an existing expire set, the time to live is updated to the new value.
         If `seconds` is a non-positive number, the key will be deleted rather than expired.
         The timeout will only be cleared by commands that delete or overwrite the contents of `key`.
+
         See https://valkey.io/commands/expire/ for more details.
 
         Args:
@@ -2102,8 +2165,10 @@ class CoreCommands(Protocol):
             option (ExpireOptions, optional): The expire option.
 
         Returns:
-            bool: 'True' if the timeout was set, 'False' if the timeout was not set (e.g., the key doesn't exist or the operation is
-                skipped due to the provided arguments).
+            bool: `True` if the timeout was set.
+
+            `False` if the timeout was not set (e.g., the key doesn't exist or the
+            operation is skipped due to the provided arguments).
 
         Examples:
             >>> client.expire("my_key", 60)
@@ -2127,6 +2192,7 @@ class CoreCommands(Protocol):
         deleted.
         If `key` already has an existing expire set, the time to live is updated to the new value.
         The timeout will only be cleared by commands that delete or overwrite the contents of `key`.
+
         See https://valkey.io/commands/expireat/ for more details.
 
         Args:
@@ -2135,8 +2201,10 @@ class CoreCommands(Protocol):
             option (Optional[ExpireOptions]): The expire option.
 
         Returns:
-            bool: 'True' if the timeout was set, 'False' if the timeout was not set (e.g., the key doesn't exist or the operation is
-                skipped due to the provided arguments).
+            bool: `True` if the timeout was set.
+
+            `False` if the timeout was not set (e.g., the key doesn't exist or the
+            operation is skipped due to the provided arguments).
 
         Examples:
             >>> client.expireAt("my_key", 1672531200, ExpireOptions.HasNoExpiry)
@@ -2160,6 +2228,7 @@ class CoreCommands(Protocol):
         If `key` already has an existing expire set, the time to live is updated to the new value.
         If `milliseconds` is a non-positive number, the key will be deleted rather than expired.
         The timeout will only be cleared by commands that delete or overwrite the contents of `key`.
+
         See https://valkey.io/commands/pexpire/ for more details.
 
         Args:
@@ -2168,8 +2237,10 @@ class CoreCommands(Protocol):
             option (Optional[ExpireOptions]): The expire option.
 
         Returns:
-            bool: 'True' if the timeout was set, 'False' if the timeout was not set (e.g., the key doesn't exist or the operation is
-                skipped due to the provided arguments).
+            bool: `True` if the timeout was set
+
+            `False` if the timeout was not set (e.g., the key doesn't exist or the
+            operation is skipped due to the provided arguments).
 
         Examples:
             >>> client.pexpire("my_key", 60000, ExpireOptions.HasNoExpiry)
@@ -2195,6 +2266,7 @@ class CoreCommands(Protocol):
         deleted.
         If `key` already has an existing expire set, the time to live is updated to the new value.
         The timeout will only be cleared by commands that delete or overwrite the contents of `key`.
+
         See https://valkey.io/commands/pexpireat/ for more details.
 
         Args:
@@ -2203,8 +2275,10 @@ class CoreCommands(Protocol):
             option (Optional[ExpireOptions]): The expire option.
 
         Returns:
-            bool: 'True' if the timeout was set, 'False' if the timeout was not set (e.g., the key doesn't exist or the operation is
-                skipped due to the provided arguments).
+            bool: `True` if the timeout was set.
+
+            `False` if the timeout was not set (e.g., the key doesn't exist or the
+            operation is skipped due to the provided arguments).
 
         Examples:
             >>> client.pexpireAt("my_key", 1672531200000, ExpireOptions.HasNoExpiry)
@@ -2229,7 +2303,11 @@ class CoreCommands(Protocol):
             key (TEncodable): The `key` to determine the expiration value of.
 
         Returns:
-            int: The expiration Unix timestamp in seconds, -2 if `key` does not exist or -1 if `key` exists but has no associated expire.
+            int: The expiration Unix timestamp in seconds.
+
+            -2 if `key` does not exist.
+
+            -1 if `key` exists but has no associated expire.
 
         Examples:
             >>> client.expiretime("my_key")
@@ -2240,33 +2318,6 @@ class CoreCommands(Protocol):
             >>> client.expire("my_key", 60)
             >>> client.expiretime("my_key")
                 1718614954
-
-        Since: Valkey version 7.0.0.
-        """
-        return cast(int, self._execute_command(RequestType.ExpireTime, [key]))
-
-    def pexpiretime(self, key: TEncodable) -> int:
-        """
-        Returns the absolute Unix timestamp (since January 1, 1970) at which
-        the given `key` will expire, in milliseconds.
-
-        See https://valkey.io/commands/pexpiretime/ for details.
-
-        Args:
-            key (TEncodable): The `key` to determine the expiration value of.
-
-        Returns:
-            int: The expiration Unix timestamp in milliseconds, -2 if `key` does not exist, or -1 if `key` exists but has no associated expiration.
-
-        Examples:
-            >>> client.pexpiretime("my_key")
-                -2 # 'my_key' doesn't exist.
-            >>> client.set("my_key", "value")
-            >>> client.pexpiretime("my_key")
-                -1 # 'my_key' has no associate expiration.
-            >>> client.expire("my_key", 60)
-            >>> client.pexpiretime("my_key")
-                1718615446670
 
         Since: Valkey version 7.0.0.
         """
@@ -2380,15 +2431,23 @@ class CoreCommands(Protocol):
         Args:
             key (TEncodable): The key of the stream.
             values (List[Tuple[TEncodable, TEncodable]]): Field-value pairs to be added to the entry.
-            options (Optional[StreamAddOptions]): Additional options for adding entries to the stream. Default to None. See `StreamAddOptions`.
+            options (Optional[StreamAddOptions]): Additional options for adding entries to the stream. Default to None.
+                See `StreamAddOptions`.
 
         Returns:
-            bytes: The id of the added entry, or None if `options.make_stream` is set to False and no stream with the matching `key` exists.
+            bytes: The id of the added entry.
+
+            `None` if `options.make_stream` is set to False and no stream with the matching
+            `key` exists.
 
         Example:
             >>> client.xadd("mystream", [("field", "value"), ("field2", "value2")])
                 b"1615957011958-0"  # Example stream entry ID.
-            >>> client.xadd("non_existing_stream", [(field, "foo1"), (field2, "bar1")], StreamAddOptions(id="0-1", make_stream=False))
+            >>> client.xadd(
+            ...     "non_existing_stream",
+            ...     [(field, "foo1"), (field2, "bar1")],
+            ...     StreamAddOptions(id="0-1", make_stream=False)
+            ... )
                 None  # The key doesn't exist, therefore, None is returned.
             >>> client.xadd("non_existing_stream", [(field, "foo1"), (field2, "bar1")], StreamAddOptions(id="0-1"))
                 b"0-1"  # Returns the stream id.
@@ -2594,9 +2653,12 @@ class CoreCommands(Protocol):
 
         Returns:
             Optional[Mapping[bytes, Mapping[bytes, List[List[bytes]]]]]: A mapping of stream keys, to a mapping of stream IDs,
-                to a list of pairings with format `[[field, entry], [field, entry], ...]`.
-                None will be returned under the following conditions:
-                - All key-ID pairs in `keys_and_ids` have either a non-existing key or a non-existing ID, or there are no entries after the given ID.
+            to a list of pairings with format `[[field, entry], [field, entry], ...]`.
+
+            None will be returned under the following conditions:
+
+                - All key-ID pairs in `keys_and_ids` have either a non-existing key or a non-existing ID, or there are no
+                  entries after the given ID.
                 - The `BLOCK` option is specified and the timeout is hit.
 
         Examples:
@@ -2918,28 +2980,40 @@ class CoreCommands(Protocol):
             key (TEncodable): The key of the stream.
             group_name (TEncodable): The consumer group name.
             start (StreamRangeBound): The starting stream ID bound for the range.
+
                 - Use `IdBound` to specify a stream ID.
                 - Use `ExclusiveIdBound` to specify an exclusive bounded stream ID.
                 - Use `MinId` to start with the minimum available ID.
+
             end (StreamRangeBound): The ending stream ID bound for the range.
+
                 - Use `IdBound` to specify a stream ID.
                 - Use `ExclusiveIdBound` to specify an exclusive bounded stream ID.
                 - Use `MaxId` to end with the maximum available ID.
+
             count (int): Limits the number of messages returned.
             options (Optional[StreamPendingOptions]): The stream pending options.
 
         Returns:
             List[List[Union[bytes, int]]]: A list of lists, where each inner list is a length 4 list containing extended
-                message information with the format `[[id, consumer_name, time_elapsed, num_delivered]]`, where:
+            message information with the format `[[id, consumer_name, time_elapsed, num_delivered]]`, where:
+
                 - `id`: The ID of the message.
                 - `consumer_name`: The name of the consumer that fetched the message and has still to acknowledge it. We
-                call it the current owner of the message.
+                  call it the current owner of the message.
                 - `time_elapsed`: The number of milliseconds that elapsed since the last time this message was delivered
-                to this consumer.
+                  to this consumer.
                 - `num_delivered`: The number of times this message was delivered.
 
         Examples:
-            >>> client.xpending_range("my_stream", "my_group", MinId(), MaxId(), 10, StreamPendingOptions(consumer_name="my_consumer"))
+            >>> client.xpending_range(
+            ...     "my_stream",
+            ...     "my_group",
+            ...     MinId(),
+            ...     MaxId(),
+            ...     10,
+            ...     StreamPendingOptions(consumer_name="my_consumer")
+            ... )
                 [[b"1-0", b"my_consumer", 1234, 1], [b"1-1", b"my_consumer", 1123, 1]]
                 # Extended stream entry information for the pending entries associated with "my_consumer".
         """
@@ -3455,21 +3529,39 @@ class CoreCommands(Protocol):
 
         Args:
             key (TEncodable): The key of the sorted set.
-            members_geospatialdata (Mapping[TEncodable, GeospatialData]): A mapping of member names to their corresponding positions. See `GeospatialData`.
-            The command will report an error when the user attempts to index coordinates outside the specified ranges.
+            members_geospatialdata (Mapping[TEncodable, GeospatialData]): A mapping of member names to their corresponding
+                positions. See `GeospatialData`. The command will report an error when the user attempts to index coordinates
+                outside the specified ranges.
             existing_options (Optional[ConditionalChange]): Options for handling existing members.
+
                 - NX: Only add new elements.
                 - XX: Only update existing elements.
-            changed (bool): Modify the return value to return the number of changed elements, instead of the number of new elements added.
+
+            changed (bool): Modify the return value to return the number of changed elements, instead of the number of new
+                elements added.
 
         Returns:
             int: The number of elements added to the sorted set.
+
             If `changed` is set, returns the number of elements updated in the sorted set.
 
         Examples:
-            >>> client.geoadd("my_sorted_set", {"Palermo": GeospatialData(13.361389, 38.115556), "Catania": GeospatialData(15.087269, 37.502669)})
+            >>> client.geoadd(
+            ...     "my_sorted_set",
+            ...     {
+            ...         "Palermo": GeospatialData(13.361389, 38.115556),
+            ...         "Catania": GeospatialData(15.087269, 37.502669)
+            ...     }
+            ... )
                 2  # Indicates that two elements have been added to the sorted set "my_sorted_set".
-            >>> client.geoadd("my_sorted_set", {"Palermo": GeospatialData(14.361389, 38.115556)}, existing_options=ConditionalChange.XX, changed=True)
+            >>> client.geoadd(
+            ...     "my_sorted_set",
+            ...     {
+            ...         "Palermo": GeospatialData(14.361389, 38.115556)
+            ...     },
+            ...     existing_options=ConditionalChange.XX,
+            ...     changed=True
+            ... )
                 1  # Updates the position of an existing member in the sorted set "my_sorted_set".
         """
         args = [key]
@@ -3512,10 +3604,17 @@ class CoreCommands(Protocol):
 
         Returns:
             Optional[float]: The distance between `member1` and `member2`.
+
             If one or both members do not exist, or if the key does not exist, returns None.
 
         Examples:
-            >>> client.geoadd("my_geo_set", {"Palermo": GeospatialData(13.361389, 38.115556), "Catania": GeospatialData(15.087269, 37.502669)})
+            >>> client.geoadd(
+            ...     "my_geo_set",
+            ...     {
+            ...         "Palermo": GeospatialData(13.361389, 38.115556),
+            ...         "Catania": GeospatialData(15.087269, 37.502669)
+            ...     }
+            ... )
             >>> client.geodist("my_geo_set", "Palermo", "Catania")
                 166274.1516  # Indicates the distance between "Palermo" and "Catania" in meters.
             >>> client.geodist("my_geo_set", "Palermo", "Palermo", unit=GeoUnit.KILOMETERS)
@@ -3546,11 +3645,19 @@ class CoreCommands(Protocol):
             members (List[TEncodable]): The list of members whose GeoHash bytes strings are to be retrieved.
 
         Returns:
-            List[Optional[bytes]]: A list of GeoHash bytes strings representing the positions of the specified members stored at `key`.
+            List[Optional[bytes]]: A list of GeoHash bytes strings representing the positions of the specified members stored
+            at `key`.
+
             If a member does not exist in the sorted set, a None value is returned for that member.
 
         Examples:
-            >>> client.geoadd("my_geo_sorted_set", {"Palermo": GeospatialData(13.361389, 38.115556), "Catania": GeospatialData(15.087269, 37.502669)})
+            >>> client.geoadd(
+            ...     "my_geo_sorted_set",
+            ...     {
+            ...         "Palermo": GeospatialData(13.361389, 38.115556),
+            ...         "Catania": GeospatialData(15.087269, 37.502669)
+            ...     }
+            ... )
             >>> client.geohash("my_geo_sorted_set", ["Palermo", "Catania", "some city])
                 ["sqc8b49rny0", "sqdtr74hyu0", None]  # Indicates the GeoHash bytes strings for the specified members.
         """
@@ -3565,8 +3672,8 @@ class CoreCommands(Protocol):
         members: List[TEncodable],
     ) -> List[Optional[List[float]]]:
         """
-        Returns the positions (longitude and latitude) of all the given members of a geospatial index in the sorted set stored at
-        `key`.
+        Returns the positions (longitude and latitude) of all the given members of a geospatial index in the sorted set stored
+        at `key`.
 
         See https://valkey.io/commands/geopos for more details.
 
@@ -3576,10 +3683,17 @@ class CoreCommands(Protocol):
 
         Returns:
             List[Optional[List[float]]]: A list of positions (longitude and latitude) corresponding to the given members.
+
             If a member does not exist, its position will be None.
 
         Example:
-            >>> client.geoadd("my_geo_sorted_set", {"Palermo": GeospatialData(13.361389, 38.115556), "Catania": GeospatialData(15.087269, 37.502669)})
+            >>> client.geoadd(
+            ...     "my_geo_sorted_set",
+            ...     {
+            ...         "Palermo": GeospatialData(13.361389, 38.115556),
+            ...         "Catania": GeospatialData(15.087269, 37.502669)
+            ...     }
+            ... )
             >>> client.geopos("my_geo_sorted_set", ["Palermo", "Catania", "NonExisting"])
                 [[13.36138933897018433, 38.11555639549629859], [15.08726745843887329, 37.50266842333162032], None]
         """
@@ -3809,21 +3923,35 @@ class CoreCommands(Protocol):
             key (TEncodable): The key of the sorted set.
             members_scores (Mapping[TEncodable, float]): A mapping of members to their corresponding scores.
             existing_options (Optional[ConditionalChange]): Options for handling existing members.
+
                 - NX: Only add new elements.
                 - XX: Only update existing elements.
+
             update_condition (Optional[UpdateOptions]): Options for updating scores.
+
                 - GT: Only update scores greater than the current values.
                 - LT: Only update scores less than the current values.
-            changed (bool): Modify the return value to return the number of changed elements, instead of the number of new elements added.
+
+            changed (bool): Modify the return value to return the number of changed elements, instead of the number of new
+                elements added.
 
         Returns:
             int: The number of elements added to the sorted set.
+
             If `changed` is set, returns the number of elements updated in the sorted set.
 
         Examples:
             >>> client.zadd("my_sorted_set", {"member1": 10.5, "member2": 8.2})
                 2  # Indicates that two elements have been added to the sorted set "my_sorted_set."
-            >>> client.zadd("existing_sorted_set", {"member1": 15.0, "member2": 5.5}, existing_options=ConditionalChange.XX, changed=True)
+            >>> client.zadd(
+            ...     "existing_sorted_set",
+            ...     {
+            ...         "member1": 15.0,
+            ...         "member2": 5.5
+            ...     },
+            ...     existing_options=ConditionalChange.XX,
+            ...     changed=True
+            ... )
                 2  # Updates the scores of two existing members in the sorted set "existing_sorted_set."
         """
         args = [key]
@@ -3863,7 +3991,8 @@ class CoreCommands(Protocol):
     ) -> Optional[float]:
         """
         Increments the score of member in the sorted set stored at `key` by `increment`.
-        If `member` does not exist in the sorted set, it is added with `increment` as its score (as if its previous score was 0.0).
+        If `member` does not exist in the sorted set, it is added with `increment` as its score (as if its previous score
+        was 0.0).
         If `key` does not exist, a new sorted set with the specified member as its sole member is created.
 
         See https://valkey.io/commands/zadd/ for more details.
@@ -3873,14 +4002,18 @@ class CoreCommands(Protocol):
             member (TEncodable): A member in the sorted set to increment.
             increment (float): The score to increment the member.
             existing_options (Optional[ConditionalChange]): Options for handling the member's existence.
+
                 - NX: Only increment a member that doesn't exist.
                 - XX: Only increment an existing member.
+
             update_condition (Optional[UpdateOptions]): Options for updating the score.
+
                 - GT: Only increment the score of the member if the new score will be greater than the current score.
                 - LT: Only increment (decrement) the score of the member if the new score will be less than the current score.
 
         Returns:
             Optional[float]: The score of the member.
+
             If there was a conflict with choosing the XX/NX/LT/GT options, the operation aborts and None is returned.
 
         Examples:
@@ -3954,23 +4087,30 @@ class CoreCommands(Protocol):
 
         Returns:
             int: The number of members in the specified score range.
+
             If `key` does not exist, it is treated as an empty sorted set, and the command returns 0.
+
             If `max_score` < `min_score`, 0 is returned.
 
         Examples:
             >>> client.zcount("my_sorted_set", ScoreBoundary(5.0 , is_inclusive=true) , InfBound.POS_INF)
-                2  # Indicates that there are 2 members with scores between 5.0 (not exclusive) and +inf in the sorted set "my_sorted_set".
-            >>> client.zcount("my_sorted_set", ScoreBoundary(5.0 , is_inclusive=true) , ScoreBoundary(10.0 , is_inclusive=false))
+                2  # Indicates that there are 2 members with scores between 5.0 (not exclusive) and +inf in the sorted set
+                   # "my_sorted_set".
+            >>> client.zcount(
+            ...     "my_sorted_set",
+            ...     ScoreBoundary(5.0 , is_inclusive=true),
+            ...     ScoreBoundary(10.0 , is_inclusive=false)
+            ... )
                 1  # Indicates that there is one ScoreBoundary with 5.0 < score <= 10.0 in the sorted set "my_sorted_set".
         """
         score_min = (
             min_score.value["score_arg"]
-            if type(min_score) == InfBound
+            if type(min_score) is InfBound
             else min_score.value
         )
         score_max = (
             max_score.value["score_arg"]
-            if type(max_score) == InfBound
+            if type(max_score) is InfBound
             else max_score.value
         )
         return cast(
@@ -4021,17 +4161,21 @@ class CoreCommands(Protocol):
         Args:
             key (TEncodable): The key of the sorted set.
             count (Optional[int]): Specifies the quantity of members to pop. If not specified, pops one member.
-            If `count` is higher than the sorted set's cardinality, returns all members and their scores, ordered from highest to lowest.
+                If `count` is higher than the sorted set's cardinality, returns all members and their scores, ordered from
+                highest to lowest.
 
         Returns:
-            Mapping[bytes, float]: A map of the removed members and their scores, ordered from the one with the highest score to the one with the lowest.
-            If `key` doesn't exist, it will be treated as an empy sorted set and the command returns an empty map.
+            Mapping[bytes, float]: A map of the removed members and their scores, ordered from the one with the highest score
+            to the one with the lowest.
+
+            If `key` doesn't exist, it will be treated as an empty sorted set and the command returns an empty map.
 
         Examples:
             >>> client.zpopmax("my_sorted_set")
                 {b'member1': 10.0}  # Indicates that 'member1' with a score of 10.0 has been removed from the sorted set.
             >>> client.zpopmax("my_sorted_set", 2)
-                {b'member2': 8.0, b'member3': 7.5}  # Indicates that 'member2' with a score of 8.0 and 'member3' with a score of 7.5 have been removed from the sorted set.
+                {b'member2': 8.0, b'member3': 7.5}  # Indicates that 'member2' with a score of 8.0 and 'member3' with a score
+                                                    # of 7.5 have been removed from the sorted set.
         """
         return cast(
             Mapping[bytes, float],
@@ -4048,11 +4192,12 @@ class CoreCommands(Protocol):
         the order that they are given. Blocks the connection when there are no members to remove from any of the given
         sorted sets.
 
-        When in cluster mode, all keys must map to the same hash slot.
-
-        `BZPOPMAX` is the blocking variant of `ZPOPMAX`.
-
-        `BZPOPMAX` is a client blocking command, see https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands for more details and best practices.
+        Note:
+            1. When in cluster mode, all keys must map to the same hash slot.
+            2. `BZPOPMAX` is the blocking variant of `ZPOPMAX`.
+            3. `BZPOPMAX` is a client blocking command, see
+               https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands
+               for more details and best practices.
 
         See https://valkey.io/commands/bzpopmax for more details.
 
@@ -4062,8 +4207,10 @@ class CoreCommands(Protocol):
                 A value of 0 will block indefinitely.
 
         Returns:
-            Optional[List[Union[bytes, float]]]: An array containing the key where the member was popped out, the member itself,
-                and the member score. If no member could be popped and the `timeout` expired, returns None.
+            Optional[List[Union[bytes, float]]]: An array containing the key where the member was popped out, the member
+            itself, and the member score.
+
+            If no member could be popped and the `timeout` expired, returns None.
 
         Examples:
             >>> client.zadd("my_sorted_set1", {"member1": 10.0, "member2": 5.0})
@@ -4089,17 +4236,20 @@ class CoreCommands(Protocol):
         Args:
             key (TEncodable): The key of the sorted set.
             count (Optional[int]): Specifies the quantity of members to pop. If not specified, pops one member.
-            If `count` is higher than the sorted set's cardinality, returns all members and their scores.
+                If `count` is higher than the sorted set's cardinality, returns all members and their scores.
 
         Returns:
-            Mapping[bytes, float]: A map of the removed members and their scores, ordered from the one with the lowest score to the one with the highest.
-            If `key` doesn't exist, it will be treated as an empy sorted set and the command returns an empty map.
+            Mapping[bytes, float]: A map of the removed members and their scores, ordered from the one with the lowest score
+            to the one with the highest.
+
+            If `key` doesn't exist, it will be treated as an empty sorted set and the command returns an empty map.
 
         Examples:
             >>> client.zpopmin("my_sorted_set")
                 {b'member1': 5.0}  # Indicates that 'member1' with a score of 5.0 has been removed from the sorted set.
             >>> client.zpopmin("my_sorted_set", 2)
-                {b'member3': 7.5 , b'member2': 8.0}  # Indicates that 'member3' with a score of 7.5 and 'member2' with a score of 8.0 have been removed from the sorted set.
+                {b'member3': 7.5 , b'member2': 8.0}  # Indicates that 'member3' with a score of 7.5 and 'member2' with a score
+                                                     # of 8.0 have been removed from the sorted set.
         """
         args: List[TEncodable] = [key, str(count)] if count else [key]
         return cast(
@@ -4115,11 +4265,12 @@ class CoreCommands(Protocol):
         the order that they are given. Blocks the connection when there are no members to remove from any of the given
         sorted sets.
 
-        When in cluster mode, all keys must map to the same hash slot.
-
-        `BZPOPMIN` is the blocking variant of `ZPOPMIN`.
-
-        `BZPOPMIN` is a client blocking command, see https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands for more details and best practices.
+        Note:
+            1. When in cluster mode, all keys must map to the same hash slot.
+            2. `BZPOPMIN` is the blocking variant of `ZPOPMIN`.
+            3. `BZPOPMIN` is a client blocking command, see
+               https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands
+               for more details and best practices.
 
         See https://valkey.io/commands/bzpopmin for more details.
 
@@ -4129,8 +4280,10 @@ class CoreCommands(Protocol):
                 A value of 0 will block indefinitely.
 
         Returns:
-            Optional[List[Union[bytes, float]]]: An array containing the key where the member was popped out, the member itself,
-                and the member score. If no member could be popped and the `timeout` expired, returns None.
+            Optional[List[Union[bytes, float]]]: An array containing the key where the member was popped out, the member
+            itself, and the member score.
+
+            If no member could be popped and the `timeout` expired, returns None.
 
         Examples:
             >>> client.zadd("my_sorted_set1", {"member1": 10.0, "member2": 5.0})
@@ -4161,21 +4314,26 @@ class CoreCommands(Protocol):
 
         Args:
             key (TEncodable): The key of the sorted set.
-            range_query (Union[RangeByIndex, RangeByLex, RangeByScore]): The range query object representing the type of range query to perform.
-                - For range queries by index (rank), use RangeByIndex.
-                - For range queries by lexicographical order, use RangeByLex.
-                - For range queries by score, use RangeByScore.
+            range_query (Union[RangeByIndex, RangeByLex, RangeByScore]): The range query object representing the type of range
+                query to perform.
+
+                    - For range queries by index (rank), use RangeByIndex.
+                    - For range queries by lexicographical order, use RangeByLex.
+                    - For range queries by score, use RangeByScore.
+
             reverse (bool): If True, reverses the sorted set, with index 0 as the element with the highest score.
 
         Returns:
             List[bytes]: A list of elements within the specified range.
+
             If `key` does not exist, it is treated as an empty sorted set, and the command returns an empty array.
 
         Examples:
             >>> client.zrange("my_sorted_set", RangeByIndex(0, -1))
                 [b'member1', b'member2', b'member3']  # Returns all members in ascending order.
             >>> client.zrange("my_sorted_set", RangeByScore(InfBound.NEG_INF, ScoreBoundary(3)))
-                [b'member2', b'member3'] # Returns members with scores within the range of negative infinity to 3, in ascending order.
+                [b'member2', b'member3'] # Returns members with scores within the range of negative infinity to 3, in
+                                         # ascending order.
         """
         args = _create_zrange_args(key, range_query, reverse, with_scores=False)
 
@@ -4195,20 +4353,25 @@ class CoreCommands(Protocol):
 
         Args:
             key (TEncodable): The key of the sorted set.
-            range_query (Union[RangeByIndex, RangeByScore]): The range query object representing the type of range query to perform.
-                - For range queries by index (rank), use RangeByIndex.
-                - For range queries by score, use RangeByScore.
+            range_query (Union[RangeByIndex, RangeByScore]): The range query object representing the type of range query to
+                perform.
+
+                    - For range queries by index (rank), use RangeByIndex.
+                    - For range queries by score, use RangeByScore.
+
             reverse (bool): If True, reverses the sorted set, with index 0 as the element with the highest score.
 
         Returns:
             Mapping[bytes , float]: A map of elements and their scores within the specified range.
+
             If `key` does not exist, it is treated as an empty sorted set, and the command returns an empty map.
 
         Examples:
             >>> client.zrange_withscores("my_sorted_set", RangeByScore(ScoreBoundary(10), ScoreBoundary(20)))
                 {b'member1': 10.5, b'member2': 15.2}  # Returns members with scores between 10 and 20 with their scores.
            >>> client.zrange_withscores("my_sorted_set", RangeByScore(InfBound.NEG_INF, ScoreBoundary(3)))
-                {b'member4': -2.0, b'member7': 1.5} # Returns members with with scores within the range of negative infinity to 3, with their scores.
+                {b'member4': -2.0, b'member7': 1.5} # Returns members with with scores within the range of negative infinity
+                                                    # to 3, with their scores.
         """
         args = _create_zrange_args(key, range_query, reverse, with_scores=True)
 
@@ -4238,10 +4401,13 @@ class CoreCommands(Protocol):
         Args:
             destination (TEncodable): The key for the destination sorted set.
             source (TEncodable): The key of the source sorted set.
-            range_query (Union[RangeByIndex, RangeByLex, RangeByScore]): The range query object representing the type of range query to perform.
-                - For range queries by index (rank), use RangeByIndex.
-                - For range queries by lexicographical order, use RangeByLex.
-                - For range queries by score, use RangeByScore.
+            range_query (Union[RangeByIndex, RangeByLex, RangeByScore]): The range query object representing the type of range
+                query to perform.
+
+                    - For range queries by index (rank), use RangeByIndex.
+                    - For range queries by lexicographical order, use RangeByLex.
+                    - For range queries by score, use RangeByScore.
+
             reverse (bool): If True, reverses the sorted set, with index 0 as the element with the highest score.
 
         Returns:
@@ -4249,9 +4415,11 @@ class CoreCommands(Protocol):
 
         Examples:
             >>> client.zrangestore("destination_key", "my_sorted_set", RangeByIndex(0, 2), True)
-                3  # The 3 members with the highest scores from "my_sorted_set" were stored in the sorted set at "destination_key".
+                3  # The 3 members with the highest scores from "my_sorted_set" were stored in the sorted set at
+                   # "destination_key".
             >>> client.zrangestore("destination_key", "my_sorted_set", RangeByScore(InfBound.NEG_INF, ScoreBoundary(3)))
-                2  # The 2 members with scores between negative infinity and 3 (inclusive) from "my_sorted_set" were stored in the sorted set at "destination_key".
+                2  # The 2 members with scores between negative infinity and 3 (inclusive) from "my_sorted_set" were stored in
+                   # the sorted set at "destination_key".
         """
         args = _create_zrange_args(source, range_query, reverse, False, destination)
 
@@ -4294,7 +4462,8 @@ class CoreCommands(Protocol):
         member: TEncodable,
     ) -> Optional[List[Union[int, float]]]:
         """
-        Returns the rank of `member` in the sorted set stored at `key` with its score, where scores are ordered from the lowest to highest.
+        Returns the rank of `member` in the sorted set stored at `key` with its score, where scores are ordered from the
+        lowest to highest.
 
         See https://valkey.io/commands/zrank for more details.
 
@@ -4304,11 +4473,13 @@ class CoreCommands(Protocol):
 
         Returns:
             Optional[List[Union[int, float]]]: A list containing the rank and score of `member` in the sorted set.
+
             If `key` doesn't exist, or if `member` is not present in the set, None will be returned.
 
         Examples:
             >>> client.zrank_withscore("my_sorted_set", "member2")
-                [1 , 6.0]  # Indicates that "member2" with score 6.0 has the second-lowest score in the sorted set "my_sorted_set".
+                [1 , 6.0]  # Indicates that "member2" with score 6.0 has the second-lowest score in the sorted set
+                           # "my_sorted_set".
             >>> client.zrank_withscore("my_sorted_set", "non_existing_member")
                 None  # Indicates that "non_existing_member" is not present in the sorted set "my_sorted_set".
 
@@ -4427,23 +4598,30 @@ class CoreCommands(Protocol):
                 or ScoreBoundary representing a specific score and inclusivity.
         Returns:
             int: The number of members that were removed from the sorted set.
+
             If `key` does not exist, it is treated as an empty sorted set, and the command returns 0.
+
             If `min_score` is greater than `max_score`, 0 is returned.
 
         Examples:
             >>> client.zremrangebyscore("my_sorted_set",  ScoreBoundary(5.0 , is_inclusive=true) , InfBound.POS_INF)
-                2  # Indicates that  2 members with scores between 5.0 (not exclusive) and +inf have been removed from the sorted set "my_sorted_set".
-            >>> client.zremrangebyscore("non_existing_sorted_set", ScoreBoundary(5.0 , is_inclusive=true) , ScoreBoundary(10.0 , is_inclusive=false))
+                2  # Indicates that  2 members with scores between 5.0 (not exclusive) and +inf have been removed from the
+                   # sorted set "my_sorted_set".
+            >>> client.zremrangebyscore(
+            ...     "non_existing_sorted_set",
+            ...     ScoreBoundary(5.0 , is_inclusive=true),
+            ...     ScoreBoundary(10.0 , is_inclusive=false)
+            ... )
                 0  # Indicates that no members were removed as the sorted set "non_existing_sorted_set" does not exist.
         """
         score_min = (
             min_score.value["score_arg"]
-            if type(min_score) == InfBound
+            if type(min_score) is InfBound
             else min_score.value
         )
         score_max = (
             max_score.value["score_arg"]
-            if type(max_score) == InfBound
+            if type(max_score) is InfBound
             else max_score.value
         )
 
@@ -4477,20 +4655,23 @@ class CoreCommands(Protocol):
 
         Returns:
             int: The number of members that were removed from the sorted set.
-                If `key` does not exist, it is treated as an empty sorted set, and the command returns `0`.
-                If `min_lex` is greater than `max_lex`, `0` is returned.
+
+            If `key` does not exist, it is treated as an empty sorted set, and the command returns `0`.
+
+            If `min_lex` is greater than `max_lex`, `0` is returned.
 
         Examples:
             >>> client.zremrangebylex("my_sorted_set",  LexBoundary("a", is_inclusive=False), LexBoundary("e"))
-                4  # Indicates that 4 members, with lexicographical values ranging from "a" (exclusive) to "e" (inclusive), have been removed from "my_sorted_set".
+                4  # Indicates that 4 members, with lexicographical values ranging from "a" (exclusive) to "e" (inclusive),
+                   # have been removed from "my_sorted_set".
             >>> client.zremrangebylex("non_existing_sorted_set", InfBound.NEG_INF, LexBoundary("e"))
                 0  # Indicates that no members were removed as the sorted set "non_existing_sorted_set" does not exist.
         """
         min_lex_arg = (
-            min_lex.value["lex_arg"] if type(min_lex) == InfBound else min_lex.value
+            min_lex.value["lex_arg"] if type(min_lex) is InfBound else min_lex.value
         )
         max_lex_arg = (
-            max_lex.value["lex_arg"] if type(max_lex) == InfBound else max_lex.value
+            max_lex.value["lex_arg"] if type(max_lex) is InfBound else max_lex.value
         )
 
         return cast(
@@ -4520,13 +4701,17 @@ class CoreCommands(Protocol):
 
         Returns:
             int: The number of elements that were removed.
-                If `start` exceeds the end of the sorted set, or if `start` is greater than `end`, `0` is returned.
-                If `end` exceeds the actual end of the sorted set, the range will stop at the actual end of the sorted set.
-                If `key` does not exist, `0` is returned.
+
+            If `start` exceeds the end of the sorted set, or if `start` is greater than `end`, `0` is returned.
+
+            If `end` exceeds the actual end of the sorted set, the range will stop at the actual end of the sorted set.
+
+            If `key` does not exist, `0` is returned.
 
         Examples:
             >>> client.zremrangebyrank("my_sorted_set", 0, 4)
-                5  # Indicates that 5 elements, with ranks ranging from 0 to 4 (inclusive), have been removed from "my_sorted_set".
+                5  # Indicates that 5 elements, with ranks ranging from 0 to 4 (inclusive), have been removed from
+                   # "my_sorted_set".
             >>> client.zremrangebyrank("my_sorted_set", 0, 4)
                 0  # Indicates that nothing was removed.
         """
@@ -4544,7 +4729,8 @@ class CoreCommands(Protocol):
         max_lex: Union[InfBound, LexBoundary],
     ) -> int:
         """
-        Returns the number of members in the sorted set stored at `key` with lexicographical values between `min_lex` and `max_lex`.
+        Returns the number of members in the sorted set stored at `key` with lexicographical values between `min_lex` and
+        `max_lex`.
 
         See https://valkey.io/commands/zlexcount/ for more details.
 
@@ -4559,20 +4745,28 @@ class CoreCommands(Protocol):
 
         Returns:
             int: The number of members in the specified lexicographical range.
-                If `key` does not exist, it is treated as an empty sorted set, and the command returns `0`.
-                If `max_lex < min_lex`, `0` is returned.
+
+            If `key` does not exist, it is treated as an empty sorted set, and the command returns `0`.
+
+            If `max_lex < min_lex`, `0` is returned.
 
         Examples:
             >>> client.zlexcount("my_sorted_set",  LexBoundary("c" , is_inclusive=True), InfBound.POS_INF)
-                2  # Indicates that there are 2 members with lexicographical values between "c" (inclusive) and positive infinity in the sorted set "my_sorted_set".
-            >>> client.zlexcount("my_sorted_set", LexBoundary("c" , is_inclusive=True), LexBoundary("k" , is_inclusive=False))
-                1  # Indicates that there is one member with LexBoundary "c" <= lexicographical value < "k" in the sorted set "my_sorted_set".
+                2  # Indicates that there are 2 members with lexicographical values between "c" (inclusive) and positive
+                   # infinity in the sorted set "my_sorted_set".
+            >>> client.zlexcount(
+            ...     "my_sorted_set",
+            ...     LexBoundary("c" , is_inclusive=True),
+            ...     LexBoundary("k" , is_inclusive=False)
+            ... )
+                1  # Indicates that there is one member with LexBoundary "c" <= lexicographical value < "k" in the sorted set
+                   # "my_sorted_set".
         """
         min_lex_arg = (
-            min_lex.value["lex_arg"] if type(min_lex) == InfBound else min_lex.value
+            min_lex.value["lex_arg"] if type(min_lex) is InfBound else min_lex.value
         )
         max_lex_arg = (
-            max_lex.value["lex_arg"] if type(max_lex) == InfBound else max_lex.value
+            max_lex.value["lex_arg"] if type(max_lex) is InfBound else max_lex.value
         )
 
         return cast(
@@ -4739,7 +4933,8 @@ class CoreCommands(Protocol):
         To get the scores as well, see `zinter_withscores`.
         To store the result in a key as a sorted set, see `zinterstore`.
 
-        When in cluster mode, all keys in `keys` must map to the same hash slot.
+        Note:
+            When in cluster mode, all keys in `keys` must map to the same hash slot.
 
         See https://valkey.io/commands/zinter/ for more details.
 
@@ -4768,18 +4963,22 @@ class CoreCommands(Protocol):
         aggregation_type: Optional[AggregationType] = None,
     ) -> Mapping[bytes, float]:
         """
-        Computes the intersection of sorted sets given by the specified `keys` and returns a sorted set of intersecting elements with scores.
+        Computes the intersection of sorted sets given by the specified `keys` and returns a sorted set of intersecting
+        elements with scores.
         To get the elements only, see `zinter`.
         To store the result in a key as a sorted set, see `zinterstore`.
 
-        When in cluster mode, all keys in `keys` must map to the same hash slot.
+        Note:
+            When in cluster mode, all keys in `keys` must map to the same hash slot.
 
         See https://valkey.io/commands/zinter/ for more details.
 
         Args:
             keys (Union[List[TEncodable], List[Tuple[TEncodable, float]]]): The keys of the sorted sets with possible formats:
-                List[TEncodable] - for keys only.
-                List[Tuple[TEncodable, float]] - for weighted keys with score multipliers.
+
+                - List[TEncodable] - for keys only.
+                - List[Tuple[TEncodable, float]] - for weighted keys with score multipliers.
+
             aggregation_type (Optional[AggregationType]): Specifies the aggregation strategy to apply
                 when combining the scores of elements. See `AggregationType`.
 
@@ -4812,15 +5011,18 @@ class CoreCommands(Protocol):
         If `destination` already exists, it is overwritten. Otherwise, a new sorted set will be created.
         To get the result directly, see `zinter_withscores`.
 
-        When in cluster mode, `destination` and all keys in `keys` must map to the same hash slot.
+        Note:
+            When in cluster mode, `destination` and all keys in `keys` must map to the same hash slot.
 
         See https://valkey.io/commands/zinterstore/ for more details.
 
         Args:
             destination (TEncodable): The key of the destination sorted set.
             keys (Union[List[TEncodable], List[Tuple[TEncodable, float]]]): The keys of the sorted sets with possible formats:
-                List[TEncodable] - for keys only.
-                List[Tuple[TEncodable, float]] - for weighted keys with score multipliers.
+
+                - List[TEncodable] - for keys only.
+                - List[Tuple[TEncodable, float]] - for weighted keys with score multipliers.
+
             aggregation_type (Optional[AggregationType]): Specifies the aggregation strategy to apply
                 when combining the scores of elements. See `AggregationType`.
 
@@ -4835,7 +5037,8 @@ class CoreCommands(Protocol):
             >>> client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
                 {b'member1': 20}  # "member1" is now stored in "my_sorted_set" with score of 20.
             >>> client.zinterstore("my_sorted_set", ["key1", "key2"], AggregationType.MAX)
-                1 # Indicates that the sorted set "my_sorted_set" contains one element, and its score is the maximum score between the sets.
+                1 # Indicates that the sorted set "my_sorted_set" contains one element, and its score is the maximum score
+                  # between the sets.
             >>> client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
                 {b'member1': 10.5}  # "member1" is now stored in "my_sorted_set" with score of 10.5.
         """
@@ -4927,15 +5130,18 @@ class CoreCommands(Protocol):
         If `destination` already exists, it is overwritten. Otherwise, a new sorted set will be created.
         To get the result directly, see `zunion_withscores`.
 
-        When in cluster mode, `destination` and all keys in `keys` must map to the same hash slot.
+        Note:
+            When in cluster mode, `destination` and all keys in `keys` must map to the same hash slot.
 
         See https://valkey.io/commands/zunionstore/ for more details.
 
         Args:
             destination (TEncodable): The key of the destination sorted set.
             keys (Union[List[TEncodable], List[Tuple[TEncodable, float]]]): The keys of the sorted sets with possible formats:
-                List[TEncodable] - for keys only.
-                List[Tuple[TEncodable, float]] - for weighted keys with score multipliers.
+
+                - List[TEncodable] - for keys only.
+                - List[Tuple[TEncodable, float]] - for weighted keys with score multipliers.
+
             aggregation_type (Optional[AggregationType]): Specifies the aggregation strategy to apply
                 when combining the scores of elements. See `AggregationType`.
 
@@ -4950,7 +5156,8 @@ class CoreCommands(Protocol):
             >>> client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
                 {b'member1': 20, b'member2': 8.2}
             >>> client.zunionstore("my_sorted_set", ["key1", "key2"], AggregationType.MAX)
-                2 # Indicates that the sorted set "my_sorted_set" contains two elements, and each score is the maximum score between the sets.
+                2 # Indicates that the sorted set "my_sorted_set" contains two elements, and each score is the maximum score
+                  # between the sets.
             >>> client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
                 {b'member1': 10.5, b'member2': 8.2}
         """
@@ -4971,7 +5178,8 @@ class CoreCommands(Protocol):
 
         Returns:
             Optional[bytes]: A random member from the sorted set.
-                If the sorted set does not exist or is empty, the response will be None.
+
+            If the sorted set does not exist or is empty, the response will be None.
 
         Examples:
             >>> client.zadd("my_sorted_set", {"member1": 1.0, "member2": 2.0})
@@ -4980,7 +5188,6 @@ class CoreCommands(Protocol):
             >>> client.zrandmember("non_existing_sorted_set")
                 None  # "non_existing_sorted_set" is not an existing key, so None was returned.
         """
-        args: List[TEncodable] = [key]
         return cast(
             Optional[bytes],
             self._execute_command(RequestType.ZRandMember, [key]),
@@ -4995,12 +5202,14 @@ class CoreCommands(Protocol):
         Args:
             key (TEncodable): The key of the sorted set.
             count (int): The number of members to return.
-                If `count` is positive, returns unique members.
-                If `count` is negative, allows for duplicates members.
+
+                - If `count` is positive, returns unique members.
+                - If `count` is negative, allows for duplicates members.
 
         Returns:
             List[bytes]: A list of members from the sorted set.
-                If the sorted set does not exist or is empty, the response will be an empty list.
+
+            If the sorted set does not exist or is empty, the response will be an empty list.
 
         Examples:
             >>> client.zadd("my_sorted_set", {"member1": 1.0, "member2": 2.0})
@@ -5027,18 +5236,22 @@ class CoreCommands(Protocol):
         Args:
             key (TEncodable): The key of the sorted set.
             count (int): The number of members to return.
-                If `count` is positive, returns unique members.
-                If `count` is negative, allows for duplicates members.
+
+                - If `count` is positive, returns unique members.
+                - If `count` is negative, allows for duplicates members.
 
         Returns:
             List[List[Union[bytes, float]]]: A list of `[member, score]` lists, where `member` is a random member from
-                the sorted set and `score` is the associated score.
-                If the sorted set does not exist or is empty, the response will be an empty list.
+            the sorted set and `score` is the associated score.
+
+            If the sorted set does not exist or is empty, the response will be an empty list.
 
         Examples:
             >>> client.zadd("my_sorted_set", {"member1": 1.0, "member2": 2.0})
             >>> client.zrandmember_withscores("my_sorted_set", -3)
-                [[b"member1", 1.0], [b"member1", 1.0], [b"member2", 2.0]]  # "member1" and "member2" are random members of "my_sorted_set", and have scores of 1.0 and 2.0, respectively.
+                [[b"member1", 1.0], [b"member1", 1.0], [b"member2", 2.0]]  # "member1" and "member2" are random members of
+                                                                           # "my_sorted_set", and have scores of 1.0 and 2.0,
+                                                                           # respectively.
             >>> client.zrandmember_withscores("non_existing_sorted_set", 3)
                 []  # "non_existing_sorted_set" is not an existing key, so an empty list was returned.
         """
@@ -5076,14 +5289,16 @@ class CoreCommands(Protocol):
 
         Returns:
             Optional[List[Union[bytes, Mapping[bytes, float]]]]: A two-element list containing the key name of the set from
-                which elements were popped, and a member-score mapping of the popped elements. If no members could be
-                popped, returns None.
+            which elements were popped, and a member-score mapping of the popped elements.
+
+            If no members could be popped, returns None.
 
         Examples:
             >>> client.zadd("zSet1", {"one": 1.0, "two": 2.0, "three": 3.0})
             >>> client.zadd("zSet2", {"four": 4.0})
             >>> client.zmpop(["zSet1", "zSet2"], ScoreFilter.MAX, 2)
-                [b'zSet1', {b'three': 3.0, b'two': 2.0}]  # "three" with score 3.0 and "two" with score 2.0 were popped from "zSet1".
+                [b'zSet1', {b'three': 3.0, b'two': 2.0}]  # "three" with score 3.0 and "two" with score 2.0 were
+                                                          # popped from "zSet1".
 
         Since: Valkey version 7.0.0.
         """
@@ -5117,7 +5332,9 @@ class CoreCommands(Protocol):
 
         Notes:
             1. When in cluster mode, all `keys` must map to the same hash slot.
-            2. `BZMPOP` is a client blocking command, see https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands for more details and best practices.
+            2. `BZMPOP` is a client blocking command, see
+               https://github.com/valkey-io/valkey-glide/wiki/General-Concepts#blocking-commands
+               for more details and best practices.
 
         Args:
             keys (List[TEncodable]): The keys of the sorted sets.
@@ -5129,14 +5346,16 @@ class CoreCommands(Protocol):
 
         Returns:
             Optional[List[Union[bytes, Mapping[bytes, float]]]]: A two-element list containing the key name of the set from
-                which elements were popped, and a member-score mapping of the popped elements. If no members could be
-                popped and the timeout expired, returns None.
+            which elements were popped, and a member-score mapping of the popped elements.
+
+            If no members could be popped and the timeout expired, returns None.
 
         Examples:
             >>> client.zadd("zSet1", {"one": 1.0, "two": 2.0, "three": 3.0})
             >>> client.zadd("zSet2", {"four": 4.0})
             >>> client.bzmpop(["zSet1", "zSet2"], ScoreFilter.MAX, 0.5, 2)
-                [b'zSet1', {b'three': 3.0, b'two': 2.0}]  # "three" with score 3.0 and "two" with score 2.0 were popped from "zSet1".
+                [b'zSet1', {b'three': 3.0, b'two': 2.0}]  # "three" with score 3.0 and "two" with score 2.0 were
+                                                          # popped from "zSet1".
 
         Since: Valkey version 7.0.0.
         """
@@ -5155,15 +5374,15 @@ class CoreCommands(Protocol):
         optional `limit` argument, if the intersection cardinality reaches `limit` partway through the computation, the
         algorithm will exit early and yield `limit` as the cardinality.
 
+        Note:
+            When in cluster mode, all `keys` must map to the same hash slot.
+
         See https://valkey.io/commands/zintercard for more details.
 
         Args:
             keys (List[TEncodable]): The keys of the sorted sets to intersect.
             limit (Optional[int]): An optional argument that can be used to specify a maximum number for the
                 intersection cardinality. If limit is not supplied, or if it is set to 0, there will be no limit.
-
-        Note:
-            When in cluster mode, all `keys` must map to the same hash slot.
 
         Returns:
             int: The cardinality of the intersection of the given sorted sets, or the `limit` if reached.
@@ -5174,7 +5393,8 @@ class CoreCommands(Protocol):
             >>> client.zintercard(["key1", "key2"])
                 2  # Indicates that the intersection of the sorted sets at "key1" and "key2" has a cardinality of 2.
             >>> client.zintercard(["key1", "key2"], 1)
-                1  # A `limit` of 1 was provided, so the intersection computation exits early and yields the `limit` value of 1.
+                1  # A `limit` of 1 was provided, so the intersection computation exits early and yields the `limit` value
+                   # of 1.
 
         Since: Valkey version 7.0.0.
         """
@@ -5401,20 +5621,24 @@ class CoreCommands(Protocol):
 
         Returns:
             int: The position of the first occurrence of `bit` in the binary value of the string held at `key`.
-                If `start` was provided, the search begins at the offset indicated by `start`.
+
+            If `start` was provided, the search begins at the offset indicated by `start`.
 
         Examples:
             >>> client.set("key1", "A1")  # "A1" has binary value 01000001 00110001
             >>> client.bitpos("key1", 1)
                 1  # The first occurrence of bit value 1 in the string stored at "key1" is at the second position.
             >>> client.bitpos("key1", 1, OffsetOptions(-1))
-                10  # The first occurrence of bit value 1, starting at the last byte in the string stored at "key1", is at the eleventh position.
+                10  # The first occurrence of bit value 1, starting at the last byte in the string stored at "key1",
+                    # is at the eleventh position.
 
             >>> client.set("key2", "A12")  # "A12" has binary value 01000001 00110001 00110010
             >>> client.bitpos("key2", 1, OffsetOptions(1, -1))
-                10  # The first occurrence of bit value 1 in the second byte to the last byte of the string stored at "key1" is at the eleventh position.
+                10  # The first occurrence of bit value 1 in the second byte to the last byte of the string stored at "key1"
+                    # is at the eleventh position.
             >>> client.bitpos("key2", 1, OffsetOptions(2, 9, BitmapIndexType.BIT))
-                7  # The first occurrence of bit value 1 in the third to tenth bits of the string stored at "key1" is at the eighth position.
+                7  # The first occurrence of bit value 1 in the third to tenth bits of the string stored at "key1"
+                   # is at the eighth position.
         """
         args: List[TEncodable] = [key, str(bit)]
         if options is not None:
@@ -5567,8 +5791,10 @@ class CoreCommands(Protocol):
             key (TEncodable): The key of the object to get the logarithmic access frequency counter of.
 
         Returns:
-            Optional[int]: If `key` exists, returns the logarithmic access frequency counter of the object stored at `key` as an
-                integer. Otherwise, returns None.
+            Optional[int]: If `key` exists, returns the logarithmic access frequency counter of the object stored at `key` as
+            an integer.
+
+            Otherwise, returns None.
 
         Examples:
             >>> client.object_freq("my_hash")
@@ -5816,25 +6042,26 @@ class CoreCommands(Protocol):
             cursor (TEncodable): The cursor that points to the next iteration of results. A value of "0" indicates the start of
                 the search.
             match (Optional[TEncodable]): The match filter is applied to the result of the command and will only include
-                strings or byte strings that match the pattern specified. If the set is large enough for scan commands to return only a
-                subset of the set then there could be a case where the result is empty although there are items that
-                match the pattern specified. This is due to the default `COUNT` being `10` which indicates that it will
-                only fetch and match `10` items from the list.
+                strings or byte strings that match the pattern specified. If the set is large enough for scan commands to
+                return only a subset of the set then there could be a case where the result is empty although there are
+                items that match the pattern specified. This is due to the default `COUNT` being `10` which indicates
+                that it will only fetch and match `10` items from the list.
             count (Optional[int]): `COUNT` is a just a hint for the command for how many elements to fetch from the set.
                 `COUNT` could be ignored until the set is large enough for the `SCAN` commands to represent the results
                 as compact single-allocation packed encoding.
 
         Returns:
             List[Union[bytes, List[bytes]]]: An `Array` of the `cursor` and the subset of the set held by `key`.
-                The first element is always the `cursor` for the next iteration of results. `0` will be the `cursor`
-                returned on the last iteration of the set. The second element is always an `Array` of the subset of the
-                set held in `key`.
+            The first element is always the `cursor` for the next iteration of results. `0` will be the `cursor`
+            returned on the last iteration of the set. The second element is always an `Array` of the subset of the
+            set held in `key`.
 
         Examples:
-            # Assume "key" contains a set with 130 members
+            Assume "key" contains a set with 130 members:
+
             >>> result_cursor = "0"
             >>> while True:
-            ...     result = client.sscan("key", "0", match="*")
+            ...     result =  client.sscan("key", "0", match="*")
             ...     new_cursor = str(result [0])
             ...     print("Cursor: ", new_cursor)
             ...     print("Members: ", result[1])
@@ -5877,9 +6104,9 @@ class CoreCommands(Protocol):
             cursor (TEncodable): The cursor that points to the next iteration of results. A value of "0" indicates the start of
                 the search.
             match (Optional[TEncodable]): The match filter is applied to the result of the command and will only include
-                strings or byte strings that match the pattern specified. If the sorted set is large enough for scan commands to return
-                only a subset of the sorted set then there could be a case where the result is empty although there are
-                items that match the pattern specified. This is due to the default `COUNT` being `10` which indicates
+                strings or byte strings that match the pattern specified. If the sorted set is large enough for scan commands
+                to return only a subset of the sorted set then there could be a case where the result is empty although there
+                are items that match the pattern specified. This is due to the default `COUNT` being `10` which indicates
                 that it will only fetch and match `10` items from the list.
             count (Optional[int]): `COUNT` is a just a hint for the command for how many elements to fetch from the
                 sorted set. `COUNT` could be ignored until the sorted set is large enough for the `SCAN` commands to
@@ -5892,13 +6119,15 @@ class CoreCommands(Protocol):
             returned on the last iteration of the sorted set. The second element is always an `Array` of the subset
             of the sorted set held in `key`. The `Array` in the second element is a flattened series of
             `String` pairs, where the value is at even indices and the score is at odd indices.
-            If `no_scores` is set to`True`, the second element will only contain the members without scores.
+
+            If `no_scores` is set to `True`, the second element will only contain the members without scores.
 
         Examples:
-            # Assume "key" contains a sorted set with multiple members
+            Assume "key" contains a sorted set with multiple members:
+
             >>> result_cursor = "0"
             >>> while True:
-            ...     result = client.zscan("key", "0", match="*", count=5)
+            ...     result =  client.zscan("key", "0", match="*", count=5)
             ...     new_cursor = str(result [0])
             ...     print("Cursor: ", new_cursor)
             ...     print("Members: ", result[1])
@@ -5912,10 +6141,11 @@ class CoreCommands(Protocol):
             Cursor: 0
             Members: [b'value 55', b'55', b'value 24', b'24', b'value 90', b'90', b'value 113', b'113']
 
-            # Using no-score
+            Using no-score:
+
             >>> result_cursor = "0"
             >>> while True:
-            ...     result = client.zscan("key", "0", match="*", count=5, no_scores=True)
+            ...     result =  client.zscan("key", "0", match="*", count=5, no_scores=True)
             ...     new_cursor = str(result[0])
             ...     print("Cursor: ", new_cursor)
             ...     print("Members: ", result[1])
@@ -5960,10 +6190,10 @@ class CoreCommands(Protocol):
             cursor (TEncodable): The cursor that points to the next iteration of results. A value of "0" indicates the start of
                 the search.
             match (Optional[TEncodable]): The match filter is applied to the result of the command and will only include
-                strings or byte strings that match the pattern specified. If the hash is large enough for scan commands to return only a
-                subset of the hash then there could be a case where the result is empty although there are items that
-                match the pattern specified. This is due to the default `COUNT` being `10` which indicates that it will
-                only fetch and match `10` items from the list.
+                strings or byte strings that match the pattern specified. If the hash is large enough for scan commands to
+                return only a subset of the hash then there could be a case where the result is empty although there are
+                items that match the pattern specified. This is due to the default `COUNT` being `10` which indicates that it
+                will only fetch and match `10` items from the list.
             count (Optional[int]): `COUNT` is a just a hint for the command for how many elements to fetch from the hash.
                 `COUNT` could be ignored until the hash is large enough for the `SCAN` commands to represent the results
                 as compact single-allocation packed encoding.
@@ -5971,17 +6201,19 @@ class CoreCommands(Protocol):
 
         Returns:
             List[Union[bytes, List[bytes]]]: An `Array` of the `cursor` and the subset of the hash held by `key`.
-                The first element is always the `cursor` for the next iteration of results. `0` will be the `cursor`
-                returned on the last iteration of the hash. The second element is always an `Array` of the subset of the
-                hash held in `key`. The `Array` in the second element is a flattened series of `String` pairs,
-                where the value is at even indices and the score is at odd indices.
-                If `no_values` is set to `True`, the second element will only contain the fields without the values.
+            The first element is always the `cursor` for the next iteration of results. `0` will be the `cursor`
+            returned on the last iteration of the hash. The second element is always an `Array` of the subset of the
+            hash held in `key`. The `Array` in the second element is a flattened series of `String` pairs,
+            where the value is at even indices and the score is at odd indices.
+
+            If `no_values` is set to `True`, the second element will only contain the fields without the values.
 
         Examples:
-            # Assume "key" contains a hash with multiple members
+            Assume "key" contains a hash with multiple members:
+
             >>> result_cursor = "0"
             >>> while True:
-            ...     result = client.hscan("key", "0", match="*", count=3)
+            ...     result =  client.hscan("key", "0", match="*", count=3)
             ...     new_cursor = str(result [0])
             ...     print("Cursor: ", new_cursor)
             ...     print("Members: ", result[1])
@@ -5995,10 +6227,11 @@ class CoreCommands(Protocol):
             Cursor: 0
             Members: [b'field 420', b'value 420', b'field 221', b'value 221']
 
-            # Use no-values
+            Use no-values:
+
             >>> result_cursor = "0"
             >>> while True:
-            ...     result = client.hscan("key", "0", match="*", count=3, no_values=True)
+            ...     result =  client.hscan("key", "0", match="*", count=3, no_values=True)
             ...     new_cursor = str(result [0])
             ...     print("Cursor: ", new_cursor)
             ...     print("Members: ", result[1])
@@ -6489,14 +6722,17 @@ class CoreCommands(Protocol):
         """
         Returns the number of subscribers (exclusive of clients subscribed to patterns) for the specified channels.
 
-        Note that it is valid to call this command without channels. In this case, it will just return an empty map.
-        The command is routed to all nodes, and aggregates the response to a single map of the channels and their number of subscriptions.
+        Note:
+            It is valid to call this command without channels. In this case, it will just return an empty map.
+
+            The command is routed to all nodes, and aggregates the response to a single map of the channels and their number
+            of subscriptions.
 
         See https://valkey.io/commands/pubsub-numsub for more details.
 
         Args:
             channels (Optional[List[TEncodable]]): The list of channels to query for the number of subscribers.
-                                            If not provided, returns an empty map.
+                If not provided, returns an empty map.
 
         Returns:
             Mapping[bytes, int]: A map where keys are the channel names and values are the number of subscribers.
@@ -6526,11 +6762,13 @@ class CoreCommands(Protocol):
     ) -> List[Optional[bytes]]:
         """
         Sorts the elements in the list, set, or sorted set at `key` and returns the result.
-        The `sort` command can be used to sort elements based on different criteria and apply transformations on sorted elements.
+        The `sort` command can be used to sort elements based on different criteria and apply transformations on sorted
+        elements.
         This command is routed to primary nodes only.
         To store the result into a new key, see `sort_store`.
 
-        Note: When in cluster mode, `key`, and any patterns specified in `by_pattern` or `get_patterns`
+        Note:
+            When in cluster mode, `key`, and any patterns specified in `by_pattern` or `get_patterns`
             must map to the same hash slot. The use of `by_pattern` and `get_patterns` in cluster mode is supported
             only since Valkey version 8.0.
 
@@ -6538,7 +6776,8 @@ class CoreCommands(Protocol):
 
         Args:
             key (TEncodable): The key of the list, set, or sorted set to be sorted.
-            by_pattern (Optional[TEncodable]): A pattern to sort by external keys instead of by the elements stored at the key themselves.
+            by_pattern (Optional[TEncodable]): A pattern to sort by external keys instead of by the elements stored at the key
+                themselves.
                 The pattern should contain an asterisk (*) as a placeholder for the element values, where the value
                 from the key replaces the asterisk to create the key name. For example, if `key` contains IDs of objects,
                 `by_pattern` can be used to sort these IDs based on an attribute of the objects, like their weights or
@@ -6547,8 +6786,10 @@ class CoreCommands(Protocol):
                 keys `weight_<element>`.
                 If not provided, elements are sorted by their value.
                 Supported in cluster mode since Valkey version 8.0.
-            limit (Optional[Limit]): Limiting the range of the query by setting offset and result count. See `Limit` class for more information.
-            get_patterns (Optional[List[TEncodable]]): A pattern used to retrieve external keys' values, instead of the elements at `key`.
+            limit (Optional[Limit]): Limiting the range of the query by setting offset and result count. See `Limit` class for
+                more information.
+            get_patterns (Optional[List[TEncodable]]): A pattern used to retrieve external keys' values, instead of the
+                elements at `key`.
                 The pattern should contain an asterisk (*) as a placeholder for the element values, where the value
                 from `key` replaces the asterisk to create the key name. This allows the sorted elements to be
                 transformed based on the related keys values. For example, if `key` contains IDs of users, `get_pattern`
@@ -6560,8 +6801,10 @@ class CoreCommands(Protocol):
                 Supported in cluster mode since Valkey version 8.0.
             order (Optional[OrderBy]): Specifies the order to sort the elements.
                 Can be `OrderBy.ASC` (ascending) or `OrderBy.DESC` (descending).
-            alpha (Optional[bool]): When `True`, sorts elements lexicographically. When `False` (default), sorts elements numerically.
-                Use this when the list, set, or sorted set contains string values that cannot be converted into double precision floating point
+            alpha (Optional[bool]): When `True`, sorts elements lexicographically. When `False` (default), sorts elements
+                numerically.
+                Use this when the list, set, or sorted set contains string values that cannot be converted into double
+                precision floating point
 
         Returns:
             List[Optional[bytes]]: Returns a list of sorted elements.
@@ -6596,18 +6839,21 @@ class CoreCommands(Protocol):
     ) -> List[Optional[bytes]]:
         """
         Sorts the elements in the list, set, or sorted set at `key` and returns the result.
-        The `sort_ro` command can be used to sort elements based on different criteria and apply transformations on sorted elements.
+        The `sort_ro` command can be used to sort elements based on different criteria and apply transformations on
+        sorted elements.
         This command is routed depending on the client's `ReadFrom` strategy.
 
         See https://valkey.io/commands/sort for more details.
 
-        Note: When in cluster mode, `key`, and any patterns specified in `by_pattern` or `get_patterns`
+        Note:
+            When in cluster mode, `key`, and any patterns specified in `by_pattern` or `get_patterns`
             must map to the same hash slot. The use of `by_pattern` and `get_patterns` in cluster mode is supported
             only since Valkey version 8.0.
 
         Args:
             key (TEncodable): The key of the list, set, or sorted set to be sorted.
-            by_pattern (Optional[TEncodable]): A pattern to sort by external keys instead of by the elements stored at the key themselves.
+            by_pattern (Optional[TEncodable]): A pattern to sort by external keys instead of by the elements stored at the
+                key themselves.
                 The pattern should contain an asterisk (*) as a placeholder for the element values, where the value
                 from the key replaces the asterisk to create the key name. For example, if `key` contains IDs of objects,
                 `by_pattern` can be used to sort these IDs based on an attribute of the objects, like their weights or
@@ -6616,8 +6862,10 @@ class CoreCommands(Protocol):
                 keys `weight_<element>`.
                 If not provided, elements are sorted by their value.
                 Supported in cluster mode since Valkey version 8.0.
-            limit (Optional[Limit]): Limiting the range of the query by setting offset and result count. See `Limit` class for more information.
-            get_pattern (Optional[TEncodable]): A pattern used to retrieve external keys' values, instead of the elements at `key`.
+            limit (Optional[Limit]): Limiting the range of the query by setting offset and result count. See `Limit` class for
+                more information.
+            get_patterns (Optional[List[TEncodable]]): A pattern used to retrieve external keys' values, instead of the
+                elements at `key`.
                 The pattern should contain an asterisk (*) as a placeholder for the element values, where the value
                 from `key` replaces the asterisk to create the key name. This allows the sorted elements to be
                 transformed based on the related keys values. For example, if `key` contains IDs of users, `get_pattern`
@@ -6629,8 +6877,10 @@ class CoreCommands(Protocol):
                 Supported in cluster mode since Valkey version 8.0.
             order (Optional[OrderBy]): Specifies the order to sort the elements.
                 Can be `OrderBy.ASC` (ascending) or `OrderBy.DESC` (descending).
-            alpha (Optional[bool]): When `True`, sorts elements lexicographically. When `False` (default), sorts elements numerically.
-                Use this when the list, set, or sorted set contains string values that cannot be converted into double precision floating point
+            alpha (Optional[bool]): When `True`, sorts elements lexicographically. When `False` (default), sorts elements
+                numerically.
+                Use this when the list, set, or sorted set contains string values that cannot be converted into double
+                precision floating point
 
         Returns:
             List[Optional[bytes]]: Returns a list of sorted elements.
@@ -6668,19 +6918,22 @@ class CoreCommands(Protocol):
     ) -> int:
         """
         Sorts the elements in the list, set, or sorted set at `key` and stores the result in `store`.
-        The `sort` command can be used to sort elements based on different criteria, apply transformations on sorted elements, and store the result in a new key.
+        The `sort` command can be used to sort elements based on different criteria, apply transformations on sorted elements,
+        and store the result in a new key.
         To get the sort result without storing it into a key, see `sort`.
 
         See https://valkey.io/commands/sort for more details.
 
-        Note: When in cluster mode, `key`, `destination`, and any patterns specified in `by_pattern` or `get_patterns`
+        Note:
+            When in cluster mode, `key`, `destination`, and any patterns specified in `by_pattern` or `get_patterns`
             must map to the same hash slot. The use of `by_pattern` and `get_patterns` in cluster mode is supported
             only since Valkey version 8.0.
 
         Args:
             key (TEncodable): The key of the list, set, or sorted set to be sorted.
             destination (TEncodable): The key where the sorted result will be stored.
-            by_pattern (Optional[TEncodable]): A pattern to sort by external keys instead of by the elements stored at the key themselves.
+            by_pattern (Optional[TEncodable]): A pattern to sort by external keys instead of by the elements stored at the key
+                themselves.
                 The pattern should contain an asterisk (*) as a placeholder for the element values, where the value
                 from the key replaces the asterisk to create the key name. For example, if `key` contains IDs of objects,
                 `by_pattern` can be used to sort these IDs based on an attribute of the objects, like their weights or
@@ -6689,8 +6942,10 @@ class CoreCommands(Protocol):
                 keys `weight_<element>`.
                 If not provided, elements are sorted by their value.
                 Supported in cluster mode since Valkey version 8.0.
-            limit (Optional[Limit]): Limiting the range of the query by setting offset and result count. See `Limit` class for more information.
-            get_patterns (Optional[List[TEncodable]]): A pattern used to retrieve external keys' values, instead of the elements at `key`.
+            limit (Optional[Limit]): Limiting the range of the query by setting offset and result count. See `Limit` class for
+                more information.
+            get_patterns (Optional[List[TEncodable]]): A pattern used to retrieve external keys' values, instead of the
+                elements at `key`.
                 The pattern should contain an asterisk (*) as a placeholder for the element values, where the value
                 from `key` replaces the asterisk to create the key name. This allows the sorted elements to be
                 transformed based on the related keys values. For example, if `key` contains IDs of users, `get_pattern`
@@ -6702,8 +6957,10 @@ class CoreCommands(Protocol):
                 Supported in cluster mode since Valkey version 8.0.
             order (Optional[OrderBy]): Specifies the order to sort the elements.
                 Can be `OrderBy.ASC` (ascending) or `OrderBy.DESC` (descending).
-            alpha (Optional[bool]): When `True`, sorts elements lexicographically. When `False` (default), sorts elements numerically.
-                Use this when the list, set, or sorted set contains string values that cannot be converted into double precision floating point
+            alpha (Optional[bool]): When `True`, sorts elements lexicographically. When `False` (default), sorts elements
+                numerically.
+                Use this when the list, set, or sorted set contains string values that cannot be converted into double
+                precision floating point
 
         Returns:
             int: The number of elements in the sorted key stored at `store`.

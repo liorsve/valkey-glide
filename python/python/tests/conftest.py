@@ -268,6 +268,7 @@ def create_client_config(
     client_name: Optional[str] = None,
     protocol: ProtocolVersion = ProtocolVersion.RESP3,
     timeout: Optional[int] = 1000,
+    connection_timeout: Optional[int] = 1000,
     cluster_mode_pubsub: Optional[
         GlideClusterClientConfiguration.PubSubSubscriptions
     ] = None,
@@ -277,6 +278,7 @@ def create_client_config(
     inflight_requests_limit: Optional[int] = None,
     read_from: ReadFrom = ReadFrom.PRIMARY,
     client_az: Optional[str] = None,
+    reconnect_strategy: Optional[BackoffStrategy] = None,
     valkey_cluster: Optional[ValkeyCluster] = None,
 ) -> Union[GlideClusterClientConfiguration, GlideClientConfiguration]:
     use_tls = request.config.getoption("--tls")
@@ -297,6 +299,7 @@ def create_client_config(
             inflight_requests_limit=inflight_requests_limit,
             read_from=read_from,
             client_az=client_az,
+            advanced_config=AdvancedGlideClusterClientConfiguration(connection_timeout),
         )
     else:
         assert type(pytest.standalone_cluster) is ValkeyCluster
@@ -314,6 +317,8 @@ def create_client_config(
             inflight_requests_limit=inflight_requests_limit,
             read_from=read_from,
             client_az=client_az,
+            reconnect_strategy=reconnect_strategy,
+            advanced_config=AdvancedGlideClientConfiguration(connection_timeout),
         )
     return config
 
@@ -378,18 +383,21 @@ async def create_client(
         client_name,
         protocol,
         request_timeout,
+        connection_timeout,
         cluster_mode_pubsub,
         standalone_mode_pubsub,
         inflight_requests_limit,
         read_from,
         client_az,
+        reconnect_strategy,
         valkey_cluster,
     )
     if cluster_mode:
         return await GlideClusterClient.create(config)
     else:
         return await GlideClient.create(config)
-    
+
+
 def create_sync_client(
     request,
     cluster_mode: bool,
@@ -399,6 +407,7 @@ def create_sync_client(
     client_name: Optional[str] = None,
     protocol: ProtocolVersion = ProtocolVersion.RESP3,
     timeout: Optional[int] = 1000,
+    connection_timeout: Optional[int] = 1000,
     cluster_mode_pubsub: Optional[
         GlideClusterClientConfiguration.PubSubSubscriptions
     ] = None,
@@ -420,6 +429,7 @@ def create_sync_client(
         client_name,
         protocol,
         timeout,
+        connection_timeout,
         cluster_mode_pubsub,
         standalone_mode_pubsub,
         inflight_requests_limit,
@@ -431,6 +441,7 @@ def create_sync_client(
         return SyncGlideClusterClient.create(config)
     else:
         return SyncGlideClient.create(config)
+
 
 USERNAME = "username"
 INITIAL_PASSWORD = "initial_password"

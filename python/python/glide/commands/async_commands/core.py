@@ -1,7 +1,5 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from enum import Enum
 from typing import Dict, List, Mapping, Optional, Protocol, Set, Tuple, Union, cast
 
 from glide.commands.bitmap import (
