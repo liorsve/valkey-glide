@@ -239,8 +239,9 @@ class BaseClient(CoreCommands):
     def _handle_map_response(self, msg):
         map_dict = {}
         for i in range(msg.array_value_len):
-            key = self.ffi.cast("struct CommandResponse*", msg.map_key + i)
-            value = self.ffi.cast("struct CommandResponse*", msg.map_value + i)
+            element = self.ffi.cast("struct CommandResponse*", msg.array_value + i)
+            key = self.ffi.cast("struct CommandResponse*", element.map_key)
+            value = self.ffi.cast("struct CommandResponse*", element.map_value)
             map_dict[self._handle_response(key)] = self._handle_response(value)
         return map_dict
 
