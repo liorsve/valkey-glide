@@ -196,6 +196,11 @@ class ExpirySet:
     ) -> None:
         self.set_expiry_type_and_value(expiry_type, value)
 
+    def __eq__(self, other: "object") -> bool:
+        if not isinstance(other, ExpirySet):
+            return NotImplemented
+        return self.expiry_type == other.expiry_type and self.value == other.value
+
     def set_expiry_type_and_value(
         self, expiry_type: ExpiryType, value: Optional[Union[int, datetime, timedelta]]
     ):
@@ -313,7 +318,8 @@ class FlushMode(Enum):
 
     `FLUSHALL` command and `FUNCTION FLUSH` command.
 
-    See https://valkey.io/commands/flushall/ and https://valkey.io/commands/function-flush/ for details
+    See [FLUSHAL](https://valkey.io/commands/flushall/) and [FUNCTION-FLUSH](https://valkey.io/commands/function-flush/)
+    for details
 
     SYNC was introduced in version 6.2.0.
     """

@@ -2321,6 +2321,37 @@ class CoreCommands(Protocol):
 
         Since: Valkey version 7.0.0.
         """
+        return cast(int, self._execute_command(RequestType.ExpireTime, [key]))
+
+    def pexpiretime(self, key: TEncodable) -> int:
+        """
+        Returns the absolute Unix timestamp (since January 1, 1970) at which
+        the given `key` will expire, in milliseconds.
+
+        See https://valkey.io/commands/pexpiretime/ for details.
+
+        Args:
+            key (TEncodable): The `key` to determine the expiration value of.
+
+        Returns:
+            int: The expiration Unix timestamp in milliseconds.
+
+            -2 if `key` does not exist.
+
+            -1 if `key` exists but has no associated expiration.
+
+        Examples:
+            >>> client.pexpiretime("my_key")
+                -2 # 'my_key' doesn't exist.
+            >>> client.set("my_key", "value")
+            >>> client.pexpiretime("my_key")
+                -1 # 'my_key' has no associate expiration.
+            >>> client.expire("my_key", 60)
+            >>> client.pexpiretime("my_key")
+                1718615446670
+
+        Since: Valkey version 7.0.0.
+        """
         return cast(int, self._execute_command(RequestType.PExpireTime, [key]))
 
     def ttl(self, key: TEncodable) -> int:

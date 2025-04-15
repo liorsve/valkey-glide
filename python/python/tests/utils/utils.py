@@ -1,6 +1,7 @@
 import json
 import random
 import string
+import threading
 from typing import Any, Dict, List, Mapping, Optional, Set, TypeVar, Union, cast
 
 import pytest
@@ -415,3 +416,13 @@ async def delete_acl_username_and_password(client: TGlideClient, username: str):
         return await client.custom_command(
             ["ACL", "DELUSER", username], route=AllNodes()
         )
+
+
+def run_with_timeout(func, timeout, on_timeout=None):
+    t = threading.Thread(target=func, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        if on_timeout:
+            on_timeout()
+        raise TimeoutError("Function did not return within timeout")

@@ -37,12 +37,14 @@ class BaseClient(CoreCommands):
         To create a new client, use the `create` classmethod
         """
         self.config: BaseClientConfiguration = config
+        self._is_closed: bool = False
 
     @classmethod
     def create(cls, config: BaseClientConfiguration) -> Self:
         self = cls(config)
         self._init_ffi()
         self.config = config
+        self._is_closed = False
         conn_req = config._create_a_protobuf_conn_request(
             cluster_mode=type(config) is GlideClusterClientConfiguration
         )
@@ -309,6 +311,10 @@ class BaseClient(CoreCommands):
         args: List[TEncodable],
         route: Optional[Route] = None,
     ) -> TResult:
+        if self._is_closed:
+            raise ClosingError(
+                "Unable to execute requests; the client is closed. Please create a new client."
+            )
         client_adapter_ptr = self.core_client
         if client_adapter_ptr == self.ffi.NULL:
             raise ValueError("Invalid client pointer.")
@@ -332,7 +338,10 @@ class BaseClient(CoreCommands):
         return self._handle_cmd_result(result)
 
     def close(self):
-        self.lib.close_client(self.core_client)
+        if not self._is_closed:
+            self.lib.close_client(self.core_client)
+            self.core_client = self.ffi.NULL
+            self._is_closed = True
 
 
 class GlideClusterClient(BaseClient, ClusterCommands):
