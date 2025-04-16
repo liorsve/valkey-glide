@@ -1,5 +1,5 @@
 site_name: GLIDE for Valkey - API Documentation
-site_url: https://valkey.io/valkey-glide
+site_url: https://liorsve.github.io/valkey-glide
 repo_url: https://github.com/valkey-io/valkey-glide
 repo_name: GitHub
 docs_dir: markdown

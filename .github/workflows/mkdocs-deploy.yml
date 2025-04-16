@@ -3,7 +3,7 @@ name: Deploy mkdocs website to GitHub Pages
 on:
     push:
         branches:
-            - "main"
+            - "lior-mkdocs-website"
         paths:
             - python/**
             - node/**

@@ -1,17 +1,12 @@
-// convert-links.mjs
+// convert-urls.mjs
 import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 const docsDirectory = '../docs/markdown/node';
 
 function convertLinksInFile(filePath) {
     const content = fs.readFileSync(filePath, 'utf8');
-    console.log('Processing file:', filePath);
-    
+
     const regex = /\[(https:\/\/[^|]+)\|([^\]]+)\]\((https:\/\/[^|]+)\|([^)]+)\)/g;
     let updatedContent = content.replace(regex, '[$2]($1)');
 
@@ -24,11 +19,13 @@ function convertLinksInFile(filePath) {
 function processDirectory(directory) {
     const files = fs.readdirSync(directory);
     files.forEach(file => {
-        const fullPath = path.join(directory, file);
+        // Sanitize the file path to prevent directory traversal
+        const sanitizedFile = path.basename(file);
+        const fullPath = path.join(directory, sanitizedFile);
         const stat = fs.statSync(fullPath);
         if (stat.isDirectory()) {
             processDirectory(fullPath);
-        } else if (path.extname(file) === '.md') {
+        } else if (path.extname(sanitizedFile) === '.md') {
             convertLinksInFile(fullPath);
         }
     });
