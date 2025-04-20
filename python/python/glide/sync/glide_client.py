@@ -10,6 +10,7 @@ from glide.commands.sync_commands.core import CoreCommands
 from glide.commands.sync_commands.standalone_commands import StandaloneCommands
 from glide.config import BaseClientConfiguration, GlideClusterClientConfiguration
 from glide.constants import TEncodable, TResult
+from glide.constants import OK
 from glide.exceptions import ClosingError, RequestError
 from glide.glide_client import get_request_error_class
 from glide.protobuf.command_request_pb2 import RequestType
@@ -173,7 +174,7 @@ class BaseClient(CoreCommands):
         # Load the shared library (adjust the path to your compiled Rust library)
         this_dir = os.path.dirname(__file__)
         so_path = os.path.abspath(
-            os.path.join(this_dir, "../../../../ffi/target/release/libglide_ffi.so")
+            os.path.join(this_dir, "../../../../ffi/target/debug/libglide_ffi.so")
         )
         self.lib = self.ffi.dlopen(so_path)
 
@@ -202,6 +203,7 @@ class BaseClient(CoreCommands):
             5: self._handle_array_response,
             6: self._handle_map_response,
             7: self._handle_set_response,
+            8: self._handle_ok_response,
         }
 
         handler = handlers.get(msg.response_type)
@@ -253,6 +255,9 @@ class BaseClient(CoreCommands):
             element = sets_array[i]
             result_set.add(self._handle_response(element))
         return result_set
+
+    def _handle_ok_response(self, msg):
+        return OK
 
     def _to_c_strings(self, args):
         """Convert Python arguments to C-compatible pointers and lengths."""

@@ -88,7 +88,7 @@ class CoreCommands(Protocol):
         """
         Set the given key with the given value. Return value is dependent on the passed options.
 
-        See https://valkey.io/commands/set/ for more details.
+        See [valkey.io](https://valkey.io/commands/set/) for more details.
 
         Args:
             key (TEncodable): the key to store.
