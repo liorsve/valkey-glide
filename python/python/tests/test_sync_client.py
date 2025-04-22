@@ -5082,7 +5082,7 @@ class TestCommands:
         sorted_list = glide_sync_client.lrange(store, 0, -1)
         assert sorted_list == [b"5", b"4", b"3"]
 
-    @pytest.mark.parametrize("cluster_mode", [False])
+    @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_echo(self, glide_sync_client: TGlideClient):
         message = get_random_string(5)

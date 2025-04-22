@@ -16,7 +16,7 @@ from glide.constants import TEncodable, TResult
 from glide.exceptions import ClosingError, RequestError
 from glide.glide_client import get_request_error_class
 from glide.protobuf.command_request_pb2 import RequestType
-from glide.routes import Route
+from glide.routes import Route, route_to_protobuf
 
 if sys.version_info >= (3, 11):
     from typing import Self
@@ -176,7 +176,7 @@ class BaseClient(CoreCommands):
         # Load the shared library (adjust the path to your compiled Rust library)
         this_dir = os.path.dirname(__file__)
         so_path = os.path.abspath(
-            os.path.join(this_dir, "../../../../ffi/target/release/libglide_ffi.so")
+            os.path.join(this_dir, "../../../../ffi/target/debug/libglide_ffi.so")
         )
         self.lib = self.ffi.dlopen(so_path)
 
@@ -304,6 +304,7 @@ class BaseClient(CoreCommands):
                 # Free the error message to avoid memory leaks
         finally:
             self.lib.free_command_result(command_result)
+            
 
     def _execute_command(
         self,
@@ -322,7 +323,11 @@ class BaseClient(CoreCommands):
         # Convert the arguments to C-compatible pointers
         c_args, c_lengths, buffers = self._to_c_strings(args)
         # Call the command function
-        route_bytes = b""  # TODO: add support for route
+        proto_route = route_to_protobuf(route)
+        if proto_route is None:
+            route_bytes = b""
+        else:
+            route_bytes = proto_route.SerializeToString()
         route_ptr = self.ffi.new("unsigned char[]", route_bytes)
 
         result = self.lib.command(
