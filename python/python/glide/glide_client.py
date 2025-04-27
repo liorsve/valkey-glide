@@ -1,54 +1,35 @@
-# Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
-
+import time
+import os
 import sys
-import threading
-from functools import partial
-from typing import Any, Awaitable, Dict, List, Optional, Set, Tuple, Type, Union, cast
+from typing import Any, List, Optional, Type, Union
 
+from cffi import FFI
 import anyio
-import sniffio
-from anyio import to_thread
-
 from glide.async_commands.cluster_commands import ClusterCommands
-from glide.async_commands.command_args import ObjectType
 from glide.async_commands.core import CoreCommands
 from glide.async_commands.standalone_commands import StandaloneCommands
-from glide.config import BaseClientConfiguration, ServerCredentials
-from glide.constants import DEFAULT_READ_BYTES_SIZE, OK, TEncodable, TRequest, TResult
+from glide.config import BaseClientConfiguration, GlideClusterClientConfiguration
+from glide.constants import OK, TEncodable, TResult
+from glide.protobuf.command_request_pb2 import RequestType
+from glide.routes import Route
+from glide.protobuf.response_pb2 import RequestErrorType
 from glide.exceptions import (
-    ClosingError,
-    ConfigurationError,
-    ConnectionError,
-    ExecAbortError,
-    RequestError,
-    TimeoutError,
+ClosingError,
+ConnectionError,
+ExecAbortError,
+RequestError,
+TimeoutError,
 )
-from glide.logger import Level as LogLevel
-from glide.logger import Logger as ClientLogger
-from glide.protobuf.command_request_pb2 import Command, CommandRequest, RequestType
-from glide.protobuf.connection_request_pb2 import ConnectionRequest
-from glide.protobuf.response_pb2 import RequestErrorType, Response
-from glide.protobuf_codec import PartialMessageException, ProtobufCodec
-from glide.routes import Route, set_protobuf_route
-
-from .glide import (
-    DEFAULT_TIMEOUT_IN_MILLISECONDS,
-    MAX_REQUEST_ARGS_LEN,
-    ClusterScanCursor,
-    create_leaked_bytes_vec,
-    get_statistics,
-    start_socket_listener_external,
-    value_from_pointer,
-)
+from anyio.from_thread import start_blocking_portal,  BlockingPortal
+import threading
 
 if sys.version_info >= (3, 11):
     from typing import Self
 else:
     from typing_extensions import Self
 
-
 def get_request_error_class(
-    error_type: Optional[RequestErrorType.ValueType],
+error_type: Optional[RequestErrorType.ValueType],
 ) -> Type[RequestError]:
     if error_type == RequestErrorType.Disconnect:
         return ConnectionError
@@ -60,303 +41,374 @@ def get_request_error_class(
         return RequestError
     return RequestError
 
-
-class Future:
-    """anyio shim for Future-like functionality"""
-
+class FFIClientTypeEnum:
+    Async = 0
+    Sync = 1
+    
+class _CompatFuture:
     def __init__(self) -> None:
         self._is_done = anyio.Event()
         self._result: Any = None
         self._exception: Optional[Exception] = None
 
     def set_result(self, result: Any) -> None:
+        # print(f"Setting result at {time.time()} with value: {result}")
         self._result = result
         self._is_done.set()
+        # print("Event set completed")
 
     def set_exception(self, exception: Exception) -> None:
+        # print(f"Setting exception at {time.time()}: {exception}")
         self._exception = exception
         self._is_done.set()
 
     def done(self) -> bool:
         return self._is_done.is_set()
 
-    async def result(self) -> Any:
-        await self._is_done.wait()
-        if self._exception:
-            raise self._exception
+    def __await__(self):
+        # print(f"Starting to wait at {time.time()}")
+        return self._is_done.wait()
 
+    def result(self) -> Any:
+        # print("Getting result")
+        if self._exception:
+            # print(f"Raising exception: {self._exception}")
+            raise self._exception
+        # print(f"Returning result: {self._result}")
         return self._result
 
 
+    
 class BaseClient(CoreCommands):
     def __init__(self, config: BaseClientConfiguration):
-        """
-        To create a new client, use the `create` classmethod
-        """
         self.config: BaseClientConfiguration = config
-        self._available_futures: Dict[int, Future] = {}
-        self._available_callback_indexes: List[int] = list()
-        self._buffered_requests: List[TRequest] = list()
-        self._writer_lock = threading.Lock()
-        self.socket_path: Optional[str] = None
-        self._reader_task: Any = None
         self._is_closed: bool = False
-        self._pubsub_futures: List[Future] = []
-        self._pubsub_lock = threading.Lock()
-        self._pending_push_notifications: List[Response] = list()
-
-        self._pending_tasks: Optional[Set[Awaitable[None]]] = None
-        """asyncio-only to avoid gc on pending write tasks"""
-
-    def _create_task(self, task, *args, **kwargs):
-        """framework agnostic free-floating task shim"""
-        framework = sniffio.current_async_library()
-        if framework == "trio":
-            import trio
-
-            return trio.lowlevel.spawn_system_task(partial(task, *args, **kwargs))
-        elif framework == "asyncio":
-            import asyncio
-
-            # the asyncio event loop holds weak refs to tasks, so it's recommended to
-            # hold strong refs to them during their lifetime to prevent garbage
-            # collection
-            t = asyncio.create_task(task(*args, **kwargs))
-
-            if self._pending_tasks is None:
-                self._pending_tasks = set()
-
-            self._pending_tasks.add(t)
-            t.add_done_callback(self._pending_tasks.discard)
-
-            return t
-
-        raise RuntimeError(f"Unsupported async framework {framework}")
 
     @classmethod
     async def create(cls, config: BaseClientConfiguration) -> Self:
-        """Creates a Glide client.
-
-        Args:
-            config (ClientConfiguration): The configuration options for the client, including cluster addresses,
-            authentication credentials, TLS settings, periodic checks, and Pub/Sub subscriptions.
-
-        Returns:
-            Self: A promise that resolves to a connected client instance.
-
-        Examples:
-            # Connecting to a Standalone Server
-            >>> from glide import GlideClientConfiguration, NodeAddress, GlideClient, ServerCredentials, BackoffStrategy
-            >>> config = GlideClientConfiguration(
-            ...     [
-            ...         NodeAddress('primary.example.com', 6379),
-            ...         NodeAddress('replica1.example.com', 6379),
-            ...     ],
-            ...     use_tls = True,
-            ...     database_id = 1,
-            ...     credentials = ServerCredentials(username = 'user1', password = 'passwordA'),
-            ...     reconnect_strategy = BackoffStrategy(num_of_retries = 5, factor = 1000, exponent_base = 2),
-            ...     pubsub_subscriptions = GlideClientConfiguration.PubSubSubscriptions(
-            ...         channels_and_patterns = {GlideClientConfiguration.PubSubChannelModes.Exact: {'updates'}},
-            ...         callback = lambda message,context : print(message),
-            ...     ),
-            ... )
-            >>> client = await GlideClient.create(config)
-
-            # Connecting to a Cluster
-            >>> from glide import GlideClusterClientConfiguration, NodeAddress, GlideClusterClient,
-            ... PeriodicChecksManualInterval
-            >>> config = GlideClusterClientConfiguration(
-            ...     [
-            ...         NodeAddress('address1.example.com', 6379),
-            ...         NodeAddress('address2.example.com', 6379),
-            ...     ],
-            ...     use_tls = True,
-            ...     periodic_checks = PeriodicChecksManualInterval(duration_in_sec = 30),
-            ...     credentials = ServerCredentials(username = 'user1', password = 'passwordA'),
-            ...     reconnect_strategy = BackoffStrategy(num_of_retries = 5, factor = 1000, exponent_base = 2),
-            ...     pubsub_subscriptions = GlideClusterClientConfiguration.PubSubSubscriptions(
-            ...         channels_and_patterns = {
-            ...             GlideClusterClientConfiguration.PubSubChannelModes.Exact: {'updates'},
-            ...             GlideClusterClientConfiguration.PubSubChannelModes.Sharded: {'sharded_channel'},
-            ...         },
-            ...         callback = lambda message,context : print(message),
-            ...     ),
-            ... )
-            >>> client = await GlideClusterClient.create(config)
-
-        Remarks:
-            Use this static method to create and connect a client to a Valkey server.
-            The client will automatically handle connection establishment, including cluster topology discovery and
-            handling of authentication and TLS configurations.
-
-                - **Cluster Topology Discovery**: The client will automatically discover the cluster topology based
-                  on the seed addresses provided.
-                - **Authentication**: If `ServerCredentials` are provided, the client will attempt to authenticate
-                  using the specified username and password.
-                - **TLS**: If `use_tls` is set to `true`, the client will establish secure connections using TLS.
-                - **Periodic Checks**: The `periodic_checks` setting allows you to configure how often the client
-                  checks for cluster topology changes.
-                - **Reconnection Strategy**: The `BackoffStrategy` settings define how the client will attempt to
-                  reconnect in case of disconnections.
-                - **Pub/Sub Subscriptions**: Any channels or patterns specified in `PubSubSubscriptions` will be
-                  subscribed to upon connection.
-
-        """
-        config = config
         self = cls(config)
+        self._init_ffi()
+        self.config = config
+        self._is_closed = False
+        self._available_callback_indexes: List[int] = list() 
+        self._available_futures = {}
+        self._result_events = {}  # Add this line
+        self._portal = None
 
-        init_event: threading.Event = threading.Event()
+        
+        @self.ffi.callback("void(size_t, const CommandResponse*)")
+        def success_callback(index_ptr, message):
+            # print(f"Success callback called with index: {index_ptr}")
+            if message == self.ffi.NULL:
+                # print("got NULL")
+                return
+            parsed_response = self._handle_response(message)
+            # print(f"Parsed response: {parsed_response}")
+            index_ptr_int = int(index_ptr)
+            future = self._available_futures.get(index_ptr_int)
+            
+            # Check if portal exists and client is not closed
+            if future and hasattr(self, '_portal') and self._portal and not self._is_closed:
+                # print("Found future, setting result via portal")
+                self._portal.call(future.set_result, parsed_response)
+                # print("Result set scheduled")
 
-        def init_callback(socket_path: Optional[str], err: Optional[str]):
-            if err is not None:
-                raise ClosingError(err)
-            elif socket_path is None:
-                raise ClosingError(
-                    "Socket initialization error: Missing valid socket path."
-                )
-            else:
-                # Received socket path
-                self.socket_path = socket_path
-                init_event.set()
 
-        start_socket_listener_external(init_callback=init_callback)
-
-        # will log if the logger was created (wrapper or costumer) on info
-        # level or higher
-        ClientLogger.log(LogLevel.INFO, "connection info", "new connection established")
-        # Wait for the socket listener to complete its initialization
-        await to_thread.run_sync(init_event.wait)
-        # Create UDS connection
-        await self._create_uds_connection()
-
-        # Start the reader loop as a background task
-        self._reader_task = self._create_task(self._reader_loop)
-
-        # Set the client configurations
-        await self._set_connection_configurations()
-
-        return self
-
-    async def _create_uds_connection(self) -> None:
-        try:
-            # Open an UDS connection
-            with anyio.fail_after(DEFAULT_TIMEOUT_IN_MILLISECONDS):
-                self._stream = await anyio.connect_unix(
-                    path=cast(str, self.socket_path)
-                )
-        except Exception as e:
-            raise ClosingError("Failed to create UDS connection") from e
-
-    async def close(self, err_message: Optional[str] = None) -> None:
-        """
-        Terminate the client by closing all associated resources, including the socket and any active futures.
-        All open futures will be closed with an exception.
-
-        Args:
-            err_message (Optional[str]): If not None, this error message will be passed along with the exceptions when
-            closing all open futures.
-            Defaults to None.
-        """
-        if not self._is_closed:
-            self._is_closed = True
-            err_message = "" if err_message is None else err_message
-            for response_future in self._available_futures.values():
-                if not response_future.done():
-                    response_future.set_exception(ClosingError(err_message))
+        @self.ffi.callback("void(size_t, const char*, int)")
+        def failure_callback(index_ptr, error_message, error_type):
             try:
-                self._pubsub_lock.acquire()
-                for pubsub_future in self._pubsub_futures:
-                    if not pubsub_future.done():
-                        pubsub_future.set_exception(ClosingError(err_message))
-            finally:
-                self._pubsub_lock.release()
+                error_msg = self.ffi.string(error_message).decode("utf-8") if error_message != self.ffi.NULL else "Unknown Error"
+                index_ptr = int(index_ptr)
+                future = self._available_futures.get(index_ptr)
+                if future and self._portal:
+                    error_class = get_request_error_class(error_type)
+                    error = error_class(error_msg)
+                    self._portal.call(future.set_exception, error)
+            except Exception as e:
+                # print(f"Error in failure callback: {e}")
+                pass
 
-            await self._stream.aclose()
+        self.success_callback = success_callback
+        self.failure_callback = failure_callback
 
-    def _get_future(self, callback_idx: int) -> Future:
-        response_future: Future = Future()
+        # Create client_type with the correct type definition
+        client_type = self.ffi.new(
+            "ClientType*",
+            {
+                "_type": FFIClientTypeEnum.Async,
+            }
+        )
+
+        # Cast the callbacks to the correct type before assignment
+        success_cb_cast = self.ffi.cast(
+            "void(*)(uintptr_t, const void*)", 
+            success_callback
+        )
+        failure_cb_cast = self.ffi.cast(
+            "void(*)(uintptr_t, const char*, int)",
+            failure_callback
+        )
+
+        client_type.async_client.success_callback = success_cb_cast
+        client_type.async_client.failure_callback = failure_cb_cast
+
+        conn_req = config._create_a_protobuf_conn_request(
+            cluster_mode=type(config) is GlideClusterClientConfiguration
+        )
+        conn_req_bytes = conn_req.SerializeToString()
+
+        client_response_ptr = await anyio.to_thread.run_sync(
+            self.lib.create_client,
+            conn_req_bytes,
+            len(conn_req_bytes),
+            client_type
+        )
+
+        if client_response_ptr != self.ffi.NULL:
+            client_response = self.ffi.cast("ConnectionResponse*", client_response_ptr)
+            if client_response.conn_ptr != self.ffi.NULL:
+                self.core_client = client_response.conn_ptr
+            else:
+                error_message = (
+                    self.ffi.string(client_response.connection_error_message).decode(
+                        "utf-8"
+                    )
+                    if client_response.connection_error_message != self.ffi.NULL
+                    else "Unknown error"
+                )
+                raise ClosingError(error_message)
+            self.lib.free_connection_response(client_response_ptr)
+        else:
+            raise ClosingError("Failed to create client, response pointer is NULL.")
+        
+        return self
+    
+    def _get_callback_index(self) -> int:
+        try:
+            return self._available_callback_indexes.pop()
+        except IndexError:
+            # The list is empty
+            return len(self._available_futures)
+    
+    def _get_future(self, callback_idx: int) -> _CompatFuture:
+        response_future: _CompatFuture = _CompatFuture()
         self._available_futures.update({callback_idx: response_future})
         return response_future
+        
+    async def _resolve_future(self, index_ptr, parsed_response):
+        future = self._available_futures.get(index_ptr)
+        if future:
+            future.set_result(parsed_response)
 
-    def _get_protobuf_conn_request(self) -> ConnectionRequest:
-        return self.config._create_a_protobuf_conn_request()
+    
+    def _init_ffi(self):
+        self.ffi = FFI()
+        self.ffi.cdef("""
+            struct CommandResponse {
+                int response_type;
+                long int_value;
+                double float_value;
+                bool bool_value;
+                char* string_value;
+                long string_value_len;
+                struct CommandResponse* array_value;
+                long array_value_len;
+                struct CommandResponse* map_key;
+                struct CommandResponse* map_value;
+                struct CommandResponse* sets_value;
+                long sets_value_len;
+            };
 
-    async def _set_connection_configurations(self) -> None:
-        conn_request = self._get_protobuf_conn_request()
-        response_future: Future = self._get_future(0)
-        self._create_write_task(conn_request)
-        res = await response_future.result()
-        if res is not OK:
-            raise ClosingError(res)
+            typedef struct CommandResponse CommandResponse;
 
-    def _create_write_task(self, request: TRequest):
-        self._create_task(self._write_or_buffer_request, request)
+            typedef enum {
+                Null = 0,
+                Int = 1,
+                Float = 2,
+                Bool = 3,
+                String = 4,
+                Array = 5,
+                Map = 6,
+                Sets = 7
+            } ResponseType;
 
-    async def _write_or_buffer_request(self, request: TRequest):
-        self._buffered_requests.append(request)
-        if self._writer_lock.acquire(False):
-            try:
-                while len(self._buffered_requests) > 0:
-                    await self._write_buffered_requests_to_socket()
-            except Exception as e:
-                # trio system tasks cannot raise exceptions, so gracefully propagate
-                # any error to the pending future instead
-                res_future = self._available_futures.pop(
-                    request.callback_idx if isinstance(request, CommandRequest) else 0,
-                    None,
-                )
-                if res_future:
-                    res_future.set_exception(e)
-            finally:
-                self._writer_lock.release()
+            typedef void (*SuccessCallback)(uintptr_t index_ptr, const CommandResponse* message);
+            typedef void (*FailureCallback)(uintptr_t index_ptr, const char* error_message, int error_type);
 
-    async def _write_buffered_requests_to_socket(self) -> None:
-        requests = self._buffered_requests
-        self._buffered_requests = list()
-        b_arr = bytearray()
-        for request in requests:
-            ProtobufCodec.encode_delimited(b_arr, request)
-        await self._stream.send(b_arr)
+            typedef struct {
+                const void* conn_ptr;
+                const char* connection_error_message;
+            } ConnectionResponse;
 
-    def _encode_arg(self, arg: TEncodable) -> bytes:
-        """
-        Converts a string argument to bytes.
+            typedef struct {
+                const char* command_error_message;
+                int command_error_type;
+            } CommandError;
 
-        Args:
-            arg (str): An encodable argument.
+            typedef struct {
+                CommandResponse* response;
+                CommandError* command_error;
+            } CommandResult;
 
-        Returns:
-            bytes: The encoded argument as bytes.
-        """
-        if isinstance(arg, str):
-            # TODO: Allow passing different encoding options
-            return bytes(arg, encoding="utf8")
-        return arg
+            typedef enum {
+                Async = 0,
+                Sync = 1
+            } ClientTypeEnum;
 
-    def _encode_and_sum_size(
-        self,
-        args_list: Optional[List[TEncodable]],
-    ) -> Tuple[List[bytes], int]:
-        """
-        Encodes the list and calculates the total memory size.
+            typedef struct {
+                SuccessCallback success_callback;
+                FailureCallback failure_callback;
+            } AsyncClient;
 
-        Args:
-            args_list (Optional[List[TEncodable]]): A list of strings to be converted to bytes.
-                                                           If None or empty, returns ([], 0).
+            typedef struct {
+                int _type;
+                union {
+                    struct {
+                        void (*success_callback)(uintptr_t, const void*);
+                        void (*failure_callback)(uintptr_t, const char*, int);
+                    } async_client;
+                };
+            } ClientType;
 
-        Returns:
-            int: The total memory size of the encoded arguments in bytes.
-        """
-        args_size = 0
-        encoded_args_list: List[bytes] = []
-        if not args_list:
-            return (encoded_args_list, args_size)
-        for arg in args_list:
-            encoded_arg = self._encode_arg(arg) if isinstance(arg, str) else arg
-            encoded_args_list.append(encoded_arg)
-            args_size += sys.getsizeof(encoded_arg)
-        return (encoded_args_list, args_size)
+            const ConnectionResponse* create_client(
+                const uint8_t* connection_request_bytes,
+                size_t connection_request_len,
+                const ClientType* client_type
+            );
+            void close_client(const void* client_adapter_ptr);
+            void free_connection_response(ConnectionResponse* connection_response_ptr);
+            char* get_response_type_string(int response_type);
+            void free_response_type_string(char* response_string);
+            void free_command_response(CommandResponse* command_response_ptr);
+            void free_error_message(char* error_message);
+            void free_command_result(CommandResult* command_result_ptr);
+            CommandResult* command(
+                const void* client_adapter_ptr, uintptr_t channel, int command_type,
+                unsigned long arg_count, const size_t *args, const unsigned long* args_len,
+                const unsigned char* route_bytes, size_t route_bytes_len
+            );
+        """)
+
+        this_dir = os.path.dirname(__file__)
+        so_path = os.path.abspath(
+            os.path.join(this_dir, "../../../ffi/target/debug/libglide_ffi.so")
+        )
+        self.lib = self.ffi.dlopen(so_path)
+
+    def _handle_response(self, message):
+        if message == self.ffi.NULL:
+            # print("Received NULL message.")
+            return None
+
+        message_type = self.ffi.typeof(message).cname
+        if message_type == "CommandResponse *":
+            message = message[0]
+            message_type = self.ffi.typeof(message).cname
+
+        if message_type != "CommandResponse":
+            raise RequestError(f"Unexpected message type = {message_type}")
+
+        return self._handle_command_response(message)
+
+    def _handle_command_response(self, msg):
+        handlers = {
+            0: self._handle_null_response,
+            1: self._handle_int_response,
+            2: self._handle_float_response,
+            3: self._handle_bool_response,
+            4: self._handle_string_response,
+            5: self._handle_array_response,
+            6: self._handle_map_response,
+            7: self._handle_set_response,
+            8: self._handle_ok_response,
+        }
+        handler = handlers.get(msg.response_type)
+        if handler is None:
+            raise RequestError(f"Unhandled response type = {msg.response_type}")
+        return handler(msg)
+
+    def _handle_null_response(self, msg):
+        return None
+
+    def _handle_int_response(self, msg):
+        return msg.int_value
+
+    def _handle_float_response(self, msg):
+        return msg.float_value
+
+    def _handle_bool_response(self, msg):
+        return bool(msg.bool_value)
+
+    def _handle_string_response(self, msg):
+        try:
+            return self.ffi.buffer(msg.string_value, msg.string_value_len)[:]
+        except Exception as e:
+            raise RequestError(f"Error decoding string value: {e}")
+
+    def _handle_array_response(self, msg):
+        array = []
+        for i in range(msg.array_value_len):
+            element = self.ffi.cast("struct CommandResponse*", msg.array_value + i)
+            array.append(self._handle_response(element))
+        return array
+
+    def _handle_map_response(self, msg):
+        map_dict = {}
+        for i in range(msg.array_value_len):
+            element = self.ffi.cast("struct CommandResponse*", msg.array_value + i)
+            key = self.ffi.cast("struct CommandResponse*", element.map_key)
+            value = self.ffi.cast("struct CommandResponse*", element.map_value)
+            map_dict[self._handle_response(key)] = self._handle_response(value)
+        return map_dict
+
+    def _handle_set_response(self, msg):
+        result_set = set()
+        sets_array = self.ffi.cast(
+            f"struct CommandResponse[{msg.sets_value_len}]", msg.sets_value
+        )
+        for i in range(msg.sets_value_len):
+            element = sets_array[i]
+            result_set.add(self._handle_response(element))
+        return result_set
+
+    def _handle_ok_response(self, msg):
+        return OK
+
+    def _to_c_strings(self, args):
+        c_strings = []
+        string_lengths = []
+        buffers = []
+        for arg in args:
+            if isinstance(arg, str):
+                arg_bytes = arg.encode("utf-8")
+            elif isinstance(arg, (int, float)):
+                arg_bytes = str(arg).encode("utf-8")
+            elif isinstance(arg, bytes):
+                arg_bytes = arg
+            else:
+                raise ValueError(f"Unsupported argument type: {type(arg)}")
+            buffers.append(arg_bytes)
+            c_strings.append(self.ffi.cast("size_t", self.ffi.from_buffer(arg_bytes)))
+            string_lengths.append(len(arg_bytes))
+        return (
+            self.ffi.new("size_t[]", c_strings),
+            self.ffi.new("unsigned long[]", string_lengths),
+            buffers,
+        )
+
+    def _handle_cmd_result(self, command_result):
+        try:
+            if command_result == self.ffi.NULL:
+                raise ClosingError("Internal error: Received NULL as a command result")
+            if command_result.command_error != self.ffi.NULL:
+                error = self.ffi.cast("CommandError*", command_result.command_error)
+                error_message = self.ffi.string(error.command_error_message).decode("utf-8")
+                error_class = get_request_error_class(error.command_error_type)
+                raise error_class(error_message)
+            else:
+                return self._handle_response(command_result.response)
+        finally:
+            self.lib.free_command_result(command_result)
 
     async def _execute_command(
         self,
@@ -364,361 +416,65 @@ class BaseClient(CoreCommands):
         args: List[TEncodable],
         route: Optional[Route] = None,
     ) -> TResult:
-        if self._is_closed:
-            raise ClosingError(
-                "Unable to execute requests; the client is closed. Please create a new client."
-            )
-        request = CommandRequest()
-        request.callback_idx = self._get_callback_index()
-        request.single_command.request_type = request_type
-        request.single_command.args_array.args[:] = [
-            bytes(elem, encoding="utf8") if isinstance(elem, str) else elem
-            for elem in args
-        ]
-        (encoded_args, args_size) = self._encode_and_sum_size(args)
-        if args_size < MAX_REQUEST_ARGS_LEN:
-            request.single_command.args_array.args[:] = encoded_args
-        else:
-            request.single_command.args_vec_pointer = create_leaked_bytes_vec(
-                encoded_args
-            )
-        set_protobuf_route(request, route)
-        return await self._write_request_await_response(request)
-
-    async def _execute_transaction(
-        self,
-        commands: List[Tuple[RequestType.ValueType, List[TEncodable]]],
-        route: Optional[Route] = None,
-    ) -> List[TResult]:
-        if self._is_closed:
-            raise ClosingError(
-                "Unable to execute requests; the client is closed. Please create a new client."
-            )
-        request = CommandRequest()
-        request.callback_idx = self._get_callback_index()
-        transaction_commands = []
-        for requst_type, args in commands:
-            command = Command()
-            command.request_type = requst_type
-            # For now, we allow the user to pass the command as array of strings
-            # we convert them here into bytes (the datatype that our rust core expects)
-            (encoded_args, args_size) = self._encode_and_sum_size(args)
-            if args_size < MAX_REQUEST_ARGS_LEN:
-                command.args_array.args[:] = encoded_args
-            else:
-                command.args_vec_pointer = create_leaked_bytes_vec(encoded_args)
-            transaction_commands.append(command)
-        request.batch.commands.extend(transaction_commands)
-        request.batch.is_atomic = True
-        # TODO: add support for timeout, raise on error and retry strategy
-        set_protobuf_route(request, route)
-        return await self._write_request_await_response(request)
-
-    async def _execute_script(
-        self,
-        hash: str,
-        keys: Optional[List[Union[str, bytes]]] = None,
-        args: Optional[List[Union[str, bytes]]] = None,
-        route: Optional[Route] = None,
-    ) -> TResult:
-        if self._is_closed:
-            raise ClosingError(
-                "Unable to execute requests; the client is closed. Please create a new client."
-            )
-        request = CommandRequest()
-        request.callback_idx = self._get_callback_index()
-        (encoded_keys, keys_size) = self._encode_and_sum_size(keys)
-        (encoded_args, args_size) = self._encode_and_sum_size(args)
-        if (keys_size + args_size) < MAX_REQUEST_ARGS_LEN:
-            request.script_invocation.hash = hash
-            request.script_invocation.keys[:] = encoded_keys
-            request.script_invocation.args[:] = encoded_args
-
-        else:
-            request.script_invocation_pointers.hash = hash
-            request.script_invocation_pointers.keys_pointer = create_leaked_bytes_vec(
-                encoded_keys
-            )
-            request.script_invocation_pointers.args_pointer = create_leaked_bytes_vec(
-                encoded_args
-            )
-        set_protobuf_route(request, route)
-        return await self._write_request_await_response(request)
-
-    async def get_pubsub_message(self) -> CoreCommands.PubSubMsg:
-        if self._is_closed:
-            raise ClosingError(
-                "Unable to execute requests; the client is closed. Please create a new client."
-            )
-
-        if not self.config._is_pubsub_configured():
-            raise ConfigurationError(
-                "The operation will never complete since there was no pubsub subscriptions applied to the client."
-            )
-
-        if self.config._get_pubsub_callback_and_context()[0] is not None:
-            raise ConfigurationError(
-                "The operation will never complete since messages will be passed to the configured callback."
-            )
-
-        # locking might not be required
-        response_future: Future = Future()
-        try:
-            self._pubsub_lock.acquire()
-            self._pubsub_futures.append(response_future)
-            self._complete_pubsub_futures_safe()
-        finally:
-            self._pubsub_lock.release()
-        return await response_future.result()
-
-    def try_get_pubsub_message(self) -> Optional[CoreCommands.PubSubMsg]:
-        if self._is_closed:
-            raise ClosingError(
-                "Unable to execute requests; the client is closed. Please create a new client."
-            )
-
-        if not self.config._is_pubsub_configured():
-            raise ConfigurationError(
-                "The operation will never succeed since there was no pubsbub subscriptions applied to the client."
-            )
-
-        if self.config._get_pubsub_callback_and_context()[0] is not None:
-            raise ConfigurationError(
-                "The operation will never succeed since messages will be passed to the configured callback."
-            )
-
-        # locking might not be required
-        msg: Optional[CoreCommands.PubSubMsg] = None
-        try:
-            self._pubsub_lock.acquire()
-            self._complete_pubsub_futures_safe()
-            while len(self._pending_push_notifications) and not msg:
-                push_notification = self._pending_push_notifications.pop(0)
-                msg = self._notification_to_pubsub_message_safe(push_notification)
-        finally:
-            self._pubsub_lock.release()
-        return msg
-
-    def _cancel_pubsub_futures_with_exception_safe(self, exception: ConnectionError):
-        while len(self._pubsub_futures):
-            next_future = self._pubsub_futures.pop(0)
-            next_future.set_exception(exception)
-
-    def _notification_to_pubsub_message_safe(
-        self, response: Response
-    ) -> Optional[CoreCommands.PubSubMsg]:
-        pubsub_message = None
-        push_notification = cast(
-            Dict[str, Any], value_from_pointer(response.resp_pointer)
-        )
-        message_kind = push_notification["kind"]
-        if message_kind == "Disconnection":
-            ClientLogger.log(
-                LogLevel.WARN,
-                "disconnect notification",
-                "Transport disconnected, messages might be lost",
-            )
-        elif (
-            message_kind == "Message"
-            or message_kind == "PMessage"
-            or message_kind == "SMessage"
-        ):
-            values: List = push_notification["values"]
-            if message_kind == "PMessage":
-                pubsub_message = BaseClient.PubSubMsg(
-                    message=values[2], channel=values[1], pattern=values[0]
+            if self._is_closed:
+                raise ClosingError(
+                    "Unable to execute requests; the client is closed. Please create a new client."
                 )
-            else:
-                pubsub_message = BaseClient.PubSubMsg(
-                    message=values[1], channel=values[0], pattern=None
-                )
-        elif (
-            message_kind == "PSubscribe"
-            or message_kind == "Subscribe"
-            or message_kind == "SSubscribe"
-            or message_kind == "Unsubscribe"
-            or message_kind == "PUnsubscribe"
-            or message_kind == "SUnsubscribe"
-        ):
-            pass
-        else:
-            ClientLogger.log(
-                LogLevel.WARN,
-                "unknown notification",
-                f"Unknown notification message: '{message_kind}'",
-            )
+            client_adapter_ptr = self.core_client
+            if client_adapter_ptr == self.ffi.NULL:
+                raise ValueError("Invalid client pointer.")
+            
+            callback_idx = self._get_callback_index()
+            # print(f"Got callback_idx: {callback_idx}")
+            response_future = self._get_future(callback_idx)
+            
+            try:
+                # print("Creating C args")
+                c_args, c_lengths, buffers = self._to_c_strings(args)
+                route_bytes = b""
+                route_ptr = self.ffi.NULL
+                
+                async with BlockingPortal() as portal:
+                    self._portal = portal
 
-        return pubsub_message
-
-    def _complete_pubsub_futures_safe(self):
-        while len(self._pending_push_notifications) and len(self._pubsub_futures):
-            next_push_notification = self._pending_push_notifications.pop(0)
-            pubsub_message = self._notification_to_pubsub_message_safe(
-                next_push_notification
-            )
-            if pubsub_message:
-                self._pubsub_futures.pop(0).set_result(pubsub_message)
-
-    async def _write_request_await_response(self, request: CommandRequest):
-        # Create a response future for this request and add it to the available
-        # futures map
-        response_future = self._get_future(request.callback_idx)
-        self._create_write_task(request)
-        return await response_future.result()
-
-    def _get_callback_index(self) -> int:
-        try:
-            return self._available_callback_indexes.pop()
-        except IndexError:
-            # The list is empty
-            return len(self._available_futures)
-
-    async def _process_response(self, response: Response) -> None:
-        res_future = self._available_futures.pop(response.callback_idx, None)
-        if not res_future or response.HasField("closing_error"):
-            err_msg = (
-                response.closing_error
-                if response.HasField("closing_error")
-                else f"Client Error - closing due to unknown error. callback index:  {response.callback_idx}"
-            )
-            exc = ClosingError(err_msg)
-            if res_future is not None:
-                res_future.set_exception(exc)
-            raise exc
-        else:
-            self._available_callback_indexes.append(response.callback_idx)
-            if response.HasField("request_error"):
-                error_type = get_request_error_class(response.request_error.type)
-                res_future.set_exception(error_type(response.request_error.message))
-            elif response.HasField("resp_pointer"):
-                res_future.set_result(value_from_pointer(response.resp_pointer))
-            elif response.HasField("constant_response"):
-                res_future.set_result(OK)
-            else:
-                res_future.set_result(None)
-
-    async def _process_push(self, response: Response) -> None:
-        if response.HasField("closing_error") or not response.HasField("resp_pointer"):
-            err_msg = (
-                response.closing_error
-                if response.HasField("closing_error")
-                else "Client Error - push notification without resp_pointer"
-            )
-            raise ClosingError(err_msg)
-        try:
-            self._pubsub_lock.acquire()
-            callback, context = self.config._get_pubsub_callback_and_context()
-            if callback:
-                pubsub_message = self._notification_to_pubsub_message_safe(response)
-                if pubsub_message:
-                    callback(pubsub_message, context)
-            else:
-                self._pending_push_notifications.append(response)
-                self._complete_pubsub_futures_safe()
-        finally:
-            self._pubsub_lock.release()
-
-    async def _reader_loop(self) -> None:
-        # Socket reader loop
-        try:
-            remaining_read_bytes = bytearray()
-            while True:
-                try:
-                    read_bytes = await self._stream.receive(DEFAULT_READ_BYTES_SIZE)
-                except (anyio.ClosedResourceError, anyio.EndOfStream):
-                    raise ClosingError(
-                        "The communication layer was unexpectedly closed."
+                    # No need for portal here - the callback will set the result directly
+                    self.lib.command(
+                        client_adapter_ptr,
+                        callback_idx,
+                        request_type,
+                        len(args),
+                        c_args,
+                        c_lengths,
+                        route_ptr,
+                        len(route_bytes),
                     )
-                read_bytes = remaining_read_bytes + bytearray(read_bytes)
-                read_bytes_view = memoryview(read_bytes)
-                offset = 0
-                while offset <= len(read_bytes):
-                    try:
-                        response, offset = ProtobufCodec.decode_delimited(
-                            read_bytes, read_bytes_view, offset, Response
-                        )
-                    except PartialMessageException:
-                        # Received only partial response, break the inner loop
-                        remaining_read_bytes = read_bytes[offset:]
-                        break
-                    response = cast(Response, response)
-                    if response.is_push:
-                        await self._process_push(response=response)
-                    else:
-                        await self._process_response(response=response)
-        except Exception as e:
-            # close and stop reading at terminal exceptions from incoming responses or
-            # stream closures
-            await self.close(str(e))
 
-    async def get_statistics(self) -> dict:
-        return get_statistics()
+                    # print("Waiting for command completion")
+                    # Wait for the event instead of the future    
+                    await response_future._is_done.wait()        
+                    return response_future.result()
 
-    async def _update_connection_password(
-        self, password: Optional[str], immediate_auth: bool
-    ) -> TResult:
-        request = CommandRequest()
-        request.callback_idx = self._get_callback_index()
-        if password is not None:
-            request.update_connection_password.password = password
-        request.update_connection_password.immediate_auth = immediate_auth
-        response = await self._write_request_await_response(request)
-        # Update the client binding side password if managed to change core configuration password
-        if response is OK:
-            if self.config.credentials is None:
-                self.config.credentials = ServerCredentials(password=password or "")
-                self.config.credentials.password = password or ""
-        return response
+            finally:
+                # Clean up
+                # print(f"Cleaning up callback_idx: {callback_idx}")
+                self._available_futures.pop(callback_idx, None)
+                self._result_events.pop(callback_idx, None)
+                self._available_callback_indexes.append(callback_idx)
+                del buffers
+
+            
+    async def close(self, err_message: Optional[str] = None) -> None:
+        # Make sure to close the portal when closing the client
+        # if self._portal:
+        #     await self._portal.close()
+        self._is_closed = True
 
 
+            
 class GlideClusterClient(BaseClient, ClusterCommands):
-    """
-    Client used for connection to cluster servers.
-    Use :func:`~BaseClient.create` to request a client.
-    For full documentation, see
-    [Valkey GLIDE Wiki](https://github.com/valkey-io/valkey-glide/wiki/Python-wrapper#cluster)
-    """
-
-    async def _cluster_scan(
-        self,
-        cursor: ClusterScanCursor,
-        match: Optional[TEncodable] = None,
-        count: Optional[int] = None,
-        type: Optional[ObjectType] = None,
-        allow_non_covered_slots: bool = False,
-    ) -> List[Union[ClusterScanCursor, List[bytes]]]:
-        if self._is_closed:
-            raise ClosingError(
-                "Unable to execute requests; the client is closed. Please create a new client."
-            )
-        request = CommandRequest()
-        request.callback_idx = self._get_callback_index()
-        # Take out the id string from the wrapping object
-        cursor_string = cursor.get_cursor()
-        request.cluster_scan.cursor = cursor_string
-        request.cluster_scan.allow_non_covered_slots = allow_non_covered_slots
-        if match is not None:
-            request.cluster_scan.match_pattern = (
-                self._encode_arg(match) if isinstance(match, str) else match
-            )
-        if count is not None:
-            request.cluster_scan.count = count
-        if type is not None:
-            request.cluster_scan.object_type = type.value
-        response = await self._write_request_await_response(request)
-        return [ClusterScanCursor(bytes(response[0]).decode()), response[1]]
-
-    def _get_protobuf_conn_request(self) -> ConnectionRequest:
-        return self.config._create_a_protobuf_conn_request(cluster_mode=True)
-
+    pass
 
 class GlideClient(BaseClient, StandaloneCommands):
-    """
-    Client used for connection to standalone servers.
-    Use :func:`~BaseClient.create` to request a client.
-    For full documentation, see
-    [Valkey GLIDE Wiki](https://github.com/valkey-io/valkey-glide/wiki/Python-wrapper#standalone)
-    """
-
+    pass
 
 TGlideClient = Union[GlideClient, GlideClusterClient]
