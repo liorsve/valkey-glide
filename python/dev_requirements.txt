@@ -9,5 +9,7 @@ mypy == 1.13.0
 mypy-protobuf == 3.5
 packaging >= 22.0
 sphinx >= 7.4.7
+
+# Sync
 sphinx-rtd-theme
 cffi

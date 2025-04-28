@@ -1,7 +1,7 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 
-import os
 import sys
+from pathlib import Path
 from typing import List, Optional, Union
 
 from cffi import FFI
@@ -9,8 +9,7 @@ from glide.commands.sync_commands.cluster_commands import ClusterCommands
 from glide.commands.sync_commands.core import CoreCommands
 from glide.commands.sync_commands.standalone_commands import StandaloneCommands
 from glide.config import BaseClientConfiguration, GlideClusterClientConfiguration
-from glide.constants import TEncodable, TResult
-from glide.constants import OK
+from glide.constants import OK, TEncodable, TResult
 from glide.exceptions import ClosingError, RequestError
 from glide.glide_client import get_request_error_class
 from glide.protobuf.command_request_pb2 import RequestType
@@ -26,6 +25,13 @@ else:
 class FFIClientTypeEnum:
     Async = 0
     Sync = 1
+
+
+ENCODING = "utf-8"
+CURR_DIR = Path(__file__).resolve().parent
+ROOT_DIR = CURR_DIR.parent.parent.parent.parent
+FFI_DIR = ROOT_DIR / "ffi"
+LIB_FILE = FFI_DIR / "target" / "debug" / "libglide_ffi.so"
 
 
 class BaseClient(CoreCommands):
@@ -64,7 +70,7 @@ class BaseClient(CoreCommands):
             else:
                 error_message = (
                     self.ffi.string(client_response.connection_error_message).decode(
-                        "utf-8"
+                        ENCODING
                     )
                     if client_response.connection_error_message != self.ffi.NULL
                     else "Unknown error"
@@ -172,11 +178,7 @@ class BaseClient(CoreCommands):
         )
 
         # Load the shared library (adjust the path to your compiled Rust library)
-        this_dir = os.path.dirname(__file__)
-        so_path = os.path.abspath(
-            os.path.join(this_dir, "../../../../ffi/target/debug/libglide_ffi.so")
-        )
-        self.lib = self.ffi.dlopen(so_path)
+        self.lib = self.ffi.dlopen(str(LIB_FILE.resolve()))
 
     def _handle_response(self, message):
         if message == self.ffi.NULL:
@@ -267,11 +269,11 @@ class BaseClient(CoreCommands):
 
         for arg in args:
             if isinstance(arg, str):
-                # Convert string to UTF-8 bytes
-                arg_bytes = arg.encode("utf-8")
+                # Convert string to bytes
+                arg_bytes = arg.encode(ENCODING)
             elif isinstance(arg, (int, float)):
                 # Convert numeric values to strings and then to bytes
-                arg_bytes = str(arg).encode("utf-8")
+                arg_bytes = str(arg).encode(ENCODING)
             elif isinstance(arg, bytes):
                 arg_bytes = arg
             else:
@@ -296,7 +298,7 @@ class BaseClient(CoreCommands):
                 # Handle the error case
                 error = self.ffi.cast("CommandError*", command_result.command_error)
                 error_message = self.ffi.string(error.command_error_message).decode(
-                    "utf-8"
+                    ENCODING
                 )
                 error_class = get_request_error_class(error.command_error_type)
                 # Free the error message to avoid memory leaks

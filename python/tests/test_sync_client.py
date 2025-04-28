@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import pytest
 from glide.config import ProtocolVersion
-from glide.sync import TGlideClient
-from tests.utils.utils import get_random_string
 from glide.constants import OK
+from glide.sync import TGlideClient
+
+from tests.utils.utils import get_random_string
+
+
 class TestGlideClients:
     @pytest.mark.skip_if_version_below("6.2.0")
     @pytest.mark.parametrize("cluster_mode", [True, False])

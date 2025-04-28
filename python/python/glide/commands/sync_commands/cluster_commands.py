@@ -1,9 +1,11 @@
-from glide.commands.sync_commands.core import CoreCommands
 from typing import List, Optional, cast
-from glide.constants import TResult, TEncodable
+
+from glide.commands.core_options import InfoSection
+from glide.commands.sync_commands.core import CoreCommands
+from glide.constants import TClusterResponse, TEncodable, TResult
 from glide.protobuf.command_request_pb2 import RequestType
 from glide.routes import Route
-from glide.constants import TClusterResponse
+
 
 class ClusterCommands(CoreCommands):
     def custom_command(
@@ -31,4 +33,33 @@ class ClusterCommands(CoreCommands):
         return cast(
             TClusterResponse[TResult],
             self._execute_command(RequestType.CustomCommand, command_args, route),
+        )
+
+    def info(
+        self,
+        sections: Optional[List[InfoSection]] = None,
+        route: Optional[Route] = None,
+    ) -> TClusterResponse[bytes]:
+        """
+        Get information and statistics about the server.
+
+        See [valkey.io](https://valkey.io/commands/info/) for details.
+
+        Args:
+            sections (Optional[List[InfoSection]]): A list of InfoSection values specifying which sections of
+                information to retrieve. When no parameter is provided, the default option is assumed.
+            route (Optional[Route]): The command will be routed to all primaries, unless `route` is provided, in which
+                case the client will route the command to the nodes defined by `route`. Defaults to None.
+
+        Returns:
+            TClusterResponse[bytes]: If a single node route is requested, returns a bytes string containing the information for
+            the required sections. Otherwise, returns a dict of bytes strings, with each key containing the address of
+            the queried node and value containing the information regarding the requested sections.
+        """
+        args: List[TEncodable] = (
+            [section.value for section in sections] if sections else []
+        )
+        return cast(
+            TClusterResponse[bytes],
+            self._execute_command(RequestType.Info, args, route),
         )

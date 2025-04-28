@@ -1,7 +1,10 @@
-from typing import List
+from typing import List, Optional, cast
+
+from glide.commands.core_options import InfoSection
 from glide.commands.sync_commands.core import CoreCommands
-from glide.constants import TResult, TEncodable
+from glide.constants import TEncodable, TResult
 from glide.protobuf.command_request_pb2 import RequestType
+
 
 class StandaloneCommands(CoreCommands):
     def custom_command(self, command_args: List[TEncodable]) -> TResult:
@@ -18,3 +21,24 @@ class StandaloneCommands(CoreCommands):
             >>> connection.customCommand(["CLIENT", "LIST","TYPE", "PUBSUB"])
         """
         return self._execute_command(RequestType.CustomCommand, command_args)
+
+    def info(
+        self,
+        sections: Optional[List[InfoSection]] = None,
+    ) -> bytes:
+        """
+        Get information and statistics about the server.
+
+        See [valkey.io](https://valkey.io/commands/info/) for details.
+
+        Args:
+            sections (Optional[List[InfoSection]]): A list of InfoSection values specifying which sections of
+                information to retrieve. When no parameter is provided, the default option is assumed.
+
+        Returns:
+            bytes: Returns bytes containing the information for the sections requested.
+        """
+        args: List[TEncodable] = (
+            [section.value for section in sections] if sections else []
+        )
+        return cast(bytes, self._execute_command(RequestType.Info, args))
