@@ -11,4 +11,6 @@ types-protobuf ~= 5.29.1
 packaging >= 22.0
 sphinx >= 7.4.7
 sphinx-rtd-theme
+
+# Sync
 cffi

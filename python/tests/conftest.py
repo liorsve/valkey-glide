@@ -23,10 +23,11 @@ from glide.routes import AllNodes
 from glide.sync import GlideClient as SyncGlideClient
 from glide.sync import GlideClusterClient as SyncGlideClusterClient
 from glide.sync import TGlideClient as TSyncGlideClient
+
 from tests.utils.cluster import ValkeyCluster
 from tests.utils.utils import (
-    check_if_server_version_lt,
     set_new_acl_username_with_password,
+    sync_check_if_server_version_lt,
 )
 
 DEFAULT_HOST = "localhost"
@@ -596,7 +597,7 @@ def sync_test_teardown(request, cluster_mode: bool, protocol: ProtocolVersion):
 
 
 @pytest.fixture(autouse=True)
-async def skip_if_version_below(request):
+def skip_if_version_below(request):
     """
     Skip test(s) if server version is below than given parameter. Can skip a complete test suite.
 
@@ -607,8 +608,8 @@ async def skip_if_version_below(request):
     """
     if request.node.get_closest_marker("skip_if_version_below"):
         min_version = request.node.get_closest_marker("skip_if_version_below").args[0]
-        client = await create_client(request, False)
-        if await check_if_server_version_lt(client, min_version):
+        client = create_sync_client(request, False)
+        if sync_check_if_server_version_lt(client, min_version):
             pytest.skip(
                 reason=f"This feature added in version {min_version}",
                 allow_module_level=True,
