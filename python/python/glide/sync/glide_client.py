@@ -1,7 +1,7 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 
-import os
 import sys
+from pathlib import Path
 from typing import List, Optional, Union
 
 from cffi import FFI
@@ -9,8 +9,7 @@ from glide.commands.sync_commands.cluster_commands import ClusterCommands
 from glide.commands.sync_commands.core import CoreCommands
 from glide.commands.sync_commands.standalone_commands import StandaloneCommands
 from glide.config import BaseClientConfiguration, GlideClusterClientConfiguration
-from glide.constants import TEncodable, TResult
-from glide.constants import OK
+from glide.constants import OK, TEncodable, TResult
 from glide.exceptions import ClosingError, RequestError
 from glide.glide_client import get_request_error_class
 from glide.protobuf.command_request_pb2 import RequestType
@@ -20,6 +19,12 @@ if sys.version_info >= (3, 11):
     from typing import Self
 else:
     from typing_extensions import Self
+
+ENCODING = "utf-8"
+CURR_DIR = Path(__file__).resolve().parent
+ROOT_DIR = CURR_DIR.parent.parent.parent.parent
+FFI_DIR = ROOT_DIR / "ffi"
+LIB_FILE = FFI_DIR / "target" / "debug" / "libglide_ffi.so"
 
 
 # Enum values must match the Rust definition
@@ -58,13 +63,15 @@ class BaseClient(CoreCommands):
         )
         # Handle the connection response
         if client_response_ptr != self.ffi.NULL:
-            client_response = self.ffi.cast("ConnectionResponse*", client_response_ptr)
+            client_response = self._try_ffi_cast(
+                "ConnectionResponse*", client_response_ptr
+            )
             if client_response.conn_ptr != self.ffi.NULL:
                 self.core_client = client_response.conn_ptr
             else:
                 error_message = (
                     self.ffi.string(client_response.connection_error_message).decode(
-                        "utf-8"
+                        ENCODING
                     )
                     if client_response.connection_error_message != self.ffi.NULL
                     else "Unknown error"
@@ -172,11 +179,7 @@ class BaseClient(CoreCommands):
         )
 
         # Load the shared library (adjust the path to your compiled Rust library)
-        this_dir = os.path.dirname(__file__)
-        so_path = os.path.abspath(
-            os.path.join(this_dir, "../../../../ffi/target/debug/libglide_ffi.so")
-        )
-        self.lib = self.ffi.dlopen(so_path)
+        self.lib = self.ffi.dlopen(str(LIB_FILE.resolve()))
 
     def _handle_response(self, message):
         if message == self.ffi.NULL:
@@ -233,22 +236,22 @@ class BaseClient(CoreCommands):
     def _handle_array_response(self, msg):
         array = []
         for i in range(msg.array_value_len):
-            element = self.ffi.cast("struct CommandResponse*", msg.array_value + i)
+            element = self._try_ffi_cast("struct CommandResponse*", msg.array_value + i)
             array.append(self._handle_response(element))
         return array
 
     def _handle_map_response(self, msg):
         map_dict = {}
         for i in range(msg.array_value_len):
-            element = self.ffi.cast("struct CommandResponse*", msg.array_value + i)
-            key = self.ffi.cast("struct CommandResponse*", element.map_key)
-            value = self.ffi.cast("struct CommandResponse*", element.map_value)
+            element = self._try_ffi_cast("struct CommandResponse*", msg.array_value + i)
+            key = self._try_ffi_cast("struct CommandResponse*", element.map_key)
+            value = self._try_ffi_cast("struct CommandResponse*", element.map_value)
             map_dict[self._handle_response(key)] = self._handle_response(value)
         return map_dict
 
     def _handle_set_response(self, msg):
         result_set = set()
-        sets_array = self.ffi.cast(
+        sets_array = self._try_ffi_cast(
             f"struct CommandResponse[{msg.sets_value_len}]", msg.sets_value
         )
         for i in range(msg.sets_value_len):
@@ -259,6 +262,12 @@ class BaseClient(CoreCommands):
     def _handle_ok_response(self, msg):
         return OK
 
+    def _try_ffi_cast(self, type, source):
+        try:
+            return self.ffi.cast(type, source)
+        except Exception as e:
+            raise ClosingError(f"FFI casting failed: {e}")
+
     def _to_c_strings(self, args):
         """Convert Python arguments to C-compatible pointers and lengths."""
         c_strings = []
@@ -267,11 +276,11 @@ class BaseClient(CoreCommands):
 
         for arg in args:
             if isinstance(arg, str):
-                # Convert string to UTF-8 bytes
-                arg_bytes = arg.encode("utf-8")
+                # Convert string to bytes
+                arg_bytes = arg.encode(ENCODING)
             elif isinstance(arg, (int, float)):
                 # Convert numeric values to strings and then to bytes
-                arg_bytes = str(arg).encode("utf-8")
+                arg_bytes = str(arg).encode(ENCODING)
             elif isinstance(arg, bytes):
                 arg_bytes = arg
             else:
@@ -279,7 +288,9 @@ class BaseClient(CoreCommands):
 
             # Use ffi.from_buffer for zero-copy conversion
             buffers.append(arg_bytes)  # Keep the byte buffer alive
-            c_strings.append(self.ffi.cast("size_t", self.ffi.from_buffer(arg_bytes)))
+            c_strings.append(
+                self._try_ffi_cast("size_t", self.ffi.from_buffer(arg_bytes))
+            )
             string_lengths.append(len(arg_bytes))
         # Return C-compatible arrays and keep buffers alive
         return (
@@ -294,9 +305,11 @@ class BaseClient(CoreCommands):
                 raise ClosingError("Internal error: Received NULL as a command result")
             if command_result.command_error != self.ffi.NULL:
                 # Handle the error case
-                error = self.ffi.cast("CommandError*", command_result.command_error)
+                error = self._try_ffi_cast(
+                    "CommandError*", command_result.command_error
+                )
                 error_message = self.ffi.string(error.command_error_message).decode(
-                    "utf-8"
+                    ENCODING
                 )
                 error_class = get_request_error_class(error.command_error_type)
                 # Free the error message to avoid memory leaks
