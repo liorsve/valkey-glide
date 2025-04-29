@@ -79,7 +79,7 @@ from glide.routes import (
     SlotType,
 )
 from glide.sync import GlideClient, GlideClusterClient, TGlideClient
-from tests.conftest import create_sync_client
+from tests.sync_tests.conftest import create_sync_client
 from tests.utils.utils import (
     check_function_list_response,
     check_function_stats_response,
@@ -445,8 +445,8 @@ class TestCommands:
         assert res == OK
         assert glide_sync_client.get(key) == value2.encode()
 
-    @pytest.mark.parametrize("cluster_mode", [True])
-    @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2])
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     def test_sync_set_return_old_value(self, glide_sync_client: TGlideClient):
         min_version = "6.2.0"
         if sync_check_if_server_version_lt(glide_sync_client, min_version):

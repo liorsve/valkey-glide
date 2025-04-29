@@ -11,13 +11,16 @@ from tests.conftest import (
     NEW_PASSWORD,
     USERNAME,
     WRONG_PASSWORD,
-    auth_client,
-    config_set_new_password,
-    kill_connections,
+
 )
 from tests.utils.utils import (
     delete_acl_username_and_password,
     set_new_acl_username_with_password,
+)
+from tests.async_tests.conftest import (
+    auth_client,
+    config_set_new_password,
+    kill_connections,
 )
 
 
