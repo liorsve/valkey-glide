@@ -15,7 +15,7 @@ with open(output_file_name, "w+") as output_file:
         "client",
         "is_cluster",
         "data_size",
-        "num_of_threads",
+        "num_of_tasks",
         "client_count",
         "tps",
         "get_non_existing_p50_latency",

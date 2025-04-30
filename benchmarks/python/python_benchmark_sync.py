@@ -260,12 +260,12 @@ def run_clients(
 
     set_latencies = action_latencies[ChosenAction.SET]
     set_results = latency_results("set", set_latencies)
-
+    
     json_res = {
         **{
             "client": client_name,
             "data_size": data_size,
-            "num_of_threads": num_of_concurrent_threads,
+            "num_of_tasks": num_of_concurrent_threads, # TODO: Change the csv_exporter to support num_of_threads
             "tps": tps,
             "client_count": len(clients),
             "is_cluster": is_cluster,
