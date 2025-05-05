@@ -17,15 +17,17 @@ from glide.config import (
 )
 from glide.exceptions import ClosingError
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
-from glide.glide_sync_client import GlideSync
 from glide.logger import Level as logLevel
 from glide.logger import Logger
 from glide.routes import AllNodes
+from glide.sync import GlideClient as SyncGlideClient
+from glide.sync import GlideClusterClient as SyncGlideClusterClient
+from glide.sync import TGlideClient as TSyncGlideClient
 
 from tests.utils.cluster import ValkeyCluster
 from tests.utils.utils import (
-    check_if_server_version_lt,
     set_new_acl_username_with_password,
+    sync_check_if_server_version_lt,
 )
 
 DEFAULT_HOST = "localhost"
@@ -231,12 +233,13 @@ async def glide_client(
     await test_teardown(request, cluster_mode, protocol)
     await client.close()
 
+
 @pytest.fixture(scope="function")
 def glide_sync_client(
     request,
     cluster_mode: bool,
     protocol: ProtocolVersion,
-) -> Generator[GlideSync, None, None]:
+) -> Generator[TSyncGlideClient, None, None]:
     "Get async socket client for tests"
     client = create_sync_client(request, cluster_mode, protocol=protocol)
     yield client
@@ -256,6 +259,7 @@ async def management_client(
     await test_teardown(request, cluster_mode, protocol)
     await client.close()
 
+
 def create_client_config(
     request,
     cluster_mode: bool,
@@ -265,6 +269,7 @@ def create_client_config(
     client_name: Optional[str] = None,
     protocol: ProtocolVersion = ProtocolVersion.RESP3,
     timeout: Optional[int] = 1000,
+    connection_timeout: Optional[int] = 1000,
     cluster_mode_pubsub: Optional[
         GlideClusterClientConfiguration.PubSubSubscriptions
     ] = None,
@@ -274,6 +279,7 @@ def create_client_config(
     inflight_requests_limit: Optional[int] = None,
     read_from: ReadFrom = ReadFrom.PRIMARY,
     client_az: Optional[str] = None,
+    reconnect_strategy: Optional[BackoffStrategy] = None,
     valkey_cluster: Optional[ValkeyCluster] = None,
 ) -> Union[GlideClusterClientConfiguration, GlideClientConfiguration]:
     use_tls = request.config.getoption("--tls")
@@ -294,6 +300,7 @@ def create_client_config(
             inflight_requests_limit=inflight_requests_limit,
             read_from=read_from,
             client_az=client_az,
+            advanced_config=AdvancedGlideClusterClientConfiguration(connection_timeout),
         )
     else:
         assert type(pytest.standalone_cluster) is ValkeyCluster
@@ -311,6 +318,8 @@ def create_client_config(
             inflight_requests_limit=inflight_requests_limit,
             read_from=read_from,
             client_az=client_az,
+            reconnect_strategy=reconnect_strategy,
+            advanced_config=AdvancedGlideClientConfiguration(connection_timeout),
         )
     return config
 
@@ -366,66 +375,29 @@ async def create_client(
     reconnect_strategy: Optional[BackoffStrategy] = None,
     valkey_cluster: Optional[ValkeyCluster] = None,
 ) -> Union[GlideClient, GlideClusterClient]:
-    # Create async socket client
     config = create_client_config(
-        request, 
-        cluster_mode, 
-        credentials, 
-        database_id, 
-        addresses, 
-        client_name, 
-        protocol, 
-        timeout, 
-        cluster_mode_pubsub, 
-        standalone_mode_pubsub, 
-        inflight_requests_limit, 
-        read_from, 
-        client_az, 
-        valkey_cluster)
+        request,
+        cluster_mode,
+        credentials,
+        database_id,
+        addresses,
+        client_name,
+        protocol,
+        request_timeout,
+        connection_timeout,
+        cluster_mode_pubsub,
+        standalone_mode_pubsub,
+        inflight_requests_limit,
+        read_from,
+        client_az,
+        reconnect_strategy,
+        valkey_cluster,
+    )
     if cluster_mode:
-        valkey_cluster = valkey_cluster or pytest.valkey_cluster  # type: ignore
-        assert type(valkey_cluster) is ValkeyCluster
-        assert database_id == 0
-        k = min(3, len(valkey_cluster.nodes_addr))
-        seed_nodes = random.sample(valkey_cluster.nodes_addr, k=k)
-        cluster_config = GlideClusterClientConfiguration(
-            addresses=seed_nodes if addresses is None else addresses,
-            use_tls=use_tls,
-            credentials=credentials,
-            client_name=client_name,
-            protocol=protocol,
-            request_timeout=request_timeout,
-            pubsub_subscriptions=cluster_mode_pubsub,
-            inflight_requests_limit=inflight_requests_limit,
-            read_from=read_from,
-            client_az=client_az,
-            advanced_config=AdvancedGlideClusterClientConfiguration(connection_timeout),
-        )
-        return await GlideClusterClient.create(cluster_config)
+        return await GlideClusterClient.create(config)
     else:
-        assert type(pytest.standalone_cluster) is ValkeyCluster  # type: ignore
-        config = GlideClientConfiguration(
-            addresses=(
-                pytest.standalone_cluster.nodes_addr if addresses is None else addresses  # type: ignore
-            ),
-            use_tls=use_tls,
-            credentials=credentials,
-            database_id=database_id,
-            client_name=client_name,
-            protocol=protocol,
-            request_timeout=request_timeout,
-            pubsub_subscriptions=standalone_mode_pubsub,
-            inflight_requests_limit=inflight_requests_limit,
-            read_from=read_from,
-            client_az=client_az,
-            advanced_config=AdvancedGlideClientConfiguration(connection_timeout),
-            reconnect_strategy=reconnect_strategy,
-        )
         return await GlideClient.create(config)
 
-
-USERNAME = "username"
-INITIAL_PASSWORD = "initial_password"
 
 def create_sync_client(
     request,
@@ -436,6 +408,7 @@ def create_sync_client(
     client_name: Optional[str] = None,
     protocol: ProtocolVersion = ProtocolVersion.RESP3,
     timeout: Optional[int] = 1000,
+    connection_timeout: Optional[int] = 1000,
     cluster_mode_pubsub: Optional[
         GlideClusterClientConfiguration.PubSubSubscriptions
     ] = None,
@@ -446,25 +419,33 @@ def create_sync_client(
     read_from: ReadFrom = ReadFrom.PRIMARY,
     client_az: Optional[str] = None,
     valkey_cluster: Optional[ValkeyCluster] = None,
-) -> GlideSync:
+) -> TSyncGlideClient:
     # Create sync client
     config = create_client_config(
-        request, 
-        cluster_mode, 
-        credentials, 
-        database_id, 
-        addresses, 
-        client_name, 
-        protocol, 
-        timeout, 
-        cluster_mode_pubsub, 
-        standalone_mode_pubsub, 
-        inflight_requests_limit, 
-        read_from, 
-        client_az, 
-        valkey_cluster)
-    return GlideSync(config)
+        request,
+        cluster_mode,
+        credentials,
+        database_id,
+        addresses,
+        client_name,
+        protocol,
+        timeout,
+        connection_timeout,
+        cluster_mode_pubsub,
+        standalone_mode_pubsub,
+        inflight_requests_limit,
+        read_from,
+        client_az,
+        valkey_cluster,
+    )
+    if cluster_mode:
+        return SyncGlideClusterClient.create(config)
+    else:
+        return SyncGlideClient.create(config)
 
+
+USERNAME = "username"
+INITIAL_PASSWORD = "initial_password"
 NEW_PASSWORD = "new_secure_password"
 WRONG_PASSWORD = "wrong_password"
 
@@ -481,7 +462,7 @@ async def auth_client(client: TGlideClient, password: str, username: str = "defa
         )
 
 
-def sync_auth_client(client: TGlideClient, password):
+def sync_auth_client(client: TSyncGlideClient, password):
     """
     Authenticates the given TGlideClient server connected.
     """
@@ -491,7 +472,7 @@ def sync_auth_client(client: TGlideClient, password):
         client.custom_command(["AUTH", password], route=AllNodes())
 
 
-def sync_config_set_new_password(client: TGlideClient, password):
+def sync_config_set_new_password(client: TSyncGlideClient, password):
     """
     Sets a new password for the given TGlideClient server connected.
     This function updates the server to require a new password.
@@ -500,6 +481,7 @@ def sync_config_set_new_password(client: TGlideClient, password):
         client.config_set({"requirepass": password})
     elif isinstance(client, GlideClusterClient):
         client.config_set({"requirepass": password}, route=AllNodes())
+
 
 async def config_set_new_password(client: TGlideClient, password):
     """
@@ -512,16 +494,15 @@ async def config_set_new_password(client: TGlideClient, password):
         await client.config_set({"requirepass": password}, route=AllNodes())
 
 
-def sync_kill_connections(client: TGlideClient):
+def sync_kill_connections(client: TSyncGlideClient):
     """
     Kills all connections to the given TGlideClient server connected.
     """
     if isinstance(client, GlideClient):
         client.custom_command(["CLIENT", "KILL", "TYPE", "normal"])
     elif isinstance(client, GlideClusterClient):
-        client.custom_command(
-            ["CLIENT", "KILL", "TYPE", "normal"], route=AllNodes()
-        )
+        client.custom_command(["CLIENT", "KILL", "TYPE", "normal"], route=AllNodes())
+
 
 async def kill_connections(client: TGlideClient):
     """
@@ -616,7 +597,7 @@ def sync_test_teardown(request, cluster_mode: bool, protocol: ProtocolVersion):
 
 
 @pytest.fixture(autouse=True)
-async def skip_if_version_below(request):
+def skip_if_version_below(request):
     """
     Skip test(s) if server version is below than given parameter. Can skip a complete test suite.
 
@@ -627,8 +608,8 @@ async def skip_if_version_below(request):
     """
     if request.node.get_closest_marker("skip_if_version_below"):
         min_version = request.node.get_closest_marker("skip_if_version_below").args[0]
-        client = await create_client(request, False)
-        if await check_if_server_version_lt(client, min_version):
+        client = create_sync_client(request, False)
+        if sync_check_if_server_version_lt(client, min_version):
             pytest.skip(
                 reason=f"This feature added in version {min_version}",
                 allow_module_level=True,

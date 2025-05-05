@@ -1,4 +1,3 @@
-
 // Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -937,7 +936,7 @@ pub unsafe extern "C" fn command(
     };
 
     // Create the command outside of the task to ensure that the command arguments passed
-    // from "go" are still valid
+    // from the caller are still valid
     let mut cmd = command_type
         .get_command()
         .expect("Couldn't fetch command type");

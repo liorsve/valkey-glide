@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Mapping, Optional, Union, cast
 
 import pytest
 from glide import ClosingError, RequestError, Script
-from glide.async_commands.bitmap import (
+from glide.commands.bitmap import (
     BitFieldGet,
     BitFieldIncrBy,
     BitFieldOverflow,
@@ -25,8 +25,8 @@ from glide.async_commands.bitmap import (
     SignedEncoding,
     UnsignedEncoding,
 )
-from glide.async_commands.command_args import Limit, ListDirection, OrderBy
-from glide.async_commands.core import (
+from glide.commands.command_args import Limit, ListDirection, OrderBy
+from glide.commands.core_options import (
     ConditionalChange,
     ExpireOptions,
     ExpiryGetEx,
@@ -35,19 +35,19 @@ from glide.async_commands.core import (
     ExpiryTypeGetEx,
     FlushMode,
     FunctionRestorePolicy,
-    InfBound,
     InfoSection,
     InsertPosition,
     OnlyIfEqual,
     UpdateOptions,
 )
-from glide.async_commands.sorted_set import (
+from glide.commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
     GeoSearchByRadius,
     GeoSearchCount,
     GeospatialData,
     GeoUnit,
+    InfBound,
     LexBoundary,
     RangeByIndex,
     RangeByLex,
@@ -55,7 +55,7 @@ from glide.async_commands.sorted_set import (
     ScoreBoundary,
     ScoreFilter,
 )
-from glide.async_commands.stream import (
+from glide.commands.stream import (
     ExclusiveIdBound,
     IdBound,
     MaxId,
@@ -69,17 +69,8 @@ from glide.async_commands.stream import (
     TrimByMaxLen,
     TrimByMinId,
 )
-from glide.async_commands.transaction import ClusterTransaction, Transaction
-from glide.config import (
-    GlideClientConfiguration,
-    GlideClusterClientConfiguration,
-    ProtocolVersion,
-    ServerCredentials,
-    NodeAddress,
-    BackoffStrategy,
-    ProtocolVersion,
-    ServerCredentials
-)
+from glide.commands.transaction import ClusterTransaction, Transaction
+from glide.config import BackoffStrategy, ProtocolVersion, ServerCredentials
 from glide.constants import OK, TEncodable, TFunctionStatsSingleNodeResponse, TResult
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
 from glide.routes import (
@@ -112,6 +103,7 @@ from tests.utils.utils import (
 )
 
 
+@pytest.mark.asyncio
 class TestGlideClients:
     @pytest.mark.skip_if_version_below("7.2.0")
     @pytest.mark.parametrize("cluster_mode", [True, False])
@@ -154,7 +146,7 @@ class TestGlideClients:
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
     async def test_client_handle_concurrent_workload_without_dropping_or_changing_values(
-        self, value_size, glide_client: TGlideClient
+        self, glide_client: TGlideClient, value_size
     ):
         num_of_concurrent_tasks = 100
         running_tasks = set()
