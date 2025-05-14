@@ -3,29 +3,28 @@ import json
 import uuid
 from typing import List, Optional, Tuple
 
-from glide import AllNodes, ClosingError
+from glide import ClosingError
 from glide import ConnectionError as GlideConnectionError
 from glide import (
     GlideClusterClient,
     GlideClusterClientConfiguration,
-    InfoSection,
     Logger,
     LogLevel,
     NodeAddress,
     RequestError,
 )
 from glide import TimeoutError as GlideTimeoutError
-from glide.async_commands.server_modules import ft, glide_json
-from glide.async_commands.server_modules.ft_options.ft_create_options import (
+from glide import ft, glide_json
+from glide import (
     DataType,
     FtCreateOptions,
     NumericField,
 )
-from glide.async_commands.server_modules.ft_options.ft_search_options import (
+from glide import (
     FtSearchOptions,
     ReturnField,
 )
-from glide.constants import OK, FtSearchResponse, TEncodable
+from glide import OK
 
 
 async def create_client(
@@ -52,6 +51,8 @@ async def create_client(
     config = GlideClusterClientConfiguration(
         addresses=addresses,
         client_name="test_cluster_client",
+        # Set request timeout - recommended to configure based on your use case.
+        request_timeout=500,
         # Enable this field if the servers are configured with TLS.
         # use_tls=True
     )

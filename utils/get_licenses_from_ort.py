@@ -45,6 +45,9 @@ APPROVED_LICENSES = [
     "Apache-2.0 OR LGPL-2.1-or-later OR MIT",
     "Apache-2.0 AND ISC",
     "Apache-2.0 AND (Apache-2.0 OR MIT) AND MIT",
+    "(Apache-2.0 OR ISC) AND ISC",
+    "(Apache-2.0 OR ISC) AND ISC AND OpenSSL",
+    "CDLA-Permissive-2.0"
 ]
 
 # Packages with non-pre-approved licenses that received manual approval.
@@ -86,7 +89,7 @@ class PackageLicense:
 
 
 ort_results_per_lang = [
-    OrtResults("Python", "python/ort_results"),
+    OrtResults("PythonAsync", "python/glide-async/ort_results"),
     OrtResults("Node", "node/ort_results"),
     OrtResults("Java", "java/ort_results"),
     OrtResults("Rust", "glide-core/ort_results"),

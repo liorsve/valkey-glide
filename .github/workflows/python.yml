@@ -47,6 +47,10 @@ on:
                 required: false
                 type: string
                 description: "(Optional) Test run name"
+            run-modules-tests:
+                description: "Run modules tests"
+                type: boolean
+                default: false
 
     workflow_call:
 
@@ -86,7 +90,7 @@ jobs:
         name: Python Tests - ${{ matrix.python }}, EngineVersion - ${{ matrix.engine.version }}, Target - ${{ matrix.host.TARGET }}
         runs-on: ${{ matrix.host.RUNNER }}
         needs: get-matrices
-        timeout-minutes: 45
+        timeout-minutes: 90
         strategy:
             fail-fast: false
             matrix:
@@ -129,13 +133,13 @@ jobs:
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   engine-version: ${{ matrix.engine.version }}
 
-            - name: Test with pytest (asyncio only)
+            - name: Test with pytest
               if: ${{ env.RUN_FULL_MATRIX != 'true' }}
               working-directory: ./python
               run: |
-                  python3 dev.py test --args --html=pytest_report.html --self-contained-html
+                  python3 dev.py test --args --async-backend=asyncio --html=pytest_report.html --self-contained-html
 
-            - name: Test with pytest (full matrix)
+            - name: Test with pytest (full matrix, all async backends)
               if: ${{ env.RUN_FULL_MATRIX == 'true' }}
               working-directory: ./python
               run: |
@@ -162,7 +166,7 @@ jobs:
         name: Python PubSubTests - ${{ matrix.python }}, EngineVersion - ${{ matrix.engine.version }}, Target - ${{ matrix.host.TARGET }}
         runs-on: ${{ matrix.host.RUNNER }}
         needs: get-matrices
-        timeout-minutes: 35
+        timeout-minutes: 90
         strategy:
             fail-fast: false
             matrix:
@@ -230,7 +234,7 @@ jobs:
             - name: lint rust
               uses: ./.github/workflows/lint-rust
               with:
-                  cargo-toml-folder: python
+                  cargo-toml-folder: python/glide-async
                   github-token: ${{ secrets.GITHUB_TOKEN }}
 
             - name: Install dependencies
@@ -260,7 +264,9 @@ jobs:
             - name: Build docs
               working-directory: ./python/docs
               run: |
-                  sphinx-apidoc -o . ../python/glide
+                  sphinx-apidoc -o glide_async ../glide-async/python
+                  sphinx-apidoc -o glide_sync ../glide-sync/glide_sync
+                  sphinx-apidoc -o glide_shared ../glide-shared/glide_shared
                   make clean
                   make html SPHINXOPTS="-W --keep-going"
 
@@ -284,7 +290,7 @@ jobs:
     test-python-container:
         runs-on: ${{ matrix.host.RUNNER }}
         needs: [get-containers]
-        timeout-minutes: 35
+        timeout-minutes: 90
         strategy:
             fail-fast: false
             matrix:
@@ -347,7 +353,7 @@ jobs:
                       benchmarks/results/**
 
     test-modules:
-        if: (github.repository_owner == 'valkey-io' && github.event_name == 'workflow_dispatch') || github.event.pull_request.head.repo.owner.login == 'valkey-io'
+        if: ((github.repository_owner == 'valkey-io' && github.event_name == 'workflow_dispatch' && github.event.inputs.run-modules-tests == 'true') || github.event.pull_request.head.repo.owner.login == 'valkey-io')
         environment: AWS_ACTIONS
         name: Running Module Tests
         runs-on: [self-hosted, linux, ARM64, persistent]

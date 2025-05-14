@@ -370,7 +370,7 @@ where
     pub(crate) fn az_for_address(&self, address: &str) -> Option<String> {
         self.connection_map
             .get(address)
-            .map(|item| item.value().user_connection.az.clone())?
+            .and_then(|item| item.value().user_connection.az.clone())
     }
 
     /// Returns true if the address represents a known primary node.
@@ -636,7 +636,7 @@ where
         (!self.connection_map.is_empty()).then_some({
             self.connection_map
                 .iter()
-                .choose_multiple(&mut rand::thread_rng(), amount)
+                .choose_multiple(&mut rand::rng(), amount)
                 .into_iter()
                 .map(move |item| {
                     let (address, node) = (item.key(), item.value());
@@ -657,7 +657,7 @@ where
         // Increase the total number of connections by the number of connections managed by `node`
         Telemetry::incr_total_connections(node.connections_count());
 
-        if let Some(old_conn) = self.connection_map.insert(address.clone(), node) {
+        if let Some(old_conn) = self.connection_map.insert(String::clone(&address), node) {
             // We are replacing a node. Reduce the counter by the number of connections managed by
             // the old connection
             Telemetry::decr_total_connections(old_conn.connections_count());

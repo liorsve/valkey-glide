@@ -5,8 +5,9 @@ using static Valkey.Glide.Commands.Options.InfoOptions;
 namespace Valkey.Glide.Commands;
 
 /// <summary>
-/// Supports commands for the "Server Management" group for a standalone client.<br />
-/// See <see href="https://valkey.io/commands/?group=server">Server Management Commands</see>.
+/// Supports commands for the "Server Management" group for a standalone client.
+/// <br />
+/// See <see href="https://valkey.io/commands#server">Server Management Commands</see>.
 /// </summary>
 public interface IServerManagementCommands
 {
@@ -29,4 +30,13 @@ public interface IServerManagementCommands
     /// <inheritdoc cref="Info()" />
     /// </returns>
     Task<string> Info(Section[] sections);
+
+    /// <summary>
+    /// Echo the given message back from the server.<br />
+    /// See <see href="https://valkey.io/commands/echo/">valkey.io</see> for details.
+    /// </summary>
+    /// <param name="message">The message to echo</param>
+    /// <param name="flags">The command flags. Currently flags are ignored.</param>
+    /// <returns>The echoed message as a <see cref="ValkeyValue"/>.</returns>
+    Task<ValkeyValue> EchoAsync(ValkeyValue message, CommandFlags flags = CommandFlags.None);
 }

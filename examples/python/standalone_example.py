@@ -1,8 +1,6 @@
 import asyncio
 from typing import List, Tuple
 
-from glide import ClosingError
-from glide import ConnectionError as GlideConnectionError
 from glide import (
     GlideClient,
     GlideClientConfiguration,
@@ -10,9 +8,12 @@ from glide import (
     LogLevel,
     NodeAddress,
     RequestError,
+    ClosingError,
+    ConnectionError as GlideConnectionError,
+    TimeoutError as GlideTimeoutError
 )
-from glide import TimeoutError as GlideTimeoutError
 
+from glide import GlideClientConfiguration
 
 async def create_client(
     nodes_list: List[Tuple[str, int]] = [("localhost", 6379)]
@@ -39,6 +40,8 @@ async def create_client(
     # Check `GlideClientConfiguration` for additional options.
     config = GlideClientConfiguration(
         addresses,
+        # Set request timeout - recommended to configure based on your use case.
+        request_timeout=500,
         # Enable this field if the servers are configured with TLS.
         # use_tls=True
     )
