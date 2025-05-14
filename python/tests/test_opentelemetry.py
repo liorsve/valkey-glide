@@ -14,7 +14,7 @@ from glide import (
     OpenTelemetryMetricsConfig,
     OpenTelemetryTracesConfig,
 )
-from glide.async_commands.batch import Batch, ClusterBatch
+from glide.commands.batch import Batch, ClusterBatch
 from glide.config import ProtocolVersion
 from glide.opentelemetry import OpenTelemetry
 from tests.conftest import create_client

@@ -4,15 +4,11 @@ from __future__ import annotations
 
 from typing import Dict, List, Mapping, Optional, Union, cast
 
-from glide.async_commands.batch import ClusterBatch
-from glide.async_commands.batch_options import ClusterBatchOptions
-from glide.async_commands.command_args import ObjectType
-from glide.async_commands.core import (
-    CoreCommands,
-    FlushMode,
-    FunctionRestorePolicy,
-    InfoSection,
-)
+from glide.commands.async_commands.core import CoreCommands
+from glide.commands.batch import ClusterBatch
+from glide.commands.batch_options import ClusterBatchOptions
+from glide.commands.command_args import ObjectType
+from glide.commands.core_options import FlushMode, FunctionRestorePolicy, InfoSection
 from glide.constants import (
     TOK,
     TClusterResponse,
@@ -25,7 +21,7 @@ from glide.exceptions import RequestError
 from glide.protobuf.command_request_pb2 import RequestType
 from glide.routes import Route
 
-from ..glide import ClusterScanCursor, Script
+from ...glide import ClusterScanCursor, Script
 
 
 class ClusterCommands(CoreCommands):
