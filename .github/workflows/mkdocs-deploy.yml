@@ -1,20 +1,22 @@
 name: Deploy mkdocs website to GitHub Pages
 
 on:
-    push:
-        branches:
-            - main
-        paths:
-            - python/**
-            - node/**
-            - docs/**
-            - .github/workflows/mkdocs-deploy.yml
     workflow_dispatch:
+        inputs:
+                version:
+                    description: 'Documentation version (e.g., 1.0.0)'
+                    required: true
+                    type: string
+
+                set_default:
+                    description: 'Set as default version'
+                    required: false
+                    type: boolean
+                    default: false
 
 jobs:
     build-and-deploy-docs:
         runs-on: ubuntu-latest
-        if: github.repository_owner == 'valkey-io'
 
         steps:
             - name: Checkout your branch
@@ -30,5 +32,19 @@ jobs:
               with:
                   github-token: ${{ secrets.GITHUB_TOKEN }}
 
+            - name: Fetch gh-pages branch
+              run: git fetch origin gh-pages --depth=1
+
+            - name: Configure Git for mike
+              run: |
+                git config --global user.name "GitHub Actions"
+                git config --global user.email "actions@github.com"
+
+            - name: Set version and set_default variables
+              run: |
+                echo "DOCS_VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+                echo "DOCS_SET_DEFAULT=false" >> $GITHUB_ENV
+
+
             - name: Install dependencies and build docs
-              run: ./docs/build-docs.sh gh-deploy --force
+              run: ./docs/build-docs.sh deploy
