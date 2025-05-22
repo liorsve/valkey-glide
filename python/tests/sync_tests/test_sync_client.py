@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -10103,3 +10104,63 @@ class TestClusterRoutes:
         # Negative count
         with pytest.raises(RequestError):
             glide_sync_client.hscan(key2, initial_cursor, count=-1)
+    
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
+    def test_sync_fork(self, glide_sync_client: TGlideClient):
+        try:
+            pid = os.fork()
+        except OSError as e:
+            pytest.fail(f"Fork failed: {e}")
+            
+        if pid == 0:
+            # Child process
+            glide_sync_client.set("key", "value")
+            assert glide_sync_client.get("key") == "value".encode()
+            os._exit(0)
+        else:
+            # Parent process
+            glide_sync_client.set("key", "value")
+            assert glide_sync_client.get("key") == "value".encode()
+            os.waitpid(pid, 0)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize("protocol", [ProtocolVersion.RESP2, ProtocolVersion.RESP3])
+    def test_sync_fork_edge_case(self, glide_sync_client: TGlideClient):
+
+        def hold_lock(lock):
+            print(f"[{os.getpid()}] Holding lock in background thread")
+            with lock:
+                time.sleep(10)
+
+        # Start thread that holds the lock
+        t = threading.Thread(target=hold_lock, args=(glide_sync_client._fork_lock,))
+        t.start()
+
+        # Wait a moment to ensure the lock is acquired
+        time.sleep(0.001)
+        
+        try:
+            pid = os.fork()
+        except OSError as e:
+            pytest.fail(f"Fork failed: {e}")
+        
+        
+        if pid == 0:
+            # Child process
+            print(f"[Child {os.getpid()}] forked while lock was held")
+            try:
+                # The lock should be safely reset by now if the callback worked
+                glide_sync_client.set("key", "value2")
+                assert glide_sync_client.get("key") == b"value2"
+            except Exception as e:
+                print(f"[Child {os.getpid()}] ERROR: {e}")
+                os._exit(1)
+            os._exit(0)
+        else:
+            print(f"[Parent {os.getpid()}] forked")
+            glide_sync_client.set("key", "value")
+            assert glide_sync_client.get("key") == b"value"
+            print(f"[Parent {os.getpid()}] done")
+            os.waitpid(pid, 0)
+            t.join()

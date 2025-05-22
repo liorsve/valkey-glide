@@ -1,6 +1,8 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 
+import os
 import sys
+import threading
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -14,6 +16,7 @@ from glide.exceptions import ClosingError, RequestError
 from glide.glide_client import get_request_error_class
 from glide.protobuf.command_request_pb2 import RequestType
 from glide.routes import Route, build_protobuf_route
+
 
 if sys.version_info >= (3, 11):
     from typing import Self
@@ -48,8 +51,23 @@ class BaseClient(CoreCommands):
         self._init_ffi()
         self.config = config
         self._is_closed = False
-        conn_req = config._create_a_protobuf_conn_request(
-            cluster_mode=type(config) is GlideClusterClientConfiguration
+        self._pid = os.getpid()
+        self._fork_lock = threading.Lock()
+
+
+        os.register_at_fork(after_in_child=self._after_fork_callback)
+
+        self._create_new_core_client()
+
+        return self
+    
+    def _after_fork_callback(self):
+        print (f"reseting fork, {os.getpid()}")
+        self._fork_lock = threading.Lock()
+    
+    def _create_new_core_client(self):
+        conn_req = self.config._create_a_protobuf_conn_request(
+            cluster_mode=type(self.config) is GlideClusterClientConfiguration
         )
         conn_req_bytes = conn_req.SerializeToString()
         client_type = self.ffi.new(
@@ -82,7 +100,6 @@ class BaseClient(CoreCommands):
             self.lib.free_connection_response(client_response_ptr)
         else:
             raise ClosingError("Failed to create client, response pointer is NULL.")
-        return self
 
     def _init_ffi(self):
         self.ffi = FFI()
@@ -330,6 +347,7 @@ class BaseClient(CoreCommands):
             raise ClosingError(
                 "Unable to execute requests; the client is closed. Please create a new client."
             )
+        self._check_fork()
         client_adapter_ptr = self.core_client
         if client_adapter_ptr == self.ffi.NULL:
             raise ValueError("Invalid client pointer.")
@@ -356,6 +374,13 @@ class BaseClient(CoreCommands):
             len(route_bytes),
         )
         return self._handle_cmd_result(result)
+    
+    def _check_fork(self):
+        current_pid = os.getpid()
+        with self._fork_lock:
+            if current_pid != self._pid:
+                self._create_new_core_client()
+                self._parent_pid = current_pid
 
     def close(self):
         if not self._is_closed:
