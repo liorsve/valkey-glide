@@ -17,7 +17,7 @@ from glide import (
 from glide.commands.batch import Batch, ClusterBatch
 from glide.config import ProtocolVersion
 from glide.opentelemetry import OpenTelemetry
-from tests.conftest import create_client
+from tests.async_tests.conftest import create_client
 
 # Constants
 TIMEOUT = 50  # seconds
