@@ -1,6 +1,5 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 
-from glide.commands.async_commands.core import CoreCommands
 from glide.commands.batch import (
     Batch,
     ClusterBatch,
@@ -43,6 +42,7 @@ from glide.commands.core_options import (
     InfoSection,
     InsertPosition,
     OnlyIfEqual,
+    PubSubMsg,
     UpdateOptions,
 )
 from glide.commands.server_modules import ft, glide_json, json_batch
@@ -181,8 +181,6 @@ from .glide import (
     OpenTelemetryTracesConfig,
     Script,
 )
-
-PubSubMsg = CoreCommands.PubSubMsg
 
 __all__ = [
     # Client
