@@ -14,16 +14,20 @@ from glide.config import (
     ServerCredentials,
 )
 from glide.exceptions import ClosingError
+from glide.logger import Logger
 from glide.sync import GlideClient as SyncGlideClient
 from glide.sync import GlideClusterClient as SyncGlideClusterClient
 from glide.sync import TGlideClient as TSyncGlideClient
 from tests.utils.cluster import ValkeyCluster
 from tests.utils.utils import (
+    DEFAULT_TEST_LOG_LEVEL,
     NEW_PASSWORD,
     auth_client,
     config_set_new_password,
     create_client_config,
 )
+
+Logger.set_logger_config(DEFAULT_TEST_LOG_LEVEL)
 
 
 @pytest.fixture(scope="function")

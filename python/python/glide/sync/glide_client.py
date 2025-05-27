@@ -14,6 +14,8 @@ from glide.config import BaseClientConfiguration, GlideClusterClientConfiguratio
 from glide.constants import OK, TEncodable, TResult
 from glide.exceptions import ClosingError, RequestError
 from glide.glide_client import get_request_error_class
+from glide.logger import Level
+from glide.logger import Logger as ClientLogger
 from glide.protobuf.command_request_pb2 import RequestType
 from glide.routes import Route, build_protobuf_route
 
@@ -71,6 +73,8 @@ class BaseClient(CoreCommands):
         client_response_ptr = self.lib.create_client(
             conn_req_bytes, len(conn_req_bytes), client_type
         )
+        ClientLogger.log(Level.INFO, "connection info", "new connection established")
+
         # Handle the connection response
         if client_response_ptr != self.ffi.NULL:
             client_response = self._try_ffi_cast(
@@ -183,7 +187,7 @@ class BaseClient(CoreCommands):
                 unsigned long arg_count, const size_t *args, const unsigned long* args_len,
                 const unsigned char* route_bytes, size_t route_bytes_len
             );
-
+            
         """
         )
 
