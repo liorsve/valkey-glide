@@ -1,7 +1,18 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 from typing import Dict, List, Mapping, Optional, Protocol, Set, Tuple, Union, cast
 
-from glide.commands.bitmap import (
+from glide.constants import (
+    TOK,
+    TEncodable,
+    TResult,
+    TXInfoStreamFullResponse,
+    TXInfoStreamResponse,
+)
+from glide.exceptions import RequestError
+from glide.glide import ClusterScanCursor
+from glide.protobuf.command_request_pb2 import RequestType
+from glide.routes import Route
+from glide.shared.commands.bitmap import (
     BitFieldGet,
     BitFieldSubCommands,
     BitwiseOperation,
@@ -9,18 +20,19 @@ from glide.commands.bitmap import (
     _create_bitfield_args,
     _create_bitfield_read_only_args,
 )
-from glide.commands.command_args import Limit, ListDirection, ObjectType, OrderBy
-from glide.commands.core_options import (
+from glide.shared.commands.command_args import Limit, ListDirection, ObjectType, OrderBy
+from glide.shared.commands.core_options import (
     ConditionalChange,
     ExpireOptions,
     ExpiryGetEx,
     ExpirySet,
     InsertPosition,
     OnlyIfEqual,
+    PubSubMsg,
     UpdateOptions,
     _build_sort_args,
 )
-from glide.commands.sorted_set import (
+from glide.shared.commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
     GeoSearchByRadius,
@@ -38,7 +50,7 @@ from glide.commands.sorted_set import (
     _create_zinter_zunion_cmd_args,
     _create_zrange_args,
 )
-from glide.commands.stream import (
+from glide.shared.commands.stream import (
     StreamAddOptions,
     StreamClaimOptions,
     StreamGroupOptions,
@@ -49,28 +61,17 @@ from glide.commands.stream import (
     StreamTrimOptions,
     _create_xpending_range_args,
 )
-from glide.constants import (
-    TOK,
-    TEncodable,
-    TResult,
-    TXInfoStreamFullResponse,
-    TXInfoStreamResponse,
-)
-from glide.protobuf.command_request_pb2 import RequestType
-from glide.routes import Route
-
-from ...glide import ClusterScanCursor
 
 
 class CoreCommands(Protocol):
-    def _execute_command(
+    async def _execute_command(
         self,
         request_type: RequestType.ValueType,
         args: List[TEncodable],
         route: Optional[Route] = ...,
     ) -> TResult: ...
 
-    def _execute_batch(
+    async def _execute_batch(
         self,
         commands: List[Tuple[RequestType.ValueType, List[TEncodable]]],
         is_atomic: bool,
@@ -81,7 +82,7 @@ class CoreCommands(Protocol):
         timeout: Optional[int] = None,
     ) -> List[TResult]: ...
 
-    def _execute_script(
+    async def _execute_script(
         self,
         hash: str,
         keys: Optional[List[TEncodable]] = None,
@@ -89,7 +90,7 @@ class CoreCommands(Protocol):
         route: Optional[Route] = None,
     ) -> TResult: ...
 
-    def _cluster_scan(
+    async def _cluster_scan(
         self,
         cursor: ClusterScanCursor,
         match: Optional[TEncodable] = ...,
@@ -98,11 +99,11 @@ class CoreCommands(Protocol):
         allow_non_covered_slots: bool = ...,
     ) -> TResult: ...
 
-    def _update_connection_password(
+    async def _update_connection_password(
         self, password: Optional[str], immediate_auth: bool
     ) -> TResult: ...
 
-    def update_connection_password(
+    async def update_connection_password(
         self, password: Optional[str], immediate_auth=False
     ) -> TOK:
         """
@@ -130,12 +131,14 @@ class CoreCommands(Protocol):
             TOK: A simple OK response. If `immediate_auth=True` returns OK if the reauthenticate succeed.
 
         Example:
-            >>> client.update_connection_password("new_password", immediate_auth=True)
+            >>> await client.update_connection_password("new_password", immediate_auth=True)
             'OK'
         """
-        return cast(TOK, self._update_connection_password(password, immediate_auth))
+        return cast(
+            TOK, await self._update_connection_password(password, immediate_auth)
+        )
 
-    def set(
+    async def set(
         self,
         key: TEncodable,
         value: TEncodable,
@@ -167,11 +170,11 @@ class CoreCommands(Protocol):
             If return_old_value is set, return the old value as a bytes string.
 
         Example:
-            >>> client.set(b"key", b"value")
+            >>> await client.set(b"key", b"value")
                 'OK'
                 # ONLY_IF_EXISTS -> Only set the key if it already exists
                 # expiry -> Set the amount of time until key expires
-            >>> client.set(
+            >>> await client.set(
             ...     "key",
             ...     "new_value",
             ...     conditional_set=ConditionalChange.ONLY_IF_EXISTS,
@@ -179,25 +182,25 @@ class CoreCommands(Protocol):
             ... )
                 'OK' # Set "new_value" to "key" only if "key" already exists, and set the key expiration to 5 seconds.
                 # ONLY_IF_DOES_NOT_EXIST -> Only set key if it does not already exist
-            >>> client.set(
+            >>> await client.set(
             ...     "key",
             ...     "value",
             ...     conditional_set=ConditionalChange.ONLY_IF_DOES_NOT_EXIST,
             ...     return_old_value=True
             ... )
                 b'new_value' # Returns the old value of "key".
-            >>> client.get("key")
+            >>> await client.get("key")
                 b'new_value' # Value wasn't modified back to being "value" because of "NX" flag.
                 # ONLY_IF_EQUAL -> Only set key if provided value is equal to current value of the key
-            >>> client.set("key", "value")
+            >>> await client.set("key", "value")
                 'OK' # Reset "key" to "value"
-            >>> client.set("key", "new_value", conditional_set=OnlyIfEqual("different_value")
+            >>> await client.set("key", "new_value", conditional_set=OnlyIfEqual("different_value")
                 'None' # Did not rewrite value of "key" because provided value was not equal to the previous value of "key"
-            >>> client.get("key")
+            >>> await client.get("key")
                 b'value' # Still the original value because nothing got rewritten in the last call
-            >>> client.set("key", "new_value", conditional_set=OnlyIfEqual("value")
+            >>> await client.set("key", "new_value", conditional_set=OnlyIfEqual("value")
                 'OK'
-            >>> client.get("key")
+            >>> await client.get("key")
                 b'newest_value" # Set "key" to "new_value" because the provided value was equal to the previous value of "key"
         """
         args = [key, value]
@@ -211,11 +214,11 @@ class CoreCommands(Protocol):
             args.append("GET")
         if expiry is not None:
             args.extend(expiry.get_cmd_args())
-        return cast(Optional[bytes], self._execute_command(RequestType.Set, args))
+        return cast(Optional[bytes], await self._execute_command(RequestType.Set, args))
 
-    def get(self, key: TEncodable) -> Optional[bytes]:
+    async def get(self, key: TEncodable) -> Optional[bytes]:
         """
-        Get the value associated with the given key, or null if no such value exists.
+        Get the value associated with the given key, or null if no such key exists.
 
         See [valkey.io](https://valkey.io/commands/get/) for details.
 
@@ -228,13 +231,13 @@ class CoreCommands(Protocol):
             Otherwise, return None.
 
         Example:
-            >>> client.get("key")
+            >>> await client.get("key")
                 b'value'
         """
         args: List[TEncodable] = [key]
-        return cast(Optional[bytes], self._execute_command(RequestType.Get, args))
+        return cast(Optional[bytes], await self._execute_command(RequestType.Get, args))
 
-    def getdel(self, key: TEncodable) -> Optional[bytes]:
+    async def getdel(self, key: TEncodable) -> Optional[bytes]:
         """
         Gets a value associated with the given string `key` and deletes the key.
 
@@ -249,15 +252,17 @@ class CoreCommands(Protocol):
             Otherwise, returns `None`.
 
         Examples:
-            >>> client.set("key", "value")
-            >>> client.getdel("key")
+            >>> await client.set("key", "value")
+            >>> await client.getdel("key")
                 b'value'
-            >>> client.getdel("key")
+            >>> await client.getdel("key")
                 None
         """
-        return cast(Optional[bytes], self._execute_command(RequestType.GetDel, [key]))
+        return cast(
+            Optional[bytes], await self._execute_command(RequestType.GetDel, [key])
+        )
 
-    def getrange(self, key: TEncodable, start: int, end: int) -> bytes:
+    async def getrange(self, key: TEncodable, start: int, end: int) -> bytes:
         """
         Returns the substring of the value stored at `key`, determined by the offsets `start` and `end` (both are inclusive).
         Negative offsets can be used in order to provide an offset starting from the end of the value.
@@ -277,22 +282,24 @@ class CoreCommands(Protocol):
             bytes: A substring extracted from the value stored at `key`.
 
         Examples:
-            >>> client.set("mykey", "This is a string")
-            >>> client.getrange("mykey", 0, 3)
+            >>> await client.set("mykey", "This is a string")
+            >>> await client.getrange("mykey", 0, 3)
                 b"This"
-            >>> client.getrange("mykey", -3, -1)
+            >>> await client.getrange("mykey", -3, -1)
                 b"ing"  # extracted last 3 characters of a string
-            >>> client.getrange("mykey", 0, 100)
+            >>> await client.getrange("mykey", 0, 100)
                 b"This is a string"
-            >>> client.getrange("non_existing", 5, 6)
+            >>> await client.getrange("non_existing", 5, 6)
                 b""
         """
         return cast(
             bytes,
-            self._execute_command(RequestType.GetRange, [key, str(start), str(end)]),
+            await self._execute_command(
+                RequestType.GetRange, [key, str(start), str(end)]
+            ),
         )
 
-    def append(self, key: TEncodable, value: TEncodable) -> int:
+    async def append(self, key: TEncodable, value: TEncodable) -> int:
         """
         Appends a value to a key.
 
@@ -309,18 +316,18 @@ class CoreCommands(Protocol):
             int: The length of the stored value after appending `value`.
 
         Examples:
-            >>> client.append("key", "Hello")
+            >>> await client.append("key", "Hello")
                 5  # Indicates that "Hello" has been appended to the value of "key", which was initially empty, resulting in a
                    # new value of "Hello" with a length of 5 - similar to the set operation.
-            >>> client.append("key", " world")
+            >>> await client.append("key", " world")
                 11  # Indicates that " world" has been appended to the value of "key", resulting in a new value of
                     # "Hello world" with a length of 11.
-            >>> client.get("key")
+            >>> await client.get("key")
                 b"Hello world"  # Returns the value stored in "key", which is now "Hello world".
         """
-        return cast(int, self._execute_command(RequestType.Append, [key, value]))
+        return cast(int, await self._execute_command(RequestType.Append, [key, value]))
 
-    def strlen(self, key: TEncodable) -> int:
+    async def strlen(self, key: TEncodable) -> int:
         """
         Get the length of the string value stored at `key`.
 
@@ -335,14 +342,14 @@ class CoreCommands(Protocol):
             If `key` does not exist, it is treated as an empty string and 0 is returned.
 
         Examples:
-            >>> client.set("key", "GLIDE")
-            >>> client.strlen("key")
+            >>> await client.set("key", "GLIDE")
+            >>> await client.strlen("key")
                 5  # Indicates that the length of the string value stored at `key` is 5.
         """
         args: List[TEncodable] = [key]
-        return cast(int, self._execute_command(RequestType.Strlen, args))
+        return cast(int, await self._execute_command(RequestType.Strlen, args))
 
-    def rename(self, key: TEncodable, new_key: TEncodable) -> TOK:
+    async def rename(self, key: TEncodable, new_key: TEncodable) -> TOK:
         """
         Renames `key` to `new_key`.
         If `newkey` already exists it is overwritten.
@@ -361,9 +368,11 @@ class CoreCommands(Protocol):
 
             If `key` does not exist, an error is thrown.
         """
-        return cast(TOK, self._execute_command(RequestType.Rename, [key, new_key]))
+        return cast(
+            TOK, await self._execute_command(RequestType.Rename, [key, new_key])
+        )
 
-    def renamenx(self, key: TEncodable, new_key: TEncodable) -> bool:
+    async def renamenx(self, key: TEncodable, new_key: TEncodable) -> bool:
         """
         Renames `key` to `new_key` if `new_key` does not yet exist.
 
@@ -382,15 +391,15 @@ class CoreCommands(Protocol):
             False if `new_key` already exists.
 
         Examples:
-            >>> client.renamenx("old_key", "new_key")
+            >>> await client.renamenx("old_key", "new_key")
                 True  # "old_key" was renamed to "new_key"
         """
         return cast(
             bool,
-            self._execute_command(RequestType.RenameNX, [key, new_key]),
+            await self._execute_command(RequestType.RenameNX, [key, new_key]),
         )
 
-    def delete(self, keys: List[TEncodable]) -> int:
+    async def delete(self, keys: List[TEncodable]) -> int:
         """
         Delete one or more keys from the database. A key is ignored if it does not exist.
 
@@ -412,15 +421,15 @@ class CoreCommands(Protocol):
             int: The number of keys that were deleted.
 
         Examples:
-            >>> client.set("key", "value")
-            >>> client.delete(["key"])
+            >>> await client.set("key", "value")
+            >>> await client.delete(["key"])
                 1 # Indicates that the key was successfully deleted.
-            >>> client.delete(["key"])
+            >>> await client.delete(["key"])
                 0 # No keys we're deleted since "key" doesn't exist.
         """
-        return cast(int, self._execute_command(RequestType.Del, keys))
+        return cast(int, await self._execute_command(RequestType.Del, keys))
 
-    def incr(self, key: TEncodable) -> int:
+    async def incr(self, key: TEncodable) -> int:
         """
         Increments the number stored at `key` by one. If the key does not exist, it is set to 0 before performing the
         operation.
@@ -434,13 +443,13 @@ class CoreCommands(Protocol):
             int: The value of `key` after the increment.
 
         Examples:
-            >>> client.set("key", "10")
-            >>> client.incr("key")
+            >>> await client.set("key", "10")
+            >>> await client.incr("key")
                 11
         """
-        return cast(int, self._execute_command(RequestType.Incr, [key]))
+        return cast(int, await self._execute_command(RequestType.Incr, [key]))
 
-    def incrby(self, key: TEncodable, amount: int) -> int:
+    async def incrby(self, key: TEncodable, amount: int) -> int:
         """
         Increments the number stored at `key` by `amount`. If the key does not exist, it is set to 0 before performing
         the operation.
@@ -455,13 +464,15 @@ class CoreCommands(Protocol):
             int: The value of key after the increment.
 
         Example:
-            >>> client.set("key", "10")
-            >>> client.incrby("key" , 5)
+            >>> await client.set("key", "10")
+            >>> await client.incrby("key" , 5)
                 15
         """
-        return cast(int, self._execute_command(RequestType.IncrBy, [key, str(amount)]))
+        return cast(
+            int, await self._execute_command(RequestType.IncrBy, [key, str(amount)])
+        )
 
-    def incrbyfloat(self, key: TEncodable, amount: float) -> float:
+    async def incrbyfloat(self, key: TEncodable, amount: float) -> float:
         """
         Increment the string representing a floating point number stored at `key` by `amount`.
         By using a negative increment value, the value stored at the `key` is decremented.
@@ -477,16 +488,16 @@ class CoreCommands(Protocol):
             float: The value of key after the increment.
 
         Examples:
-            >>> client.set("key", "10")
-            >>> client.incrbyfloat("key" , 5.5)
+            >>> await client.set("key", "10")
+            >>> await client.incrbyfloat("key" , 5.5)
                 15.55
         """
         return cast(
             float,
-            self._execute_command(RequestType.IncrByFloat, [key, str(amount)]),
+            await self._execute_command(RequestType.IncrByFloat, [key, str(amount)]),
         )
 
-    def setrange(self, key: TEncodable, offset: int, value: TEncodable) -> int:
+    async def setrange(self, key: TEncodable, offset: int, value: TEncodable) -> int:
         """
         Overwrites part of the string stored at `key`, starting at the specified
         `offset`, for the entire length of `value`.
@@ -505,16 +516,18 @@ class CoreCommands(Protocol):
             int: The length of the string stored at `key` after it was modified.
 
         Examples:
-            >>> client.set("key", "Hello World")
-            >>> client.setrange("key", 6, "Glide")
+            >>> await client.set("key", "Hello World")
+            >>> await client.setrange("key", 6, "Glide")
                 11  # The length of the string stored at `key` after it was modified.
         """
         return cast(
             int,
-            self._execute_command(RequestType.SetRange, [key, str(offset), value]),
+            await self._execute_command(
+                RequestType.SetRange, [key, str(offset), value]
+            ),
         )
 
-    def mset(self, key_value_map: Mapping[TEncodable, TEncodable]) -> TOK:
+    async def mset(self, key_value_map: Mapping[TEncodable, TEncodable]) -> TOK:
         """
         Set multiple keys to multiple values in a single atomic operation.
 
@@ -536,15 +549,15 @@ class CoreCommands(Protocol):
             OK: a simple OK response.
 
         Example:
-            >>> client.mset({"key" : "value", "key2": "value2"})
+            >>> await client.mset({"key" : "value", "key2": "value2"})
                 'OK'
         """
         parameters: List[TEncodable] = []
         for pair in key_value_map.items():
             parameters.extend(pair)
-        return cast(TOK, self._execute_command(RequestType.MSet, parameters))
+        return cast(TOK, await self._execute_command(RequestType.MSet, parameters))
 
-    def msetnx(self, key_value_map: Mapping[TEncodable, TEncodable]) -> bool:
+    async def msetnx(self, key_value_map: Mapping[TEncodable, TEncodable]) -> bool:
         """
         Sets multiple keys to values if the key does not exist. The operation is atomic, and if one or
         more keys already exist, the entire operation fails.
@@ -562,9 +575,9 @@ class CoreCommands(Protocol):
             bool: True if all keys were set. False if no key was set.
 
         Examples:
-            >>> client.msetnx({"key1": "value1", "key2": "value2"})
+            >>> await client.msetnx({"key1": "value1", "key2": "value2"})
                 True
-            >>> client.msetnx({"key2": "value4", "key3": "value5"})
+            >>> await client.msetnx({"key2": "value4", "key3": "value5"})
                 False
         """
         parameters: List[TEncodable] = []
@@ -572,10 +585,10 @@ class CoreCommands(Protocol):
             parameters.extend(pair)
         return cast(
             bool,
-            self._execute_command(RequestType.MSetNX, parameters),
+            await self._execute_command(RequestType.MSetNX, parameters),
         )
 
-    def mget(self, keys: List[TEncodable]) -> List[Optional[bytes]]:
+    async def mget(self, keys: List[TEncodable]) -> List[Optional[bytes]]:
         """
         Retrieve the values of multiple keys.
 
@@ -598,16 +611,16 @@ class CoreCommands(Protocol):
             its corresponding value in the list will be None.
 
         Examples:
-            >>> client.set("key1", "value1")
-            >>> client.set("key2", "value2")
-            >>> client.mget(["key1", "key2"])
+            >>> await client.set("key1", "value1")
+            >>> await client.set("key2", "value2")
+            >>> await client.mget(["key1", "key2"])
                 [b'value1' , b'value2']
         """
         return cast(
-            List[Optional[bytes]], self._execute_command(RequestType.MGet, keys)
+            List[Optional[bytes]], await self._execute_command(RequestType.MGet, keys)
         )
 
-    def decr(self, key: TEncodable) -> int:
+    async def decr(self, key: TEncodable) -> int:
         """
         Decrement the number stored at `key` by one. If the key does not exist, it is set to 0 before performing the
         operation.
@@ -621,13 +634,13 @@ class CoreCommands(Protocol):
             int: The value of key after the decrement.
 
         Examples:
-            >>> client.set("key", "10")
-            >>> client.decr("key")
+            >>> await client.set("key", "10")
+            >>> await client.decr("key")
                 9
         """
-        return cast(int, self._execute_command(RequestType.Decr, [key]))
+        return cast(int, await self._execute_command(RequestType.Decr, [key]))
 
-    def decrby(self, key: TEncodable, amount: int) -> int:
+    async def decrby(self, key: TEncodable, amount: int) -> int:
         """
         Decrements the number stored at `key` by `amount`. If the key does not exist, it is set to 0 before performing
         the operation.
@@ -642,13 +655,15 @@ class CoreCommands(Protocol):
             int: The value of key after the decrement.
 
         Example:
-            >>> client.set("key", "10")
-            >>> client.decrby("key" , 5)
+            >>> await client.set("key", "10")
+            >>> await client.decrby("key" , 5)
                 5
         """
-        return cast(int, self._execute_command(RequestType.DecrBy, [key, str(amount)]))
+        return cast(
+            int, await self._execute_command(RequestType.DecrBy, [key, str(amount)])
+        )
 
-    def touch(self, keys: List[TEncodable]) -> int:
+    async def touch(self, keys: List[TEncodable]) -> int:
         """
         Updates the last access time of specified keys.
 
@@ -670,14 +685,14 @@ class CoreCommands(Protocol):
             int: The number of keys that were updated, a key is ignored if it doesn't exist.
 
         Examples:
-            >>> client.set("myKey1", "value1")
-            >>> client.set("myKey2", "value2")
-            >>> client.touch(["myKey1", "myKey2", "nonExistentKey"])
+            >>> await client.set("myKey1", "value1")
+            >>> await client.set("myKey2", "value2")
+            >>> await client.touch(["myKey1", "myKey2", "nonExistentKey"])
                 2  # Last access time of 2 keys has been updated.
         """
-        return cast(int, self._execute_command(RequestType.Touch, keys))
+        return cast(int, await self._execute_command(RequestType.Touch, keys))
 
-    def hset(
+    async def hset(
         self,
         key: TEncodable,
         field_value_map: Mapping[TEncodable, TEncodable],
@@ -696,7 +711,7 @@ class CoreCommands(Protocol):
             int: The number of fields that were added to the hash.
 
         Example:
-            >>> client.hset("my_hash", {"field": "value", "field2": "value2"})
+            >>> await client.hset("my_hash", {"field": "value", "field2": "value2"})
                 2 # Indicates that 2 fields were successfully set in the hash "my_hash".
         """
         field_value_list: List[TEncodable] = [key]
@@ -704,10 +719,10 @@ class CoreCommands(Protocol):
             field_value_list.extend(pair)
         return cast(
             int,
-            self._execute_command(RequestType.HSet, field_value_list),
+            await self._execute_command(RequestType.HSet, field_value_list),
         )
 
-    def hget(self, key: TEncodable, field: TEncodable) -> Optional[bytes]:
+    async def hget(self, key: TEncodable, field: TEncodable) -> Optional[bytes]:
         """
         Retrieves the value associated with `field` in the hash stored at `key`.
 
@@ -723,18 +738,18 @@ class CoreCommands(Protocol):
             Returns None if `field` is not presented in the hash or `key` does not exist.
 
         Examples:
-            >>> client.hset("my_hash", "field", "value")
-            >>> client.hget("my_hash", "field")
+            >>> await client.hset("my_hash", "field", "value")
+            >>> await client.hget("my_hash", "field")
                 b"value"
-            >>> client.hget("my_hash", "nonexistent_field")
+            >>> await client.hget("my_hash", "nonexistent_field")
                 None
         """
         return cast(
             Optional[bytes],
-            self._execute_command(RequestType.HGet, [key, field]),
+            await self._execute_command(RequestType.HGet, [key, field]),
         )
 
-    def hsetnx(
+    async def hsetnx(
         self,
         key: TEncodable,
         field: TEncodable,
@@ -758,17 +773,17 @@ class CoreCommands(Protocol):
             False if the field already existed and was not set.
 
         Examples:
-            >>> client.hsetnx("my_hash", "field", "value")
+            >>> await client.hsetnx("my_hash", "field", "value")
                 True  # Indicates that the field "field" was set successfully in the hash "my_hash".
-            >>> client.hsetnx("my_hash", "field", "new_value")
+            >>> await client.hsetnx("my_hash", "field", "new_value")
                 False # Indicates that the field "field" already existed in the hash "my_hash" and was not set again.
         """
         return cast(
             bool,
-            self._execute_command(RequestType.HSetNX, [key, field, value]),
+            await self._execute_command(RequestType.HSetNX, [key, field, value]),
         )
 
-    def hincrby(self, key: TEncodable, field: TEncodable, amount: int) -> int:
+    async def hincrby(self, key: TEncodable, field: TEncodable, amount: int) -> int:
         """
         Increment or decrement the value of a `field` in the hash stored at `key` by the specified amount.
         By using a negative increment value, the value stored at `field` in the hash stored at `key` is decremented.
@@ -786,15 +801,17 @@ class CoreCommands(Protocol):
             int: The value of the specified field in the hash stored at `key` after the increment or decrement.
 
         Examples:
-            >>> client.hincrby("my_hash", "field1", 5)
+            >>> await client.hincrby("my_hash", "field1", 5)
                 5
         """
         return cast(
             int,
-            self._execute_command(RequestType.HIncrBy, [key, field, str(amount)]),
+            await self._execute_command(RequestType.HIncrBy, [key, field, str(amount)]),
         )
 
-    def hincrbyfloat(self, key: TEncodable, field: TEncodable, amount: float) -> float:
+    async def hincrbyfloat(
+        self, key: TEncodable, field: TEncodable, amount: float
+    ) -> float:
         """
         Increment or decrement the floating-point value stored at `field` in the hash stored at `key` by the specified
         amount.
@@ -813,15 +830,17 @@ class CoreCommands(Protocol):
             float: The value of the specified field in the hash stored at `key` after the increment as a string.
 
         Examples:
-            >>> client.hincrbyfloat("my_hash", "field1", 2.5)
+            >>> await client.hincrbyfloat("my_hash", "field1", 2.5)
                 "2.5"
         """
         return cast(
             float,
-            self._execute_command(RequestType.HIncrByFloat, [key, field, str(amount)]),
+            await self._execute_command(
+                RequestType.HIncrByFloat, [key, field, str(amount)]
+            ),
         )
 
-    def hexists(self, key: TEncodable, field: TEncodable) -> bool:
+    async def hexists(self, key: TEncodable, field: TEncodable) -> bool:
         """
         Check if a field exists in the hash stored at `key`.
 
@@ -837,14 +856,16 @@ class CoreCommands(Protocol):
             `False` if the hash does not contain the field, or if the key does not exist.
 
         Examples:
-            >>> client.hexists("my_hash", "field1")
+            >>> await client.hexists("my_hash", "field1")
                 True
-            >>> client.hexists("my_hash", "nonexistent_field")
+            >>> await client.hexists("my_hash", "nonexistent_field")
                 False
         """
-        return cast(bool, self._execute_command(RequestType.HExists, [key, field]))
+        return cast(
+            bool, await self._execute_command(RequestType.HExists, [key, field])
+        )
 
-    def hgetall(self, key: TEncodable) -> Dict[bytes, bytes]:
+    async def hgetall(self, key: TEncodable) -> Dict[bytes, bytes]:
         """
         Returns all fields and values of the hash stored at `key`.
 
@@ -860,14 +881,16 @@ class CoreCommands(Protocol):
             If `key` does not exist, it returns an empty dictionary.
 
         Examples:
-            >>> client.hgetall("my_hash")
+            >>> await client.hgetall("my_hash")
                 {b"field1": b"value1", b"field2": b"value2"}
         """
         return cast(
-            Dict[bytes, bytes], self._execute_command(RequestType.HGetAll, [key])
+            Dict[bytes, bytes], await self._execute_command(RequestType.HGetAll, [key])
         )
 
-    def hmget(self, key: TEncodable, fields: List[TEncodable]) -> List[Optional[bytes]]:
+    async def hmget(
+        self, key: TEncodable, fields: List[TEncodable]
+    ) -> List[Optional[bytes]]:
         """
         Retrieve the values associated with specified fields in the hash stored at `key`.
 
@@ -884,15 +907,15 @@ class CoreCommands(Protocol):
             If `key` does not exist, it is treated as an empty hash, and the function returns a list of null values.
 
         Examples:
-            >>> client.hmget("my_hash", ["field1", "field2"])
+            >>> await client.hmget("my_hash", ["field1", "field2"])
                 [b"value1", b"value2"]  # A list of values associated with the specified fields.
         """
         return cast(
             List[Optional[bytes]],
-            self._execute_command(RequestType.HMGet, [key] + fields),
+            await self._execute_command(RequestType.HMGet, [key] + fields),
         )
 
-    def hdel(self, key: TEncodable, fields: List[TEncodable]) -> int:
+    async def hdel(self, key: TEncodable, fields: List[TEncodable]) -> int:
         """
         Remove specified fields from the hash stored at `key`.
 
@@ -908,12 +931,12 @@ class CoreCommands(Protocol):
             If `key` does not exist, it is treated as an empty hash, and the function returns 0.
 
         Examples:
-            >>> client.hdel("my_hash", ["field1", "field2"])
+            >>> await client.hdel("my_hash", ["field1", "field2"])
                 2  # Indicates that two fields were successfully removed from the hash.
         """
-        return cast(int, self._execute_command(RequestType.HDel, [key] + fields))
+        return cast(int, await self._execute_command(RequestType.HDel, [key] + fields))
 
-    def hlen(self, key: TEncodable) -> int:
+    async def hlen(self, key: TEncodable) -> int:
         """
         Returns the number of fields contained in the hash stored at `key`.
 
@@ -928,14 +951,14 @@ class CoreCommands(Protocol):
             If `key` holds a value that is not a hash, an error is returned.
 
         Examples:
-            >>> client.hlen("my_hash")
+            >>> await client.hlen("my_hash")
                 3
-            >>> client.hlen("non_existing_key")
+            >>> await client.hlen("non_existing_key")
                 0
         """
-        return cast(int, self._execute_command(RequestType.HLen, [key]))
+        return cast(int, await self._execute_command(RequestType.HLen, [key]))
 
-    def hvals(self, key: TEncodable) -> List[bytes]:
+    async def hvals(self, key: TEncodable) -> List[bytes]:
         """
         Returns all values in the hash stored at `key`.
 
@@ -948,12 +971,12 @@ class CoreCommands(Protocol):
             List[bytes]: A list of values in the hash, or an empty list when the key does not exist.
 
         Examples:
-           >>> client.hvals("my_hash")
+           >>> await client.hvals("my_hash")
                [b"value1", b"value2", b"value3"]  # Returns all the values stored in the hash "my_hash".
         """
-        return cast(List[bytes], self._execute_command(RequestType.HVals, [key]))
+        return cast(List[bytes], await self._execute_command(RequestType.HVals, [key]))
 
-    def hkeys(self, key: TEncodable) -> List[bytes]:
+    async def hkeys(self, key: TEncodable) -> List[bytes]:
         """
         Returns all field names in the hash stored at `key`.
 
@@ -966,12 +989,12 @@ class CoreCommands(Protocol):
             List[bytes]: A list of field names for the hash, or an empty list when the key does not exist.
 
         Examples:
-            >>> client.hkeys("my_hash")
+            >>> await client.hkeys("my_hash")
                 [b"field1", b"field2", b"field3"]  # Returns all the field names stored in the hash "my_hash".
         """
-        return cast(List[bytes], self._execute_command(RequestType.HKeys, [key]))
+        return cast(List[bytes], await self._execute_command(RequestType.HKeys, [key]))
 
-    def hrandfield(self, key: TEncodable) -> Optional[bytes]:
+    async def hrandfield(self, key: TEncodable) -> Optional[bytes]:
         """
         Returns a random field name from the hash value stored at `key`.
 
@@ -986,14 +1009,14 @@ class CoreCommands(Protocol):
             If the hash does not exist or is empty, None will be returned.
 
         Examples:
-            >>> client.hrandfield("my_hash")
+            >>> await client.hrandfield("my_hash")
                 b"field1"  # A random field name stored in the hash "my_hash".
         """
         return cast(
-            Optional[bytes], self._execute_command(RequestType.HRandField, [key])
+            Optional[bytes], await self._execute_command(RequestType.HRandField, [key])
         )
 
-    def hrandfield_count(self, key: TEncodable, count: int) -> List[bytes]:
+    async def hrandfield_count(self, key: TEncodable, count: int) -> List[bytes]:
         """
         Retrieves up to `count` random field names from the hash value stored at `key`.
 
@@ -1012,17 +1035,19 @@ class CoreCommands(Protocol):
             If the hash does not exist or is empty, the response will be an empty list.
 
         Examples:
-            >>> client.hrandfield_count("my_hash", -3)
+            >>> await client.hrandfield_count("my_hash", -3)
                 [b"field1", b"field1", b"field2"]  # Non-distinct, random field names stored in the hash "my_hash".
-            >>> client.hrandfield_count("non_existing_hash", 3)
+            >>> await client.hrandfield_count("non_existing_hash", 3)
                 []  # Empty list
         """
         return cast(
             List[bytes],
-            self._execute_command(RequestType.HRandField, [key, str(count)]),
+            await self._execute_command(RequestType.HRandField, [key, str(count)]),
         )
 
-    def hrandfield_withvalues(self, key: TEncodable, count: int) -> List[List[bytes]]:
+    async def hrandfield_withvalues(
+        self, key: TEncodable, count: int
+    ) -> List[List[bytes]]:
         """
         Retrieves up to `count` random field names along with their values from the hash value stored at `key`.
 
@@ -1042,17 +1067,17 @@ class CoreCommands(Protocol):
             If the hash does not exist or is empty, the response will be an empty list.
 
         Examples:
-            >>> client.hrandfield_withvalues("my_hash", -3)
+            >>> await client.hrandfield_withvalues("my_hash", -3)
                 [[b"field1", b"value1"], [b"field1", b"value1"], [b"field2", b"value2"]]
         """
         return cast(
             List[List[bytes]],
-            self._execute_command(
+            await self._execute_command(
                 RequestType.HRandField, [key, str(count), "WITHVALUES"]
             ),
         )
 
-    def hstrlen(self, key: TEncodable, field: TEncodable) -> int:
+    async def hstrlen(self, key: TEncodable, field: TEncodable) -> int:
         """
         Returns the string length of the value associated with `field` in the hash stored at `key`.
 
@@ -1068,16 +1093,16 @@ class CoreCommands(Protocol):
             0 if `field` or `key` does not exist.
 
         Examples:
-            >>> client.hset("my_hash", "field", "value")
-            >>> client.hstrlen("my_hash", "my_field")
+            >>> await client.hset("my_hash", "field", "value")
+            >>> await client.hstrlen("my_hash", "my_field")
                 5
         """
         return cast(
             int,
-            self._execute_command(RequestType.HStrlen, [key, field]),
+            await self._execute_command(RequestType.HStrlen, [key, field]),
         )
 
-    def lpush(self, key: TEncodable, elements: List[TEncodable]) -> int:
+    async def lpush(self, key: TEncodable, elements: List[TEncodable]) -> int:
         """
         Insert all the specified values at the head of the list stored at `key`.
         `elements` are inserted one after the other to the head of the list, from the leftmost element
@@ -1093,14 +1118,16 @@ class CoreCommands(Protocol):
             int: The length of the list after the push operations.
 
         Examples:
-            >>> client.lpush("my_list", ["value2", "value3"])
+            >>> await client.lpush("my_list", ["value2", "value3"])
                 3 # Indicates that the new length of the list is 3 after the push operation.
-            >>> client.lpush("nonexistent_list", ["new_value"])
+            >>> await client.lpush("nonexistent_list", ["new_value"])
                 1
         """
-        return cast(int, self._execute_command(RequestType.LPush, [key] + elements))
+        return cast(
+            int, await self._execute_command(RequestType.LPush, [key] + elements)
+        )
 
-    def lpushx(self, key: TEncodable, elements: List[TEncodable]) -> int:
+    async def lpushx(self, key: TEncodable, elements: List[TEncodable]) -> int:
         """
         Inserts all the specified values at the head of the list stored at `key`, only if `key` exists and holds a list.
         If `key` is not a list, this performs no operation.
@@ -1115,14 +1142,16 @@ class CoreCommands(Protocol):
             int: The length of the list after the push operation.
 
         Examples:
-            >>> client.lpushx("my_list", ["value1", "value2"])
+            >>> await client.lpushx("my_list", ["value1", "value2"])
                 3 # Indicates that 2 elements we're added to the list "my_list", and the new length of the list is 3.
-            >>> client.lpushx("nonexistent_list", ["new_value"])
+            >>> await client.lpushx("nonexistent_list", ["new_value"])
                 0 # Indicates that the list "nonexistent_list" does not exist, so "new_value" could not be pushed.
         """
-        return cast(int, self._execute_command(RequestType.LPushX, [key] + elements))
+        return cast(
+            int, await self._execute_command(RequestType.LPushX, [key] + elements)
+        )
 
-    def lpop(self, key: TEncodable) -> Optional[bytes]:
+    async def lpop(self, key: TEncodable) -> Optional[bytes]:
         """
         Remove and return the first elements of the list stored at `key`.
         The command pops a single element from the beginning of the list.
@@ -1138,17 +1167,17 @@ class CoreCommands(Protocol):
             If `key` does not exist, None will be returned.
 
         Examples:
-            >>> client.lpop("my_list")
+            >>> await client.lpop("my_list")
                 b"value1"
-            >>> client.lpop("non_exiting_key")
+            >>> await client.lpop("non_exiting_key")
                 None
         """
         return cast(
             Optional[bytes],
-            self._execute_command(RequestType.LPop, [key]),
+            await self._execute_command(RequestType.LPop, [key]),
         )
 
-    def lpop_count(self, key: TEncodable, count: int) -> Optional[List[bytes]]:
+    async def lpop_count(self, key: TEncodable, count: int) -> Optional[List[bytes]]:
         """
         Remove and return up to `count` elements from the list stored at `key`, depending on the list's length.
 
@@ -1164,17 +1193,19 @@ class CoreCommands(Protocol):
             If `key` does not exist, None will be returned.
 
         Examples:
-            >>> client.lpop_count("my_list", 2)
+            >>> await client.lpop_count("my_list", 2)
                 [b"value1", b"value2"]
-            >>> client.lpop_count("non_exiting_key" , 3)
+            >>> await client.lpop_count("non_exiting_key" , 3)
                 None
         """
         return cast(
             Optional[List[bytes]],
-            self._execute_command(RequestType.LPop, [key, str(count)]),
+            await self._execute_command(RequestType.LPop, [key, str(count)]),
         )
 
-    def blpop(self, keys: List[TEncodable], timeout: float) -> Optional[List[bytes]]:
+    async def blpop(
+        self, keys: List[TEncodable], timeout: float
+    ) -> Optional[List[bytes]]:
         """
         Pops an element from the head of the first list that is non-empty, with the given keys being checked in the
         order that they are given. Blocks the connection when there are no elements to pop from any of the given lists.
@@ -1199,15 +1230,15 @@ class CoreCommands(Protocol):
             If no element could be popped and the `timeout` expired, returns None.
 
         Examples:
-            >>> client.blpop(["list1", "list2"], 0.5)
+            >>> await client.blpop(["list1", "list2"], 0.5)
                 [b"list1", b"element"]  # "element" was popped from the head of the list with key "list1"
         """
         return cast(
             Optional[List[bytes]],
-            self._execute_command(RequestType.BLPop, keys + [str(timeout)]),
+            await self._execute_command(RequestType.BLPop, keys + [str(timeout)]),
         )
 
-    def lmpop(
+    async def lmpop(
         self,
         keys: List[TEncodable],
         direction: ListDirection,
@@ -1233,8 +1264,8 @@ class CoreCommands(Protocol):
             `None` if no elements could be popped.
 
         Examples:
-            >>> client.lpush("testKey", ["one", "two", "three"])
-            >>> client.lmpop(["testKey"], ListDirection.LEFT, 2)
+            >>> await client.lpush("testKey", ["one", "two", "three"])
+            >>> await client.lmpop(["testKey"], ListDirection.LEFT, 2)
                {b"testKey": [b"three", b"two"]}
 
         Since: Valkey version 7.0.0.
@@ -1245,10 +1276,10 @@ class CoreCommands(Protocol):
 
         return cast(
             Optional[Mapping[bytes, List[bytes]]],
-            self._execute_command(RequestType.LMPop, args),
+            await self._execute_command(RequestType.LMPop, args),
         )
 
-    def blmpop(
+    async def blmpop(
         self,
         keys: List[TEncodable],
         direction: ListDirection,
@@ -1283,8 +1314,8 @@ class CoreCommands(Protocol):
             `None` if no elements could be popped and the timeout expired.
 
         Examples:
-            >>> client.lpush("testKey", ["one", "two", "three"])
-            >>> client.blmpop(["testKey"], ListDirection.LEFT, 0.1, 2)
+            >>> await client.lpush("testKey", ["one", "two", "three"])
+            >>> await client.blmpop(["testKey"], ListDirection.LEFT, 0.1, 2)
                {b"testKey": [b"three", b"two"]}
 
         Since: Valkey version 7.0.0.
@@ -1295,10 +1326,10 @@ class CoreCommands(Protocol):
 
         return cast(
             Optional[Mapping[bytes, List[bytes]]],
-            self._execute_command(RequestType.BLMPop, args),
+            await self._execute_command(RequestType.BLMPop, args),
         )
 
-    def lrange(self, key: TEncodable, start: int, end: int) -> List[bytes]:
+    async def lrange(self, key: TEncodable, start: int, end: int) -> List[bytes]:
         """
         Retrieve the specified elements of the list stored at `key` within the given range.
         The offsets `start` and `end` are zero-based indexes, with 0 being the first element of the list, 1 being the next
@@ -1322,19 +1353,21 @@ class CoreCommands(Protocol):
             If `key` does not exist an empty list will be returned.
 
         Examples:
-            >>> client.lrange("my_list", 0, 2)
+            >>> await client.lrange("my_list", 0, 2)
                 [b"value1", b"value2", b"value3"]
-            >>> client.lrange("my_list", -2, -1)
+            >>> await client.lrange("my_list", -2, -1)
                 [b"value2", b"value3"]
-            >>> client.lrange("non_exiting_key", 0, 2)
+            >>> await client.lrange("non_exiting_key", 0, 2)
                 []
         """
         return cast(
             List[bytes],
-            self._execute_command(RequestType.LRange, [key, str(start), str(end)]),
+            await self._execute_command(
+                RequestType.LRange, [key, str(start), str(end)]
+            ),
         )
 
-    def lindex(
+    async def lindex(
         self,
         key: TEncodable,
         index: int,
@@ -1358,17 +1391,17 @@ class CoreCommands(Protocol):
             If `index` is out of range or if `key` does not exist, None is returned.
 
         Examples:
-            >>> client.lindex("my_list", 0)
+            >>> await client.lindex("my_list", 0)
                 b'value1'  # Returns the first element in the list stored at 'my_list'.
-            >>> client.lindex("my_list", -1)
+            >>> await client.lindex("my_list", -1)
                 b'value3'  # Returns the last element in the list stored at 'my_list'.
         """
         return cast(
             Optional[bytes],
-            self._execute_command(RequestType.LIndex, [key, str(index)]),
+            await self._execute_command(RequestType.LIndex, [key, str(index)]),
         )
 
-    def lset(self, key: TEncodable, index: int, element: TEncodable) -> TOK:
+    async def lset(self, key: TEncodable, index: int, element: TEncodable) -> TOK:
         """
         Sets the list element at `index` to `element`.
 
@@ -1387,15 +1420,15 @@ class CoreCommands(Protocol):
             TOK: A simple `OK` response.
 
         Examples:
-            >>> client.lset("testKey", 1, "two")
+            >>> await client.lset("testKey", 1, "two")
                 OK
         """
         return cast(
             TOK,
-            self._execute_command(RequestType.LSet, [key, str(index), element]),
+            await self._execute_command(RequestType.LSet, [key, str(index), element]),
         )
 
-    def rpush(self, key: TEncodable, elements: List[TEncodable]) -> int:
+    async def rpush(self, key: TEncodable, elements: List[TEncodable]) -> int:
         """
         Inserts all the specified values at the tail of the list stored at `key`.
         `elements` are inserted one after the other to the tail of the list, from the leftmost element
@@ -1411,14 +1444,16 @@ class CoreCommands(Protocol):
             int: The length of the list after the push operations.
 
         Examples:
-            >>> client.rpush("my_list", ["value2", "value3"])
+            >>> await client.rpush("my_list", ["value2", "value3"])
                 3 # Indicates that the new length of the list is 3 after the push operation.
-            >>> client.rpush("nonexistent_list", ["new_value"])
+            >>> await client.rpush("nonexistent_list", ["new_value"])
                 1
         """
-        return cast(int, self._execute_command(RequestType.RPush, [key] + elements))
+        return cast(
+            int, await self._execute_command(RequestType.RPush, [key] + elements)
+        )
 
-    def rpushx(self, key: TEncodable, elements: List[TEncodable]) -> int:
+    async def rpushx(self, key: TEncodable, elements: List[TEncodable]) -> int:
         """
         Inserts all the specified values at the tail of the list stored at `key`, only if `key` exists and holds a list.
         If `key` is not a list, this performs no operation.
@@ -1433,14 +1468,16 @@ class CoreCommands(Protocol):
             int: The length of the list after the push operation.
 
         Examples:
-            >>> client.rpushx("my_list", ["value1", "value2"])
+            >>> await client.rpushx("my_list", ["value1", "value2"])
                 3 # Indicates that 2 elements we're added to the list "my_list", and the new length of the list is 3.
-            >>> client.rpushx("nonexistent_list", ["new_value"])
+            >>> await client.rpushx("nonexistent_list", ["new_value"])
                 0 # Indicates that the list "nonexistent_list" does not exist, so "new_value" could not be pushed.
         """
-        return cast(int, self._execute_command(RequestType.RPushX, [key] + elements))
+        return cast(
+            int, await self._execute_command(RequestType.RPushX, [key] + elements)
+        )
 
-    def rpop(self, key: TEncodable) -> Optional[bytes]:
+    async def rpop(self, key: TEncodable) -> Optional[bytes]:
         """
         Removes and returns the last elements of the list stored at `key`.
         The command pops a single element from the end of the list.
@@ -1456,17 +1493,17 @@ class CoreCommands(Protocol):
             If `key` does not exist, None will be returned.
 
         Examples:
-            >>> client.rpop("my_list")
+            >>> await client.rpop("my_list")
                 b"value1"
-            >>> client.rpop("non_exiting_key")
+            >>> await client.rpop("non_exiting_key")
                 None
         """
         return cast(
             Optional[bytes],
-            self._execute_command(RequestType.RPop, [key]),
+            await self._execute_command(RequestType.RPop, [key]),
         )
 
-    def rpop_count(self, key: TEncodable, count: int) -> Optional[List[bytes]]:
+    async def rpop_count(self, key: TEncodable, count: int) -> Optional[List[bytes]]:
         """
         Removes and returns up to `count` elements from the list stored at `key`, depending on the list's length.
 
@@ -1482,17 +1519,19 @@ class CoreCommands(Protocol):
             If `key` does not exist, None will be returned.
 
         Examples:
-            >>> client.rpop_count("my_list", 2)
+            >>> await client.rpop_count("my_list", 2)
                 [b"value1", b"value2"]
-            >>> client.rpop_count("non_exiting_key" , 7)
+            >>> await client.rpop_count("non_exiting_key" , 7)
                 None
         """
         return cast(
             Optional[List[bytes]],
-            self._execute_command(RequestType.RPop, [key, str(count)]),
+            await self._execute_command(RequestType.RPop, [key, str(count)]),
         )
 
-    def brpop(self, keys: List[TEncodable], timeout: float) -> Optional[List[bytes]]:
+    async def brpop(
+        self, keys: List[TEncodable], timeout: float
+    ) -> Optional[List[bytes]]:
         """
         Pops an element from the tail of the first list that is non-empty, with the given keys being checked in the
         order that they are given. Blocks the connection when there are no elements to pop from any of the given lists.
@@ -1517,15 +1556,15 @@ class CoreCommands(Protocol):
             If no element could be popped and the `timeout` expired, returns None.
 
         Examples:
-            >>> client.brpop(["list1", "list2"], 0.5)
+            >>> await client.brpop(["list1", "list2"], 0.5)
                 [b"list1", b"element"]  # "element" was popped from the tail of the list with key "list1"
         """
         return cast(
             Optional[List[bytes]],
-            self._execute_command(RequestType.BRPop, keys + [str(timeout)]),
+            await self._execute_command(RequestType.BRPop, keys + [str(timeout)]),
         )
 
-    def linsert(
+    async def linsert(
         self,
         key: TEncodable,
         position: InsertPosition,
@@ -1552,17 +1591,17 @@ class CoreCommands(Protocol):
             If the `pivot` wasn't found, returns `0`.
 
         Examples:
-            >>> client.linsert("my_list", InsertPosition.BEFORE, "World", "There")
+            >>> await client.linsert("my_list", InsertPosition.BEFORE, "World", "There")
                 3 # "There" was inserted before "World", and the new length of the list is 3.
         """
         return cast(
             int,
-            self._execute_command(
+            await self._execute_command(
                 RequestType.LInsert, [key, position.value, pivot, element]
             ),
         )
 
-    def lmove(
+    async def lmove(
         self,
         source: TEncodable,
         destination: TEncodable,
@@ -1594,24 +1633,24 @@ class CoreCommands(Protocol):
         Examples:
             >>> client.lpush("testKey1", ["two", "one"])
             >>> client.lpush("testKey2", ["four", "three"])
-            >>> client.lmove("testKey1", "testKey2", ListDirection.LEFT, ListDirection.LEFT)
+            >>> await client.lmove("testKey1", "testKey2", ListDirection.LEFT, ListDirection.LEFT)
                 b"one"
-            >>> updated_array1 = client.lrange("testKey1", 0, -1)
+            >>> updated_array1 = await client.lrange("testKey1", 0, -1)
                 [b"two"]
-            >>> client.lrange("testKey2", 0, -1)
+            >>> await client.lrange("testKey2", 0, -1)
                 [b"one", b"three", b"four"]
 
         Since: Valkey version 6.2.0.
         """
         return cast(
             Optional[bytes],
-            self._execute_command(
+            await self._execute_command(
                 RequestType.LMove,
                 [source, destination, where_from.value, where_to.value],
             ),
         )
 
-    def blmove(
+    async def blmove(
         self,
         source: TEncodable,
         destination: TEncodable,
@@ -1649,26 +1688,26 @@ class CoreCommands(Protocol):
             `None` if `source` does not exist or if the operation timed-out.
 
         Examples:
-            >>> client.lpush("testKey1", ["two", "one"])
-            >>> client.lpush("testKey2", ["four", "three"])
-            >>> client.blmove("testKey1", "testKey2", ListDirection.LEFT, ListDirection.LEFT, 0.1)
+            >>> await client.lpush("testKey1", ["two", "one"])
+            >>> await client.lpush("testKey2", ["four", "three"])
+            >>> await client.blmove("testKey1", "testKey2", ListDirection.LEFT, ListDirection.LEFT, 0.1)
                 b"one"
-            >>> client.lrange("testKey1", 0, -1)
+            >>> await client.lrange("testKey1", 0, -1)
                 [b"two"]
-            >>> updated_array2 = client.lrange("testKey2", 0, -1)
+            >>> updated_array2 = await client.lrange("testKey2", 0, -1)
                 [b"one", b"three", bb"four"]
 
         Since: Valkey version 6.2.0.
         """
         return cast(
             Optional[bytes],
-            self._execute_command(
+            await self._execute_command(
                 RequestType.BLMove,
                 [source, destination, where_from.value, where_to.value, str(timeout)],
             ),
         )
 
-    def sadd(self, key: TEncodable, members: List[TEncodable]) -> int:
+    async def sadd(self, key: TEncodable, members: List[TEncodable]) -> int:
         """
         Add specified members to the set stored at `key`.
         Specified members that are already a member of this set are ignored.
@@ -1684,12 +1723,12 @@ class CoreCommands(Protocol):
             int: The number of members that were added to the set, excluding members already present.
 
         Examples:
-            >>> client.sadd("my_set", ["member1", "member2"])
+            >>> await client.sadd("my_set", ["member1", "member2"])
                 2
         """
-        return cast(int, self._execute_command(RequestType.SAdd, [key] + members))
+        return cast(int, await self._execute_command(RequestType.SAdd, [key] + members))
 
-    def srem(self, key: TEncodable, members: List[TEncodable]) -> int:
+    async def srem(self, key: TEncodable, members: List[TEncodable]) -> int:
         """
         Remove specified members from the set stored at `key`.
         Specified members that are not a member of this set are ignored.
@@ -1706,12 +1745,12 @@ class CoreCommands(Protocol):
             If `key` does not exist, it is treated as an empty set and this command returns 0.
 
         Examples:
-            >>> client.srem("my_set", ["member1", "member2"])
+            >>> await client.srem("my_set", ["member1", "member2"])
                 2
         """
-        return cast(int, self._execute_command(RequestType.SRem, [key] + members))
+        return cast(int, await self._execute_command(RequestType.SRem, [key] + members))
 
-    def smembers(self, key: TEncodable) -> Set[bytes]:
+    async def smembers(self, key: TEncodable) -> Set[bytes]:
         """
         Retrieve all the members of the set value stored at `key`.
 
@@ -1726,12 +1765,14 @@ class CoreCommands(Protocol):
             If `key` does not exist an empty set will be returned.
 
         Examples:
-            >>> client.smembers("my_set")
+            >>> await client.smembers("my_set")
                 {b"member1", b"member2", b"member3"}
         """
-        return cast(Set[bytes], self._execute_command(RequestType.SMembers, [key]))
+        return cast(
+            Set[bytes], await self._execute_command(RequestType.SMembers, [key])
+        )
 
-    def scard(self, key: TEncodable) -> int:
+    async def scard(self, key: TEncodable) -> int:
         """
         Retrieve the set cardinality (number of elements) of the set stored at `key`.
 
@@ -1746,12 +1787,12 @@ class CoreCommands(Protocol):
             0 if the key does not exist.
 
         Examples:
-            >>> client.scard("my_set")
+            >>> await client.scard("my_set")
                 3
         """
-        return cast(int, self._execute_command(RequestType.SCard, [key]))
+        return cast(int, await self._execute_command(RequestType.SCard, [key]))
 
-    def spop(self, key: TEncodable) -> Optional[bytes]:
+    async def spop(self, key: TEncodable) -> Optional[bytes]:
         """
         Removes and returns one random member from the set stored at `key`.
 
@@ -1768,14 +1809,16 @@ class CoreCommands(Protocol):
             If `key` does not exist, None will be returned.
 
         Examples:
-            >>> client.spop("my_set")
+            >>> await client.spop("my_set")
                 b"value1" # Removes and returns a random member from the set "my_set".
-            >>> client.spop("non_exiting_key")
+            >>> await client.spop("non_exiting_key")
                 None
         """
-        return cast(Optional[bytes], self._execute_command(RequestType.SPop, [key]))
+        return cast(
+            Optional[bytes], await self._execute_command(RequestType.SPop, [key])
+        )
 
-    def spop_count(self, key: TEncodable, count: int) -> Set[bytes]:
+    async def spop_count(self, key: TEncodable, count: int) -> Set[bytes]:
         """
         Removes and returns up to `count` random members from the set stored at `key`, depending on the set's length.
 
@@ -1793,16 +1836,16 @@ class CoreCommands(Protocol):
             If `key` does not exist, an empty set will be returned.
 
         Examples:
-            >>> client.spop_count("my_set", 2)
+            >>> await client.spop_count("my_set", 2)
                 {b"value1", b"value2"} # Removes and returns 2 random members from the set "my_set".
-            >>> client.spop_count("non_exiting_key", 2)
+            >>> await client.spop_count("non_exiting_key", 2)
                 Set()
         """
         return cast(
-            Set[bytes], self._execute_command(RequestType.SPop, [key, str(count)])
+            Set[bytes], await self._execute_command(RequestType.SPop, [key, str(count)])
         )
 
-    def sismember(
+    async def sismember(
         self,
         key: TEncodable,
         member: TEncodable,
@@ -1822,17 +1865,17 @@ class CoreCommands(Protocol):
             If `key` doesn't exist, it is treated as an empty set and the command returns False.
 
         Examples:
-            >>> client.sismember("my_set", "member1")
+            >>> await client.sismember("my_set", "member1")
                 True  # Indicates that "member1" exists in the set "my_set".
-            >>> client.sismember("my_set", "non_existing_member")
+            >>> await client.sismember("my_set", "non_existing_member")
                 False  # Indicates that "non_existing_member" does not exist in the set "my_set".
         """
         return cast(
             bool,
-            self._execute_command(RequestType.SIsMember, [key, member]),
+            await self._execute_command(RequestType.SIsMember, [key, member]),
         )
 
-    def smove(
+    async def smove(
         self,
         source: TEncodable,
         destination: TEncodable,
@@ -1858,15 +1901,17 @@ class CoreCommands(Protocol):
             `False` if the `source` set does not exist or the element is not a member of the source set.
 
         Examples:
-            >>> client.smove("set1", "set2", "member1")
+            >>> await client.smove("set1", "set2", "member1")
                 True  # "member1" was moved from "set1" to "set2".
         """
         return cast(
             bool,
-            self._execute_command(RequestType.SMove, [source, destination, member]),
+            await self._execute_command(
+                RequestType.SMove, [source, destination, member]
+            ),
         )
 
-    def sunion(self, keys: List[TEncodable]) -> Set[bytes]:
+    async def sunion(self, keys: List[TEncodable]) -> Set[bytes]:
         """
         Gets the union of all the given sets.
 
@@ -1884,16 +1929,16 @@ class CoreCommands(Protocol):
             If none of the sets exist, an empty set will be returned.
 
         Examples:
-            >>> client.sadd("my_set1", ["member1", "member2"])
-            >>> client.sadd("my_set2", ["member2", "member3"])
-            >>> client.sunion(["my_set1", "my_set2"])
+            >>> await client.sadd("my_set1", ["member1", "member2"])
+            >>> await client.sadd("my_set2", ["member2", "member3"])
+            >>> await client.sunion(["my_set1", "my_set2"])
                 {b"member1", b"member2", b"member3"} # sets "my_set1" and "my_set2" have three unique members
-            >>> client.sunion(["my_set1", "non_existing_set"])
+            >>> await client.sunion(["my_set1", "non_existing_set"])
                 {b"member1", b"member2"}
         """
-        return cast(Set[bytes], self._execute_command(RequestType.SUnion, keys))
+        return cast(Set[bytes], await self._execute_command(RequestType.SUnion, keys))
 
-    def sunionstore(
+    async def sunionstore(
         self,
         destination: TEncodable,
         keys: List[TEncodable],
@@ -1914,17 +1959,17 @@ class CoreCommands(Protocol):
             int: The number of elements in the resulting set.
 
         Examples:
-            >>> client.sadd("set1", ["member1"])
-            >>> client.sadd("set2", ["member2"])
-            >>> client.sunionstore("my_set", ["set1", "set2"])
+            >>> await client.sadd("set1", ["member1"])
+            >>> await client.sadd("set2", ["member2"])
+            >>> await client.sunionstore("my_set", ["set1", "set2"])
                 2  # Two elements were stored in "my_set", and those two members are the union of "set1" and "set2".
         """
         return cast(
             int,
-            self._execute_command(RequestType.SUnionStore, [destination] + keys),
+            await self._execute_command(RequestType.SUnionStore, [destination] + keys),
         )
 
-    def sdiffstore(self, destination: TEncodable, keys: List[TEncodable]) -> int:
+    async def sdiffstore(self, destination: TEncodable, keys: List[TEncodable]) -> int:
         """
         Stores the difference between the first set and all the successive sets in `keys` into a new set at
         `destination`.
@@ -1942,17 +1987,17 @@ class CoreCommands(Protocol):
             int: The number of elements in the resulting set.
 
         Examples:
-            >>> client.sadd("set1", ["member1", "member2"])
-            >>> client.sadd("set2", ["member1"])
-            >>> client.sdiffstore("set3", ["set1", "set2"])
+            >>> await client.sadd("set1", ["member1", "member2"])
+            >>> await client.sadd("set2", ["member1"])
+            >>> await client.sdiffstore("set3", ["set1", "set2"])
                 1  # Indicates that one member was stored in "set3", and that member is the diff between "set1" and "set2".
         """
         return cast(
             int,
-            self._execute_command(RequestType.SDiffStore, [destination] + keys),
+            await self._execute_command(RequestType.SDiffStore, [destination] + keys),
         )
 
-    def sinter(self, keys: List[TEncodable]) -> Set[bytes]:
+    async def sinter(self, keys: List[TEncodable]) -> Set[bytes]:
         """
         Gets the intersection of all the given sets.
 
@@ -1970,16 +2015,16 @@ class CoreCommands(Protocol):
             If one or more sets do no exist, an empty set will be returned.
 
         Examples:
-            >>> client.sadd("my_set1", ["member1", "member2"])
-            >>> client.sadd("my_set2", ["member2", "member3"])
-            >>> client.sinter(["my_set1", "my_set2"])
+            >>> await client.sadd("my_set1", ["member1", "member2"])
+            >>> await client.sadd("my_set2", ["member2", "member3"])
+            >>> await client.sinter(["my_set1", "my_set2"])
                  {b"member2"} # sets "my_set1" and "my_set2" have one commom member
-            >>> client.sinter([my_set1", "non_existing_set"])
+            >>> await client.sinter([my_set1", "non_existing_set"])
                 None
         """
-        return cast(Set[bytes], self._execute_command(RequestType.SInter, keys))
+        return cast(Set[bytes], await self._execute_command(RequestType.SInter, keys))
 
-    def sinterstore(self, destination: TEncodable, keys: List[TEncodable]) -> int:
+    async def sinterstore(self, destination: TEncodable, keys: List[TEncodable]) -> int:
         """
         Stores the members of the intersection of all given sets specified by `keys` into a new set at `destination`.
 
@@ -1996,17 +2041,19 @@ class CoreCommands(Protocol):
             int: The number of elements in the resulting set.
 
         Examples:
-            >>> client.sadd("my_set1", ["member1", "member2"])
-            >>> client.sadd("my_set2", ["member2", "member3"])
-            >>> client.sinterstore("my_set3", ["my_set1", "my_set2"])
+            >>> await client.sadd("my_set1", ["member1", "member2"])
+            >>> await client.sadd("my_set2", ["member2", "member3"])
+            >>> await client.sinterstore("my_set3", ["my_set1", "my_set2"])
                 1  # One element was stored at "my_set3", and that element is the intersection of "my_set1" and "myset2".
         """
         return cast(
             int,
-            self._execute_command(RequestType.SInterStore, [destination] + keys),
+            await self._execute_command(RequestType.SInterStore, [destination] + keys),
         )
 
-    def sintercard(self, keys: List[TEncodable], limit: Optional[int] = None) -> int:
+    async def sintercard(
+        self, keys: List[TEncodable], limit: Optional[int] = None
+    ) -> int:
         """
         Gets the cardinality of the intersection of all the given sets.
         Optionally, a `limit` can be specified to stop the computation early if the intersection cardinality reaches the
@@ -2025,12 +2072,12 @@ class CoreCommands(Protocol):
             int: The number of elements in the resulting set of the intersection.
 
         Examples:
-            >>> client.sadd("set1", {"a", "b", "c"})
-            >>> client.sadd("set2", {"b", "c", "d"})
-            >>> client.sintercard(["set1", "set2"])
+            >>> await client.sadd("set1", {"a", "b", "c"})
+            >>> await client.sadd("set2", {"b", "c", "d"})
+            >>> await client.sintercard(["set1", "set2"])
             2  # The intersection of "set1" and "set2" contains 2 elements: "b" and "c".
 
-            >>> client.sintercard(["set1", "set2"], limit=1)
+            >>> await client.sintercard(["set1", "set2"], limit=1)
             1  # The computation stops early as the intersection cardinality reaches the limit of 1.
         """
         args: List[TEncodable] = [str(len(keys))]
@@ -2039,10 +2086,10 @@ class CoreCommands(Protocol):
             args += ["LIMIT", str(limit)]
         return cast(
             int,
-            self._execute_command(RequestType.SInterCard, args),
+            await self._execute_command(RequestType.SInterCard, args),
         )
 
-    def sdiff(self, keys: List[TEncodable]) -> Set[bytes]:
+    async def sdiff(self, keys: List[TEncodable]) -> Set[bytes]:
         """
         Computes the difference between the first set and all the successive sets in `keys`.
 
@@ -2060,17 +2107,19 @@ class CoreCommands(Protocol):
             If any of the keys in `keys` do not exist, they are treated as empty sets.
 
         Examples:
-            >>> client.sadd("set1", ["member1", "member2"])
-            >>> client.sadd("set2", ["member1"])
-            >>> client.sdiff("set1", "set2")
+            >>> await client.sadd("set1", ["member1", "member2"])
+            >>> await client.sadd("set2", ["member1"])
+            >>> await client.sdiff("set1", "set2")
                 {b"member2"}  # "member2" is in "set1" but not "set2"
         """
         return cast(
             Set[bytes],
-            self._execute_command(RequestType.SDiff, keys),
+            await self._execute_command(RequestType.SDiff, keys),
         )
 
-    def smismember(self, key: TEncodable, members: List[TEncodable]) -> List[bool]:
+    async def smismember(
+        self, key: TEncodable, members: List[TEncodable]
+    ) -> List[bool]:
         """
         Checks whether each member is contained in the members of the set stored at `key`.
 
@@ -2084,16 +2133,16 @@ class CoreCommands(Protocol):
             List[bool]: A list of bool values, each indicating if the respective member exists in the set.
 
         Examples:
-            >>> client.sadd("set1", ["a", "b", "c"])
-            >>> client.smismember("set1", ["b", "c", "d"])
+            >>> await client.sadd("set1", ["a", "b", "c"])
+            >>> await client.smismember("set1", ["b", "c", "d"])
                 [True, True, False]  # "b" and "c" are members of "set1", but "d" is not.
         """
         return cast(
             List[bool],
-            self._execute_command(RequestType.SMIsMember, [key] + members),
+            await self._execute_command(RequestType.SMIsMember, [key] + members),
         )
 
-    def ltrim(self, key: TEncodable, start: int, end: int) -> TOK:
+    async def ltrim(self, key: TEncodable, start: int, end: int) -> TOK:
         """
         Trim an existing list so that it will contain only the specified range of elements specified.
         The offsets `start` and `end` are zero-based indexes, with 0 being the first element of the list, 1 being the next
@@ -2111,28 +2160,25 @@ class CoreCommands(Protocol):
         Returns:
             TOK: A simple "OK" response.
 
-            If `start` exceeds the end of the list, or if `start` is greater than `end`, the result will be an empty list
-            (which causes `key` to be removed).
+            If `start` exceeds the end of the list, or if `start` is greater than `end`, the list is emptied
+            and the key is removed.
 
             If `end` exceeds the actual end of the list, it will be treated like the last element of the list.
 
             If `key` does not exist, "OK" will be returned without changes to the database.
 
         Examples:
-            >>> client.ltrim("my_list", 0, 1)
+            >>> await client.ltrim("my_list", 0, 1)
                 "OK"  # Indicates that the list has been trimmed to contain elements from 0 to 1.
         """
         return cast(
             TOK,
-            self._execute_command(RequestType.LTrim, [key, str(start), str(end)]),
+            await self._execute_command(RequestType.LTrim, [key, str(start), str(end)]),
         )
 
-    def lrem(self, key: TEncodable, count: int, element: TEncodable) -> int:
+    async def lrem(self, key: TEncodable, count: int, element: TEncodable) -> int:
         """
         Removes the first `count` occurrences of elements equal to `element` from the list stored at `key`.
-        If `count` is positive, it removes elements equal to `element` moving from head to tail.
-        If `count` is negative, it removes elements equal to `element` moving from tail to head.
-        If `count` is 0 or greater than the occurrences of elements equal to `element`, it removes all elements
         equal to `element`.
 
         See [valkey.io](https://valkey.io/commands/lrem/) for more details.
@@ -2140,6 +2186,11 @@ class CoreCommands(Protocol):
         Args:
             key (TEncodable): The key of the list.
             count (int): The count of occurrences of elements equal to `element` to remove.
+
+                - If `count` is positive, it removes elements equal to `element` moving from head to tail.
+                - If `count` is negative, it removes elements equal to `element` moving from tail to head.
+                - If `count` is 0 or greater than the occurrences of elements equal to `element`, it removes all elements
+
             element (TEncodable): The element to remove from the list.
 
         Returns:
@@ -2148,15 +2199,15 @@ class CoreCommands(Protocol):
             If `key` does not exist, 0 is returned.
 
         Examples:
-            >>> client.lrem("my_list", 2, "value")
+            >>> await client.lrem("my_list", 2, "value")
                 2  # Removes the first 2 occurrences of "value" in the list.
         """
         return cast(
             int,
-            self._execute_command(RequestType.LRem, [key, str(count), element]),
+            await self._execute_command(RequestType.LRem, [key, str(count), element]),
         )
 
-    def llen(self, key: TEncodable) -> int:
+    async def llen(self, key: TEncodable) -> int:
         """
         Get the length of the list stored at `key`.
 
@@ -2171,12 +2222,12 @@ class CoreCommands(Protocol):
             If `key` does not exist, it is interpreted as an empty list and 0 is returned.
 
         Examples:
-            >>> client.llen("my_list")
+            >>> await client.llen("my_list")
                 3  # Indicates that there are 3 elements in the list.
         """
-        return cast(int, self._execute_command(RequestType.LLen, [key]))
+        return cast(int, await self._execute_command(RequestType.LLen, [key]))
 
-    def exists(self, keys: List[TEncodable]) -> int:
+    async def exists(self, keys: List[TEncodable]) -> int:
         """
         Returns the number of keys in `keys` that exist in the database.
 
@@ -2199,12 +2250,12 @@ class CoreCommands(Protocol):
             it will be counted multiple times.
 
         Examples:
-            >>> client.exists(["key1", "key2", "key3"])
+            >>> await client.exists(["key1", "key2", "key3"])
                 3  # Indicates that all three keys exist in the database.
         """
-        return cast(int, self._execute_command(RequestType.Exists, keys))
+        return cast(int, await self._execute_command(RequestType.Exists, keys))
 
-    def unlink(self, keys: List[TEncodable]) -> int:
+    async def unlink(self, keys: List[TEncodable]) -> int:
         """
         Unlink (delete) multiple keys from the database.
         A key is ignored if it does not exist.
@@ -2229,12 +2280,12 @@ class CoreCommands(Protocol):
             int: The number of keys that were unlinked.
 
         Examples:
-            >>> client.unlink(["key1", "key2", "key3"])
+            >>> await client.unlink(["key1", "key2", "key3"])
                 3  # Indicates that all three keys were unlinked from the database.
         """
-        return cast(int, self._execute_command(RequestType.Unlink, keys))
+        return cast(int, await self._execute_command(RequestType.Unlink, keys))
 
-    def expire(
+    async def expire(
         self,
         key: TEncodable,
         seconds: int,
@@ -2260,15 +2311,15 @@ class CoreCommands(Protocol):
             operation is skipped due to the provided arguments).
 
         Examples:
-            >>> client.expire("my_key", 60)
+            >>> await client.expire("my_key", 60)
                 True  # Indicates that a timeout of 60 seconds has been set for "my_key."
         """
         args: List[TEncodable] = (
             [key, str(seconds)] if option is None else [key, str(seconds), option.value]
         )
-        return cast(bool, self._execute_command(RequestType.Expire, args))
+        return cast(bool, await self._execute_command(RequestType.Expire, args))
 
-    def expireat(
+    async def expireat(
         self,
         key: TEncodable,
         unix_seconds: int,
@@ -2296,7 +2347,7 @@ class CoreCommands(Protocol):
             operation is skipped due to the provided arguments).
 
         Examples:
-            >>> client.expireAt("my_key", 1672531200, ExpireOptions.HasNoExpiry)
+            >>> await client.expireAt("my_key", 1672531200, ExpireOptions.HasNoExpiry)
                 True
         """
         args = (
@@ -2304,9 +2355,9 @@ class CoreCommands(Protocol):
             if option is None
             else [key, str(unix_seconds), option.value]
         )
-        return cast(bool, self._execute_command(RequestType.ExpireAt, args))
+        return cast(bool, await self._execute_command(RequestType.ExpireAt, args))
 
-    def pexpire(
+    async def pexpire(
         self,
         key: TEncodable,
         milliseconds: int,
@@ -2332,7 +2383,7 @@ class CoreCommands(Protocol):
             operation is skipped due to the provided arguments).
 
         Examples:
-            >>> client.pexpire("my_key", 60000, ExpireOptions.HasNoExpiry)
+            >>> await client.pexpire("my_key", 60000, ExpireOptions.HasNoExpiry)
                 True  # Indicates that a timeout of 60,000 milliseconds has been set for "my_key."
         """
         args = (
@@ -2340,9 +2391,9 @@ class CoreCommands(Protocol):
             if option is None
             else [key, str(milliseconds), option.value]
         )
-        return cast(bool, self._execute_command(RequestType.PExpire, args))
+        return cast(bool, await self._execute_command(RequestType.PExpire, args))
 
-    def pexpireat(
+    async def pexpireat(
         self,
         key: TEncodable,
         unix_milliseconds: int,
@@ -2370,7 +2421,7 @@ class CoreCommands(Protocol):
             operation is skipped due to the provided arguments).
 
         Examples:
-            >>> client.pexpireAt("my_key", 1672531200000, ExpireOptions.HasNoExpiry)
+            >>> await client.pexpireAt("my_key", 1672531200000, ExpireOptions.HasNoExpiry)
                 True
         """
         args = (
@@ -2378,9 +2429,9 @@ class CoreCommands(Protocol):
             if option is None
             else [key, str(unix_milliseconds), option.value]
         )
-        return cast(bool, self._execute_command(RequestType.PExpireAt, args))
+        return cast(bool, await self._execute_command(RequestType.PExpireAt, args))
 
-    def expiretime(self, key: TEncodable) -> int:
+    async def expiretime(self, key: TEncodable) -> int:
         """
         Returns the absolute Unix timestamp (since January 1, 1970) at which
         the given `key` will expire, in seconds.
@@ -2399,20 +2450,20 @@ class CoreCommands(Protocol):
             -1 if `key` exists but has no associated expire.
 
         Examples:
-            >>> client.expiretime("my_key")
+            >>> await client.expiretime("my_key")
                 -2 # 'my_key' doesn't exist.
-            >>> client.set("my_key", "value")
-            >>> client.expiretime("my_key")
+            >>> await client.set("my_key", "value")
+            >>> await client.expiretime("my_key")
                 -1 # 'my_key' has no associate expiration.
-            >>> client.expire("my_key", 60)
-            >>> client.expiretime("my_key")
+            >>> await client.expire("my_key", 60)
+            >>> await client.expiretime("my_key")
                 1718614954
 
         Since: Valkey version 7.0.0.
         """
-        return cast(int, self._execute_command(RequestType.ExpireTime, [key]))
+        return cast(int, await self._execute_command(RequestType.ExpireTime, [key]))
 
-    def pexpiretime(self, key: TEncodable) -> int:
+    async def pexpiretime(self, key: TEncodable) -> int:
         """
         Returns the absolute Unix timestamp (since January 1, 1970) at which
         the given `key` will expire, in milliseconds.
@@ -2430,20 +2481,20 @@ class CoreCommands(Protocol):
             -1 if `key` exists but has no associated expiration.
 
         Examples:
-            >>> client.pexpiretime("my_key")
+            >>> await client.pexpiretime("my_key")
                 -2 # 'my_key' doesn't exist.
-            >>> client.set("my_key", "value")
-            >>> client.pexpiretime("my_key")
+            >>> await client.set("my_key", "value")
+            >>> await client.pexpiretime("my_key")
                 -1 # 'my_key' has no associate expiration.
-            >>> client.expire("my_key", 60)
-            >>> client.pexpiretime("my_key")
+            >>> await client.expire("my_key", 60)
+            >>> await client.pexpiretime("my_key")
                 1718615446670
 
         Since: Valkey version 7.0.0.
         """
-        return cast(int, self._execute_command(RequestType.PExpireTime, [key]))
+        return cast(int, await self._execute_command(RequestType.PExpireTime, [key]))
 
-    def ttl(self, key: TEncodable) -> int:
+    async def ttl(self, key: TEncodable) -> int:
         """
         Returns the remaining time to live of `key` that has a timeout.
 
@@ -2460,16 +2511,16 @@ class CoreCommands(Protocol):
             -1 if `key` exists but has no associated expire.
 
         Examples:
-            >>> client.ttl("my_key")
+            >>> await client.ttl("my_key")
                 3600  # Indicates that "my_key" has a remaining time to live of 3600 seconds.
-            >>> client.ttl("nonexistent_key")
+            >>> await client.ttl("nonexistent_key")
                 -2  # Returns -2 for a non-existing key.
-            >>> client.ttl("key")
+            >>> await client.ttl("key")
                 -1  # Indicates that "key: has no has no associated expire.
         """
-        return cast(int, self._execute_command(RequestType.TTL, [key]))
+        return cast(int, await self._execute_command(RequestType.TTL, [key]))
 
-    def pttl(
+    async def pttl(
         self,
         key: TEncodable,
     ) -> int:
@@ -2489,17 +2540,17 @@ class CoreCommands(Protocol):
             -1 if `key` exists but has no associated expire.
 
         Examples:
-            >>> client.pttl("my_key")
+            >>> await client.pttl("my_key")
                 5000  # Indicates that the key "my_key" has a remaining time to live of 5000 milliseconds.
-            >>> client.pttl("non_existing_key")
+            >>> await client.pttl("non_existing_key")
                 -2  # Indicates that the key "non_existing_key" does not exist.
         """
         return cast(
             int,
-            self._execute_command(RequestType.PTTL, [key]),
+            await self._execute_command(RequestType.PTTL, [key]),
         )
 
-    def persist(
+    async def persist(
         self,
         key: TEncodable,
     ) -> bool:
@@ -2518,15 +2569,15 @@ class CoreCommands(Protocol):
             `True` if the timeout has been removed.
 
         Examples:
-            >>> client.persist("my_key")
+            >>> await client.persist("my_key")
                 True  # Indicates that the timeout associated with the key "my_key" was successfully removed.
         """
         return cast(
             bool,
-            self._execute_command(RequestType.Persist, [key]),
+            await self._execute_command(RequestType.Persist, [key]),
         )
 
-    def type(self, key: TEncodable) -> bytes:
+    async def type(self, key: TEncodable) -> bytes:
         """
         Returns the bytes string representation of the type of the value stored at `key`.
 
@@ -2541,16 +2592,16 @@ class CoreCommands(Protocol):
             Otherwise, a b"none" bytes string is returned.
 
         Examples:
-            >>> client.set("key", "value")
-            >>> client.type("key")
+            >>> await client.set("key", "value")
+            >>> await client.type("key")
                 b'string'
-            >>> client.lpush("key", ["value"])
-            >>> client.type("key")
+            >>> await client.lpush("key", ["value"])
+            >>> await client.type("key")
                 b'list'
         """
-        return cast(bytes, self._execute_command(RequestType.Type, [key]))
+        return cast(bytes, await self._execute_command(RequestType.Type, [key]))
 
-    def xadd(
+    async def xadd(
         self,
         key: TEncodable,
         values: List[Tuple[TEncodable, TEncodable]],
@@ -2574,15 +2625,15 @@ class CoreCommands(Protocol):
             `key` exists.
 
         Example:
-            >>> client.xadd("mystream", [("field", "value"), ("field2", "value2")])
+            >>> await client.xadd("mystream", [("field", "value"), ("field2", "value2")])
                 b"1615957011958-0"  # Example stream entry ID.
-            >>> client.xadd(
+            >>> await client.xadd(
             ...     "non_existing_stream",
             ...     [(field, "foo1"), (field2, "bar1")],
             ...     StreamAddOptions(id="0-1", make_stream=False)
             ... )
                 None  # The key doesn't exist, therefore, None is returned.
-            >>> client.xadd("non_existing_stream", [(field, "foo1"), (field2, "bar1")], StreamAddOptions(id="0-1"))
+            >>> await client.xadd("non_existing_stream", [(field, "foo1"), (field2, "bar1")], StreamAddOptions(id="0-1"))
                 b"0-1"  # Returns the stream id.
         """
         args: List[TEncodable] = [key]
@@ -2592,9 +2643,11 @@ class CoreCommands(Protocol):
             args.append("*")
         args.extend([field for pair in values for field in pair])
 
-        return cast(Optional[bytes], self._execute_command(RequestType.XAdd, args))
+        return cast(
+            Optional[bytes], await self._execute_command(RequestType.XAdd, args)
+        )
 
-    def xdel(self, key: TEncodable, ids: List[TEncodable]) -> int:
+    async def xdel(self, key: TEncodable, ids: List[TEncodable]) -> int:
         """
         Removes the specified entries by id from a stream, and returns the number of entries deleted.
 
@@ -2609,17 +2662,17 @@ class CoreCommands(Protocol):
             `ids`, if the specified `ids` don't exist in the stream.
 
         Examples:
-            >>> client.xdel("key", ["1538561698944-0", "1538561698944-1"])
+            >>> await client.xdel("key", ["1538561698944-0", "1538561698944-1"])
                 2  # Stream marked 2 entries as deleted.
         """
         args: List[TEncodable] = [key]
         args.extend(ids)
         return cast(
             int,
-            self._execute_command(RequestType.XDel, [key] + ids),
+            await self._execute_command(RequestType.XDel, [key] + ids),
         )
 
-    def xtrim(
+    async def xtrim(
         self,
         key: TEncodable,
         options: StreamTrimOptions,
@@ -2639,17 +2692,17 @@ class CoreCommands(Protocol):
             If `key` doesn't exist, 0 is returned.
 
         Example:
-            >>> client.xadd("mystream", [("field", "value"), ("field2", "value2")], StreamAddOptions(id="0-1"))
-            >>> client.xtrim("mystream", TrimByMinId(exact=True, threshold="0-2")))
+            >>> await client.xadd("mystream", [("field", "value"), ("field2", "value2")], StreamAddOptions(id="0-1"))
+            >>> await client.xtrim("mystream", TrimByMinId(exact=True, threshold="0-2")))
                 1 # One entry was deleted from the stream.
         """
         args = [key]
         if options:
             args.extend(options.to_args())
 
-        return cast(int, self._execute_command(RequestType.XTrim, args))
+        return cast(int, await self._execute_command(RequestType.XTrim, args))
 
-    def xlen(self, key: TEncodable) -> int:
+    async def xlen(self, key: TEncodable) -> int:
         """
         Returns the number of entries in the stream stored at `key`.
 
@@ -2664,17 +2717,17 @@ class CoreCommands(Protocol):
             If `key` does not exist, returns 0.
 
         Examples:
-            >>> client.xadd("mystream", [("field", "value")])
-            >>> client.xadd("mystream", [("field2", "value2")])
-            >>> client.xlen("mystream")
+            >>> await client.xadd("mystream", [("field", "value")])
+            >>> await client.xadd("mystream", [("field2", "value2")])
+            >>> await client.xlen("mystream")
                 2  # There are 2 entries in "mystream".
         """
         return cast(
             int,
-            self._execute_command(RequestType.XLen, [key]),
+            await self._execute_command(RequestType.XLen, [key]),
         )
 
-    def xrange(
+    async def xrange(
         self,
         key: TEncodable,
         start: StreamRangeBound,
@@ -2688,31 +2741,31 @@ class CoreCommands(Protocol):
 
         Args:
             key (TEncodable): The key of the stream.
-            start (StreamRangeBound): The starting stream ID bound for the range.
+            start (StreamRangeBound): The starting stream entry ID bound for the range.
 
-                - Use `IdBound` to specify a stream ID.
-                - Use `ExclusiveIdBound` to specify an exclusive bounded stream ID.
+                - Use `IdBound` to specify a stream entry ID.
+                - Since Valkey 6.2.0, use `ExclusiveIdBound` to specify an exclusive bounded stream entry ID.
                 - Use `MinId` to start with the minimum available ID.
 
-            end (StreamRangeBound): The ending stream ID bound for the range.
+            end (StreamRangeBound): The ending stream entry ID bound for the range.
 
-                - Use `IdBound` to specify a stream ID.
-                - Use `ExclusiveIdBound` to specify an exclusive bounded stream ID.
+                - Use `IdBound` to specify a stream entry ID.
+                - Since Valkey 6.2.0, use `ExclusiveIdBound` to specify an exclusive bounded stream entry ID.
                 - Use `MaxId` to end with the maximum available ID.
 
             count (Optional[int]): An optional argument specifying the maximum count of stream entries to return.
                 If `count` is not provided, all stream entries in the range will be returned.
 
         Returns:
-            Optional[Mapping[bytes, List[List[bytes]]]]: A mapping of stream IDs to stream entry data, where entry data is a
+            Optional[Mapping[bytes, List[List[bytes]]]]: A mapping of stream entry IDs to stream entry data, where entry data is a
             list of pairings with format `[[field, entry], [field, entry], ...]`.
 
-            Returns None if the range arguments are not applicable.
+            Returns None if the range arguments are not applicable. Or if count is non-positive.
 
         Examples:
-            >>> client.xadd("mystream", [("field1", "value1")], StreamAddOptions(id="0-1"))
-            >>> client.xadd("mystream", [("field2", "value2"), ("field2", "value3")], StreamAddOptions(id="0-2"))
-            >>> client.xrange("mystream", MinId(), MaxId())
+            >>> await client.xadd("mystream", [("field1", "value1")], StreamAddOptions(id="0-1"))
+            >>> await client.xadd("mystream", [("field2", "value2"), ("field2", "value3")], StreamAddOptions(id="0-2"))
+            >>> await client.xrange("mystream", MinId(), MaxId())
                 {
                     b"0-1": [[b"field1", b"value1"]],
                     b"0-2": [[b"field2", b"value2"], [b"field2", b"value3"]],
@@ -2724,10 +2777,10 @@ class CoreCommands(Protocol):
 
         return cast(
             Optional[Mapping[bytes, List[List[bytes]]]],
-            self._execute_command(RequestType.XRange, args),
+            await self._execute_command(RequestType.XRange, args),
         )
 
-    def xrevrange(
+    async def xrevrange(
         self,
         key: TEncodable,
         end: StreamRangeBound,
@@ -2742,31 +2795,31 @@ class CoreCommands(Protocol):
 
         Args:
             key (TEncodable): The key of the stream.
-            end (StreamRangeBound): The ending stream ID bound for the range.
+            end (StreamRangeBound): The ending stream entry ID bound for the range.
 
-                - Use `IdBound` to specify a stream ID.
-                - Use `ExclusiveIdBound` to specify an exclusive bounded stream ID.
+                - Use `IdBound` to specify a stream entry ID.
+                - Since Valkey 6.2.0, use `ExclusiveIdBound` to specify an exclusive bounded stream entry ID.
                 - Use `MaxId` to end with the maximum available ID.
 
-            start (StreamRangeBound): The starting stream ID bound for the range.
+            start (StreamRangeBound): The starting stream entry ID bound for the range.
 
-                - Use `IdBound` to specify a stream ID.
-                - Use `ExclusiveIdBound` to specify an exclusive bounded stream ID.
+                - Use `IdBound` to specify a stream entry ID.
+                - Since Valkey 6.2.0, use `ExclusiveIdBound` to specify an exclusive bounded stream entry ID.
                 - Use `MinId` to start with the minimum available ID.
 
             count (Optional[int]): An optional argument specifying the maximum count of stream entries to return.
                 If `count` is not provided, all stream entries in the range will be returned.
 
         Returns:
-            Optional[Mapping[bytes, List[List[bytes]]]]: A mapping of stream IDs to stream entry data, where entry data is a
+            Optional[Mapping[bytes, List[List[bytes]]]]: A mapping of stream entry IDs to stream entry data, where entry data is a
             list of pairings with format `[[field, entry], [field, entry], ...]`.
 
-            Returns None if the range arguments are not applicable.
+            Returns None if the range arguments are not applicable. Or if count is non-positive.
 
         Examples:
-            >>> client.xadd("mystream", [("field1", "value1")], StreamAddOptions(id="0-1"))
-            >>> client.xadd("mystream", [("field2", "value2"), ("field2", "value3")], StreamAddOptions(id="0-2"))
-            >>> client.xrevrange("mystream", MaxId(), MinId())
+            >>> await client.xadd("mystream", [("field1", "value1")], StreamAddOptions(id="0-1"))
+            >>> await client.xadd("mystream", [("field2", "value2"), ("field2", "value3")], StreamAddOptions(id="0-2"))
+            >>> await client.xrevrange("mystream", MaxId(), MinId())
                 {
                     "0-2": [["field2", "value2"], ["field2", "value3"]],
                     "0-1": [["field1", "value1"]],
@@ -2778,10 +2831,10 @@ class CoreCommands(Protocol):
 
         return cast(
             Optional[Mapping[bytes, List[List[bytes]]]],
-            self._execute_command(RequestType.XRevRange, args),
+            await self._execute_command(RequestType.XRevRange, args),
         )
 
-    def xread(
+    async def xread(
         self,
         keys_and_ids: Mapping[TEncodable, TEncodable],
         options: Optional[StreamReadOptions] = None,
@@ -2809,9 +2862,9 @@ class CoreCommands(Protocol):
                 - The `BLOCK` option is specified and the timeout is hit.
 
         Examples:
-            >>> client.xadd("mystream", [("field1", "value1")], StreamAddOptions(id="0-1"))
-            >>> client.xadd("mystream", [("field2", "value2"), ("field2", "value3")], StreamAddOptions(id="0-2"))
-            >>> client.xread({"mystream": "0-0"}, StreamReadOptions(block_ms=1000))
+            >>> await client.xadd("mystream", [("field1", "value1")], StreamAddOptions(id="0-1"))
+            >>> await client.xadd("mystream", [("field2", "value2"), ("field2", "value3")], StreamAddOptions(id="0-2"))
+            >>> await client.xread({"mystream": "0-0"}, StreamReadOptions(block_ms=1000))
                 {
                     b"mystream": {
                         b"0-1": [[b"field1", b"value1"]],
@@ -2828,10 +2881,10 @@ class CoreCommands(Protocol):
 
         return cast(
             Optional[Mapping[bytes, Mapping[bytes, List[List[bytes]]]]],
-            self._execute_command(RequestType.XRead, args),
+            await self._execute_command(RequestType.XRead, args),
         )
 
-    def xgroup_create(
+    async def xgroup_create(
         self,
         key: TEncodable,
         group_name: TEncodable,
@@ -2847,14 +2900,14 @@ class CoreCommands(Protocol):
             key (TEncodable): The key of the stream.
             group_name (TEncodable): The newly created consumer group name.
             group_id (TEncodable): The stream entry ID that specifies the last delivered entry in the stream from the new
-                group’s perspective. The special ID "$" can be used to specify the last entry in the stream.
+                group's perspective. The special ID "$" can be used to specify the last entry in the stream.
             options (Optional[StreamGroupOptions]): Options for creating the stream group.
 
         Returns:
             TOK: A simple "OK" response.
 
         Examples:
-            >>> client.xgroup_create("mystream", "mygroup", "$", StreamGroupOptions(make_stream=True))
+            >>> await client.xgroup_create("mystream", "mygroup", "$", StreamGroupOptions(make_stream=True))
                 OK
                 # Created the consumer group "mygroup" for the stream "mystream", which will track entries created after
                 # the most recent entry. The stream was created with length 0 if it did not already exist.
@@ -2865,10 +2918,10 @@ class CoreCommands(Protocol):
 
         return cast(
             TOK,
-            self._execute_command(RequestType.XGroupCreate, args),
+            await self._execute_command(RequestType.XGroupCreate, args),
         )
 
-    def xgroup_destroy(self, key: TEncodable, group_name: TEncodable) -> bool:
+    async def xgroup_destroy(self, key: TEncodable, group_name: TEncodable) -> bool:
         """
         Destroys the consumer group `group_name` for the stream stored at `key`.
 
@@ -2884,15 +2937,15 @@ class CoreCommands(Protocol):
             Otherwise, returns False.
 
         Examples:
-            >>> client.xgroup_destroy("mystream", "mygroup")
+            >>> await client.xgroup_destroy("mystream", "mygroup")
                 True  # The consumer group "mygroup" for stream "mystream" was destroyed.
         """
         return cast(
             bool,
-            self._execute_command(RequestType.XGroupDestroy, [key, group_name]),
+            await self._execute_command(RequestType.XGroupDestroy, [key, group_name]),
         )
 
-    def xgroup_create_consumer(
+    async def xgroup_create_consumer(
         self,
         key: TEncodable,
         group_name: TEncodable,
@@ -2914,17 +2967,17 @@ class CoreCommands(Protocol):
             Otherwise, returns False.
 
         Examples:
-            >>> client.xgroup_create_consumer("mystream", "mygroup", "myconsumer")
+            >>> await client.xgroup_create_consumer("mystream", "mygroup", "myconsumer")
                 True  # The consumer "myconsumer" was created in consumer group "mygroup" for the stream "mystream".
         """
         return cast(
             bool,
-            self._execute_command(
+            await self._execute_command(
                 RequestType.XGroupCreateConsumer, [key, group_name, consumer_name]
             ),
         )
 
-    def xgroup_del_consumer(
+    async def xgroup_del_consumer(
         self,
         key: TEncodable,
         group_name: TEncodable,
@@ -2944,17 +2997,17 @@ class CoreCommands(Protocol):
             int: The number of pending messages the `consumer` had before it was deleted.
 
         Examples:
-            >>> client.xgroup_del_consumer("mystream", "mygroup", "myconsumer")
+            >>> await client.xgroup_del_consumer("mystream", "mygroup", "myconsumer")
                 5  # Consumer "myconsumer" was deleted, and had 5 pending messages unclaimed.
         """
         return cast(
             int,
-            self._execute_command(
+            await self._execute_command(
                 RequestType.XGroupDelConsumer, [key, group_name, consumer_name]
             ),
         )
 
-    def xgroup_set_id(
+    async def xgroup_set_id(
         self,
         key: TEncodable,
         group_name: TEncodable,
@@ -2977,7 +3030,7 @@ class CoreCommands(Protocol):
             TOK: A simple "OK" response.
 
         Examples:
-            >>> client.xgroup_set_id("mystream", "mygroup", "0")
+            >>> await client.xgroup_set_id("mystream", "mygroup", "0")
                 OK  # The last delivered ID for consumer group "mygroup" was set to 0.
         """
         args: List[TEncodable] = [key, group_name, stream_id]
@@ -2986,10 +3039,10 @@ class CoreCommands(Protocol):
 
         return cast(
             TOK,
-            self._execute_command(RequestType.XGroupSetId, args),
+            await self._execute_command(RequestType.XGroupSetId, args),
         )
 
-    def xreadgroup(
+    async def xreadgroup(
         self,
         keys_and_ids: Mapping[TEncodable, TEncodable],
         group_name: TEncodable,
@@ -3018,9 +3071,9 @@ class CoreCommands(Protocol):
             Returns None if the BLOCK option is given and a timeout occurs, or if there is no stream that can be served.
 
         Examples:
-            >>> client.xadd("mystream", [("field1", "value1")], StreamAddOptions(id="1-0"))
-            >>> client.xgroup_create("mystream", "mygroup", "0-0")
-            >>> client.xreadgroup({"mystream": ">"}, "mygroup", "myconsumer", StreamReadGroupOptions(count=1))
+            >>> await client.xadd("mystream", [("field1", "value1")], StreamAddOptions(id="1-0"))
+            >>> await client.xgroup_create("mystream", "mygroup", "0-0")
+            >>> await client.xreadgroup({"mystream": ">"}, "mygroup", "myconsumer", StreamReadGroupOptions(count=1))
                 {
                     b"mystream": {
                         b"1-0": [[b"field1", b"value1"]],
@@ -3037,10 +3090,10 @@ class CoreCommands(Protocol):
 
         return cast(
             Optional[Mapping[bytes, Mapping[bytes, Optional[List[List[bytes]]]]]],
-            self._execute_command(RequestType.XReadGroup, args),
+            await self._execute_command(RequestType.XReadGroup, args),
         )
 
-    def xack(
+    async def xack(
         self,
         key: TEncodable,
         group_name: TEncodable,
@@ -3062,25 +3115,25 @@ class CoreCommands(Protocol):
             int: The number of messages that were successfully acknowledged.
 
         Examples:
-            >>> client.xadd("mystream", [("field1", "value1")], StreamAddOptions(id="1-0"))
-            >>> client.xgroup_create("mystream", "mygroup", "0-0")
-            >>> client.xreadgroup({"mystream": ">"}, "mygroup", "myconsumer")
+            >>> await client.xadd("mystream", [("field1", "value1")], StreamAddOptions(id="1-0"))
+            >>> await client.xgroup_create("mystream", "mygroup", "0-0")
+            >>> await client.xreadgroup({"mystream": ">"}, "mygroup", "myconsumer")
                 {
                     "mystream": {
                         "1-0": [["field1", "value1"]],
                     }
                 }  # Read one stream entry, the entry is now in the Pending Entries List for "mygroup".
-            >>> client.xack("mystream", "mygroup", ["1-0"])
+            >>> await client.xack("mystream", "mygroup", ["1-0"])
                 1  # 1 pending message was acknowledged and removed from the Pending Entries List for "mygroup".
         """
         args: List[TEncodable] = [key, group_name]
         args.extend(ids)
         return cast(
             int,
-            self._execute_command(RequestType.XAck, [key, group_name] + ids),
+            await self._execute_command(RequestType.XAck, [key, group_name] + ids),
         )
 
-    def xpending(
+    async def xpending(
         self,
         key: TEncodable,
         group_name: TEncodable,
@@ -3107,15 +3160,15 @@ class CoreCommands(Protocol):
             If there are no pending messages for the given consumer group, `[0, None, None, None]` will be returned.
 
         Examples:
-            >>> client.xpending("my_stream", "my_group")
+            >>> await client.xpending("my_stream", "my_group")
                 [4, "1-0", "1-3", [["my_consumer1", "3"], ["my_consumer2", "1"]]
         """
         return cast(
             List[Union[int, bytes, List[List[bytes]], None]],
-            self._execute_command(RequestType.XPending, [key, group_name]),
+            await self._execute_command(RequestType.XPending, [key, group_name]),
         )
 
-    def xpending_range(
+    async def xpending_range(
         self,
         key: TEncodable,
         group_name: TEncodable,
@@ -3159,7 +3212,7 @@ class CoreCommands(Protocol):
                 - `num_delivered`: The number of times this message was delivered.
 
         Examples:
-            >>> client.xpending_range(
+            >>> await client.xpending_range(
             ...     "my_stream",
             ...     "my_group",
             ...     MinId(),
@@ -3173,10 +3226,10 @@ class CoreCommands(Protocol):
         args = _create_xpending_range_args(key, group_name, start, end, count, options)
         return cast(
             List[List[Union[bytes, int]]],
-            self._execute_command(RequestType.XPending, args),
+            await self._execute_command(RequestType.XPending, args),
         )
 
-    def xclaim(
+    async def xclaim(
         self,
         key: TEncodable,
         group: TEncodable,
@@ -3208,14 +3261,14 @@ class CoreCommands(Protocol):
         Examples:
             read messages from streamId for consumer1:
 
-            >>> client.xreadgroup({"mystream": ">"}, "mygroup", "consumer1")
+            >>> await client.xreadgroup({"mystream": ">"}, "mygroup", "consumer1")
                 {
                     b"mystream": {
                         b"1-0": [[b"field1", b"value1"]],
                     }
                 }
                 # "1-0" is now read, and we can assign the pending messages to consumer2
-            >>> client.xclaim("mystream", "mygroup", "consumer2", 0, ["1-0"])
+            >>> await client.xclaim("mystream", "mygroup", "consumer2", 0, ["1-0"])
                 {b"1-0": [[b"field1", b"value1"]]}
         """
 
@@ -3226,10 +3279,10 @@ class CoreCommands(Protocol):
 
         return cast(
             Mapping[bytes, List[List[bytes]]],
-            self._execute_command(RequestType.XClaim, args),
+            await self._execute_command(RequestType.XClaim, args),
         )
 
-    def xclaim_just_id(
+    async def xclaim_just_id(
         self,
         key: TEncodable,
         group: TEncodable,
@@ -3258,14 +3311,14 @@ class CoreCommands(Protocol):
         Examples:
             read messages from streamId for consumer1:
 
-            >>> client.xreadgroup({"mystream": ">"}, "mygroup", "consumer1")
+            >>> await client.xreadgroup({"mystream": ">"}, "mygroup", "consumer1")
                 {
                     b"mystream": {
                         b"1-0": [[b"field1", b"value1"]],
                     }
                 }
                 # "1-0" is now read, and we can assign the pending messages to consumer2
-            >>> client.xclaim_just_id("mystream", "mygroup", "consumer2", 0, ["1-0"])
+            >>> await client.xclaim_just_id("mystream", "mygroup", "consumer2", 0, ["1-0"])
                 [b"1-0"]
         """
 
@@ -3283,10 +3336,10 @@ class CoreCommands(Protocol):
 
         return cast(
             List[bytes],
-            self._execute_command(RequestType.XClaim, args),
+            await self._execute_command(RequestType.XClaim, args),
         )
 
-    def xautoclaim(
+    async def xautoclaim(
         self,
         key: TEncodable,
         group_name: TEncodable,
@@ -3307,7 +3360,7 @@ class CoreCommands(Protocol):
             min_idle_time_ms (int): Filters the claimed entries to those that have been idle for more than the specified
                 value.
             start (TEncodable): Filters the claimed entries to those that have an ID equal or greater than the specified value.
-            count (Optional[int]): Limits the number of claimed entries to the specified value.
+            count (Optional[int]): Limits the number of claimed entries to the specified value. Default value is 100.
 
         Returns:
             List[Union[bytes, Mapping[bytes, List[List[bytes]]], List[bytes]]]: A list containing the following elements:
@@ -3324,7 +3377,7 @@ class CoreCommands(Protocol):
         Examples:
             Valkey version < 7.0.0:
 
-            >>> client.xautoclaim("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
+            >>> await client.xautoclaim("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
                 [
                     b"0-0",
                     {
@@ -3339,7 +3392,7 @@ class CoreCommands(Protocol):
 
             Valkey version 7.0.0 and above:
 
-            >>> client.xautoclaim("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
+            >>> await client.xautoclaim("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
                 [
                     b"0-0",
                     {
@@ -3368,10 +3421,10 @@ class CoreCommands(Protocol):
 
         return cast(
             List[Union[bytes, Mapping[bytes, List[List[bytes]]], List[bytes]]],
-            self._execute_command(RequestType.XAutoClaim, args),
+            await self._execute_command(RequestType.XAutoClaim, args),
         )
 
-    def xautoclaim_just_id(
+    async def xautoclaim_just_id(
         self,
         key: TEncodable,
         group_name: TEncodable,
@@ -3394,7 +3447,7 @@ class CoreCommands(Protocol):
             min_idle_time_ms (int): Filters the claimed entries to those that have been idle for more than the specified
                 value.
             start (TEncodable): Filters the claimed entries to those that have an ID equal or greater than the specified value.
-            count (Optional[int]): Limits the number of claimed entries to the specified value.
+            count (Optional[int]): Limits the number of claimed entries to the specified value. Default value is 100.
 
         Returns:
             List[Union[bytes, List[bytes]]]: A list containing the following elements:
@@ -3410,14 +3463,14 @@ class CoreCommands(Protocol):
         Examples:
             Valkey version < 7.0.0:
 
-            >>> client.xautoclaim_just_id("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
+            >>> await client.xautoclaim_just_id("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
                 [b"0-0", [b"1-1"]]
                 # Stream entry "1-1" was idle for over an hour and was thus claimed by "my_consumer". The entire stream
                 # was scanned.
 
             Valkey version 7.0.0 and above:
 
-            >>> client.xautoclaim_just_id("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
+            >>> await client.xautoclaim_just_id("my_stream", "my_group", "my_consumer", 3_600_000, "0-0")
                 [b"0-0", [b"1-1"], [b"1-2"]]
                 # Stream entry "1-1" was idle for over an hour and was thus claimed by "my_consumer". The entire stream
                 # was scanned. Additionally, entry "1-2" was removed from the Pending Entries List because it no longer
@@ -3439,10 +3492,10 @@ class CoreCommands(Protocol):
 
         return cast(
             List[Union[bytes, List[bytes]]],
-            self._execute_command(RequestType.XAutoClaim, args),
+            await self._execute_command(RequestType.XAutoClaim, args),
         )
 
-    def xinfo_groups(
+    async def xinfo_groups(
         self,
         key: TEncodable,
     ) -> List[Mapping[bytes, Union[bytes, int, None]]]:
@@ -3459,7 +3512,7 @@ class CoreCommands(Protocol):
             attributes of a consumer group for the stream at `key`.
 
         Examples:
-            >>> client.xinfo_groups("my_stream")
+            >>> await client.xinfo_groups("my_stream")
                 [
                     {
                         b"name": b"mygroup",
@@ -3482,10 +3535,10 @@ class CoreCommands(Protocol):
         """
         return cast(
             List[Mapping[bytes, Union[bytes, int, None]]],
-            self._execute_command(RequestType.XInfoGroups, [key]),
+            await self._execute_command(RequestType.XInfoGroups, [key]),
         )
 
-    def xinfo_consumers(
+    async def xinfo_consumers(
         self,
         key: TEncodable,
         group_name: TEncodable,
@@ -3505,7 +3558,7 @@ class CoreCommands(Protocol):
             consumer for the given consumer group of the stream at `key`.
 
         Examples:
-            >>> client.xinfo_consumers("my_stream", "my_group")
+            >>> await client.xinfo_consumers("my_stream", "my_group")
                 [
                     {
                         b"name": b"Alice",
@@ -3524,10 +3577,10 @@ class CoreCommands(Protocol):
         """
         return cast(
             List[Mapping[bytes, Union[bytes, int]]],
-            self._execute_command(RequestType.XInfoConsumers, [key, group_name]),
+            await self._execute_command(RequestType.XInfoConsumers, [key, group_name]),
         )
 
-    def xinfo_stream(
+    async def xinfo_stream(
         self,
         key: TEncodable,
     ) -> TXInfoStreamResponse:
@@ -3544,7 +3597,7 @@ class CoreCommands(Protocol):
             response.
 
         Examples:
-            >>> client.xinfo_stream("my_stream")
+            >>> await client.xinfo_stream("my_stream")
                 {
                     b"length": 4,
                     b"radix-tree-keys": 1L,
@@ -3568,10 +3621,10 @@ class CoreCommands(Protocol):
         """
         return cast(
             TXInfoStreamResponse,
-            self._execute_command(RequestType.XInfoStream, [key]),
+            await self._execute_command(RequestType.XInfoStream, [key]),
         )
 
-    def xinfo_stream_full(
+    async def xinfo_stream_full(
         self,
         key: TEncodable,
         count: Optional[int] = None,
@@ -3591,7 +3644,7 @@ class CoreCommands(Protocol):
             a sample response.
 
         Examples:
-            >>> client.xinfo_stream_full("my_stream")
+            >>> await client.xinfo_stream_full("my_stream")
                 {
                     b"length": 4,
                     b"radix-tree-keys": 1L,
@@ -3664,10 +3717,10 @@ class CoreCommands(Protocol):
 
         return cast(
             TXInfoStreamFullResponse,
-            self._execute_command(RequestType.XInfoStream, args),
+            await self._execute_command(RequestType.XInfoStream, args),
         )
 
-    def geoadd(
+    async def geoadd(
         self,
         key: TEncodable,
         members_geospatialdata: Mapping[TEncodable, GeospatialData],
@@ -3699,7 +3752,7 @@ class CoreCommands(Protocol):
             If `changed` is set, returns the number of elements updated in the sorted set.
 
         Examples:
-            >>> client.geoadd(
+            >>> await client.geoadd(
             ...     "my_sorted_set",
             ...     {
             ...         "Palermo": GeospatialData(13.361389, 38.115556),
@@ -3707,7 +3760,7 @@ class CoreCommands(Protocol):
             ...     }
             ... )
                 2  # Indicates that two elements have been added to the sorted set "my_sorted_set".
-            >>> client.geoadd(
+            >>> await client.geoadd(
             ...     "my_sorted_set",
             ...     {
             ...         "Palermo": GeospatialData(14.361389, 38.115556)
@@ -3733,10 +3786,10 @@ class CoreCommands(Protocol):
 
         return cast(
             int,
-            self._execute_command(RequestType.GeoAdd, args),
+            await self._execute_command(RequestType.GeoAdd, args),
         )
 
-    def geodist(
+    async def geodist(
         self,
         key: TEncodable,
         member1: TEncodable,
@@ -3761,18 +3814,18 @@ class CoreCommands(Protocol):
             If one or both members do not exist, or if the key does not exist, returns None.
 
         Examples:
-            >>> client.geoadd(
+            >>> await client.geoadd(
             ...     "my_geo_set",
             ...     {
             ...         "Palermo": GeospatialData(13.361389, 38.115556),
             ...         "Catania": GeospatialData(15.087269, 37.502669)
             ...     }
             ... )
-            >>> client.geodist("my_geo_set", "Palermo", "Catania")
+            >>> await client.geodist("my_geo_set", "Palermo", "Catania")
                 166274.1516  # Indicates the distance between "Palermo" and "Catania" in meters.
-            >>> client.geodist("my_geo_set", "Palermo", "Palermo", unit=GeoUnit.KILOMETERS)
+            >>> await client.geodist("my_geo_set", "Palermo", "Palermo", unit=GeoUnit.KILOMETERS)
                 166.2742  # Indicates the distance between "Palermo" and "Palermo" in kilometers.
-            >>> client.geodist("my_geo_set", "non-existing", "Palermo", unit=GeoUnit.KILOMETERS)
+            >>> await client.geodist("my_geo_set", "non-existing", "Palermo", unit=GeoUnit.KILOMETERS)
                 None  # Returns None for non-existing member.
         """
         args = [key, member1, member2]
@@ -3781,10 +3834,10 @@ class CoreCommands(Protocol):
 
         return cast(
             Optional[float],
-            self._execute_command(RequestType.GeoDist, args),
+            await self._execute_command(RequestType.GeoDist, args),
         )
 
-    def geohash(
+    async def geohash(
         self, key: TEncodable, members: List[TEncodable]
     ) -> List[Optional[bytes]]:
         """
@@ -3804,22 +3857,22 @@ class CoreCommands(Protocol):
             If a member does not exist in the sorted set, a None value is returned for that member.
 
         Examples:
-            >>> client.geoadd(
+            >>> await client.geoadd(
             ...     "my_geo_sorted_set",
             ...     {
             ...         "Palermo": GeospatialData(13.361389, 38.115556),
             ...         "Catania": GeospatialData(15.087269, 37.502669)
             ...     }
             ... )
-            >>> client.geohash("my_geo_sorted_set", ["Palermo", "Catania", "some city])
+            >>> await client.geohash("my_geo_sorted_set", ["Palermo", "Catania", "some city])
                 ["sqc8b49rny0", "sqdtr74hyu0", None]  # Indicates the GeoHash bytes strings for the specified members.
         """
         return cast(
             List[Optional[bytes]],
-            self._execute_command(RequestType.GeoHash, [key] + members),
+            await self._execute_command(RequestType.GeoHash, [key] + members),
         )
 
-    def geopos(
+    async def geopos(
         self,
         key: TEncodable,
         members: List[TEncodable],
@@ -3840,22 +3893,22 @@ class CoreCommands(Protocol):
             If a member does not exist, its position will be None.
 
         Example:
-            >>> client.geoadd(
+            >>> await client.geoadd(
             ...     "my_geo_sorted_set",
             ...     {
             ...         "Palermo": GeospatialData(13.361389, 38.115556),
             ...         "Catania": GeospatialData(15.087269, 37.502669)
             ...     }
             ... )
-            >>> client.geopos("my_geo_sorted_set", ["Palermo", "Catania", "NonExisting"])
+            >>> await client.geopos("my_geo_sorted_set", ["Palermo", "Catania", "NonExisting"])
                 [[13.36138933897018433, 38.11555639549629859], [15.08726745843887329, 37.50266842333162032], None]
         """
         return cast(
             List[Optional[List[float]]],
-            self._execute_command(RequestType.GeoPos, [key] + members),
+            await self._execute_command(RequestType.GeoPos, [key] + members),
         )
 
-    def geosearch(
+    async def geosearch(
         self,
         key: TEncodable,
         search_from: Union[str, bytes, GeospatialData],
@@ -3906,24 +3959,24 @@ class CoreCommands(Protocol):
                 - List[float]: The coordinates as a two item [longitude,latitude] array, if `with_coord` is set to True.
 
         Examples:
-            >>> client.geoadd(
+            >>> await client.geoadd(
             ...     "my_geo_sorted_set",
             ...     {
             ...         "edge1": GeospatialData(12.758489, 38.788135),
             ...         "edge2": GeospatialData(17.241510, 38.788135)
             ...     }
             ... )
-            >>> client.geoadd(
+            >>> await client.geoadd(
             ...     "my_geo_sorted_set",
             ...     {
             ...         "Palermo": GeospatialData(13.361389, 38.115556),
             ...         "Catania": GeospatialData(15.087269, 37.502669)
             ...     }
             ... )
-            >>> client.geosearch("my_geo_sorted_set", "Catania", GeoSearchByRadius(175, GeoUnit.MILES), OrderBy.DESC)
+            >>> await client.geosearch("my_geo_sorted_set", "Catania", GeoSearchByRadius(175, GeoUnit.MILES), OrderBy.DESC)
                 ['Palermo', 'Catania'] # Returned the locations names within the radius of 175 miles, with the center being
                                        # 'Catania' from farthest to nearest.
-            >>> client.geosearch(
+            >>> await client.geosearch(
             ...     "my_geo_sorted_set",
             ...     GeospatialData(15, 37),
             ...     GeoSearchByBox(400, 400, GeoUnit.KILOMETERS),
@@ -3967,10 +4020,10 @@ class CoreCommands(Protocol):
 
         return cast(
             List[Union[bytes, List[Union[bytes, float, int, List[float]]]]],
-            self._execute_command(RequestType.GeoSearch, args),
+            await self._execute_command(RequestType.GeoSearch, args),
         )
 
-    def geosearchstore(
+    async def geosearchstore(
         self,
         destination: TEncodable,
         source: TEncodable,
@@ -4010,24 +4063,24 @@ class CoreCommands(Protocol):
             int: The number of elements in the resulting sorted set stored at `destination`.
 
         Examples:
-            >>> client.geoadd(
+            >>> await client.geoadd(
             ...     "my_geo_sorted_set",
             ...     {
             ...         "Palermo": GeospatialData(13.361389, 38.115556),
             ...         "Catania": GeospatialData(15.087269, 37.502669)
             ...     }
             ... )
-            >>> client.geosearchstore(
+            >>> await client.geosearchstore(
             ...     "my_dest_sorted_set",
             ...     "my_geo_sorted_set",
             ...     "Catania",
             ...     GeoSearchByRadius(175, GeoUnit.MILES)
             ... )
                 2 # Number of elements stored in "my_dest_sorted_set".
-            >>> client.zrange_withscores("my_dest_sorted_set", RangeByIndex(0, -1))
+            >>> await client.zrange_withscores("my_dest_sorted_set", RangeByIndex(0, -1))
                 {b"Palermo": 3479099956230698.0, b"Catania": 3479447370796909.0} # The elements within te search area, with
                                                                                  # their geohash as score.
-            >>> client.geosearchstore(
+            >>> await client.geosearchstore(
             ...     "my_dest_sorted_set",
             ...     "my_geo_sorted_set",
             ...     GeospatialData(15, 37),
@@ -4035,7 +4088,7 @@ class CoreCommands(Protocol):
             ...     store_dist=True
             ... )
                 2 # Number of elements stored in "my_dest_sorted_set", with distance as score.
-            >>> client.zrange_withscores("my_dest_sorted_set", RangeByIndex(0, -1))
+            >>> await client.zrange_withscores("my_dest_sorted_set", RangeByIndex(0, -1))
                 {b"Catania": 56.4412578701582, b"Palermo": 190.44242984775784} # The elements within te search area, with the
                                                                                # distance as score.
 
@@ -4055,10 +4108,10 @@ class CoreCommands(Protocol):
 
         return cast(
             int,
-            self._execute_command(RequestType.GeoSearchStore, args),
+            await self._execute_command(RequestType.GeoSearchStore, args),
         )
 
-    def zadd(
+    async def zadd(
         self,
         key: TEncodable,
         members_scores: Mapping[TEncodable, float],
@@ -4094,9 +4147,9 @@ class CoreCommands(Protocol):
             If `changed` is set, returns the number of elements updated in the sorted set.
 
         Examples:
-            >>> client.zadd("my_sorted_set", {"member1": 10.5, "member2": 8.2})
+            >>> await client.zadd("my_sorted_set", {"member1": 10.5, "member2": 8.2})
                 2  # Indicates that two elements have been added to the sorted set "my_sorted_set."
-            >>> client.zadd(
+            >>> await client.zadd(
             ...     "existing_sorted_set",
             ...     {
             ...         "member1": 15.0,
@@ -4131,10 +4184,10 @@ class CoreCommands(Protocol):
 
         return cast(
             int,
-            self._execute_command(RequestType.ZAdd, args),
+            await self._execute_command(RequestType.ZAdd, args),
         )
 
-    def zadd_incr(
+    async def zadd_incr(
         self,
         key: TEncodable,
         member: TEncodable,
@@ -4170,9 +4223,9 @@ class CoreCommands(Protocol):
             If there was a conflict with choosing the XX/NX/LT/GT options, the operation aborts and None is returned.
 
         Examples:
-            >>> client.zadd_incr("my_sorted_set", member , 5.0)
+            >>> await client.zadd_incr("my_sorted_set", member , 5.0)
                 5.0
-            >>> client.zadd_incr("existing_sorted_set", member , "3.0" , UpdateOptions.LESS_THAN)
+            >>> await client.zadd_incr("existing_sorted_set", member , "3.0" , UpdateOptions.LESS_THAN)
                 None
         """
         args = [key]
@@ -4194,10 +4247,10 @@ class CoreCommands(Protocol):
         args += [str(increment), member]
         return cast(
             Optional[float],
-            self._execute_command(RequestType.ZAdd, args),
+            await self._execute_command(RequestType.ZAdd, args),
         )
 
-    def zcard(self, key: TEncodable) -> int:
+    async def zcard(self, key: TEncodable) -> int:
         """
         Returns the cardinality (number of elements) of the sorted set stored at `key`.
 
@@ -4212,14 +4265,14 @@ class CoreCommands(Protocol):
             If `key` does not exist, it is treated as an empty sorted set, and the command returns 0.
 
         Examples:
-            >>> client.zcard("my_sorted_set")
+            >>> await client.zcard("my_sorted_set")
                 3  # Indicates that there are 3 elements in the sorted set "my_sorted_set".
-            >>> client.zcard("non_existing_key")
+            >>> await client.zcard("non_existing_key")
                 0
         """
-        return cast(int, self._execute_command(RequestType.ZCard, [key]))
+        return cast(int, await self._execute_command(RequestType.ZCard, [key]))
 
-    def zcount(
+    async def zcount(
         self,
         key: TEncodable,
         min_score: Union[InfBound, ScoreBoundary],
@@ -4247,10 +4300,10 @@ class CoreCommands(Protocol):
             If `max_score` < `min_score`, 0 is returned.
 
         Examples:
-            >>> client.zcount("my_sorted_set", ScoreBoundary(5.0 , is_inclusive=true) , InfBound.POS_INF)
+            >>> await client.zcount("my_sorted_set", ScoreBoundary(5.0 , is_inclusive=true) , InfBound.POS_INF)
                 2  # Indicates that there are 2 members with scores between 5.0 (not exclusive) and +inf in the sorted set
                    # "my_sorted_set".
-            >>> client.zcount(
+            >>> await client.zcount(
             ...     "my_sorted_set",
             ...     ScoreBoundary(5.0 , is_inclusive=true),
             ...     ScoreBoundary(10.0 , is_inclusive=false)
@@ -4269,10 +4322,14 @@ class CoreCommands(Protocol):
         )
         return cast(
             int,
-            self._execute_command(RequestType.ZCount, [key, score_min, score_max]),
+            await self._execute_command(
+                RequestType.ZCount, [key, score_min, score_max]
+            ),
         )
 
-    def zincrby(self, key: TEncodable, increment: float, member: TEncodable) -> float:
+    async def zincrby(
+        self, key: TEncodable, increment: float, member: TEncodable
+    ) -> float:
         """
         Increments the score of `member` in the sorted set stored at `key` by `increment`.
         If `member` does not exist in the sorted set, it is added with `increment` as its score.
@@ -4289,20 +4346,22 @@ class CoreCommands(Protocol):
             float: The new score of `member`.
 
         Examples:
-            >>> client.zadd("my_sorted_set", {"member": 10.5, "member2": 8.2})
-            >>> client.zincrby("my_sorted_set", 1.2, "member")
+            >>> await client.zadd("my_sorted_set", {"member": 10.5, "member2": 8.2})
+            >>> await client.zincrby("my_sorted_set", 1.2, "member")
                 11.7  # The member existed in the set before score was altered, the new score is 11.7.
-            >>> client.zincrby("my_sorted_set", -1.7, "member")
+            >>> await client.zincrby("my_sorted_set", -1.7, "member")
                 10.0 # Negative increment, decrements the score.
-            >>> client.zincrby("my_sorted_set", 5.5, "non_existing_member")
+            >>> await client.zincrby("my_sorted_set", 5.5, "non_existing_member")
                 5.5  # A new member is added to the sorted set with the score being 5.5.
         """
         return cast(
             float,
-            self._execute_command(RequestType.ZIncrBy, [key, str(increment), member]),
+            await self._execute_command(
+                RequestType.ZIncrBy, [key, str(increment), member]
+            ),
         )
 
-    def zpopmax(
+    async def zpopmax(
         self, key: TEncodable, count: Optional[int] = None
     ) -> Mapping[bytes, float]:
         """
@@ -4325,20 +4384,20 @@ class CoreCommands(Protocol):
             If `key` doesn't exist, it will be treated as an empty sorted set and the command returns an empty map.
 
         Examples:
-            >>> client.zpopmax("my_sorted_set")
+            >>> await client.zpopmax("my_sorted_set")
                 {b'member1': 10.0}  # Indicates that 'member1' with a score of 10.0 has been removed from the sorted set.
-            >>> client.zpopmax("my_sorted_set", 2)
+            >>> await client.zpopmax("my_sorted_set", 2)
                 {b'member2': 8.0, b'member3': 7.5}  # Indicates that 'member2' with a score of 8.0 and 'member3' with a score
                                                     # of 7.5 have been removed from the sorted set.
         """
         return cast(
             Mapping[bytes, float],
-            self._execute_command(
+            await self._execute_command(
                 RequestType.ZPopMax, [key, str(count)] if count else [key]
             ),
         )
 
-    def bzpopmax(
+    async def bzpopmax(
         self, keys: List[TEncodable], timeout: float
     ) -> Optional[List[Union[bytes, float]]]:
         """
@@ -4367,17 +4426,17 @@ class CoreCommands(Protocol):
             If no member could be popped and the `timeout` expired, returns None.
 
         Examples:
-            >>> client.zadd("my_sorted_set1", {"member1": 10.0, "member2": 5.0})
+            >>> await client.zadd("my_sorted_set1", {"member1": 10.0, "member2": 5.0})
                 2  # Two elements have been added to the sorted set at "my_sorted_set1".
-            >>> client.bzpopmax(["my_sorted_set1", "my_sorted_set2"], 0.5)
+            >>> await client.bzpopmax(["my_sorted_set1", "my_sorted_set2"], 0.5)
                 [b'my_sorted_set1', b'member1', 10.0]  # "member1" with a score of 10.0 has been removed from "my_sorted_set1".
         """
         return cast(
             Optional[List[Union[bytes, float]]],
-            self._execute_command(RequestType.BZPopMax, keys + [str(timeout)]),
+            await self._execute_command(RequestType.BZPopMax, keys + [str(timeout)]),
         )
 
-    def zpopmin(
+    async def zpopmin(
         self, key: TEncodable, count: Optional[int] = None
     ) -> Mapping[bytes, float]:
         """
@@ -4399,19 +4458,19 @@ class CoreCommands(Protocol):
             If `key` doesn't exist, it will be treated as an empty sorted set and the command returns an empty map.
 
         Examples:
-            >>> client.zpopmin("my_sorted_set")
+            >>> await client.zpopmin("my_sorted_set")
                 {b'member1': 5.0}  # Indicates that 'member1' with a score of 5.0 has been removed from the sorted set.
-            >>> client.zpopmin("my_sorted_set", 2)
+            >>> await client.zpopmin("my_sorted_set", 2)
                 {b'member3': 7.5 , b'member2': 8.0}  # Indicates that 'member3' with a score of 7.5 and 'member2' with a score
                                                      # of 8.0 have been removed from the sorted set.
         """
         args: List[TEncodable] = [key, str(count)] if count else [key]
         return cast(
             Mapping[bytes, float],
-            self._execute_command(RequestType.ZPopMin, args),
+            await self._execute_command(RequestType.ZPopMin, args),
         )
 
-    def bzpopmin(
+    async def bzpopmin(
         self, keys: List[TEncodable], timeout: float
     ) -> Optional[List[Union[bytes, float]]]:
         """
@@ -4440,18 +4499,18 @@ class CoreCommands(Protocol):
             If no member could be popped and the `timeout` expired, returns None.
 
         Examples:
-            >>> client.zadd("my_sorted_set1", {"member1": 10.0, "member2": 5.0})
+            >>> await client.zadd("my_sorted_set1", {"member1": 10.0, "member2": 5.0})
                 2  # Two elements have been added to the sorted set at "my_sorted_set1".
-            >>> client.bzpopmin(["my_sorted_set1", "my_sorted_set2"], 0.5)
+            >>> await client.bzpopmin(["my_sorted_set1", "my_sorted_set2"], 0.5)
                 [b'my_sorted_set1', b'member2', 5.0]  # "member2" with a score of 5.0 has been removed from "my_sorted_set1".
         """
         args: List[TEncodable] = keys + [str(timeout)]
         return cast(
             Optional[List[Union[bytes, float]]],
-            self._execute_command(RequestType.BZPopMin, args),
+            await self._execute_command(RequestType.BZPopMin, args),
         )
 
-    def zrange(
+    async def zrange(
         self,
         key: TEncodable,
         range_query: Union[RangeByIndex, RangeByLex, RangeByScore],
@@ -4483,17 +4542,17 @@ class CoreCommands(Protocol):
             If `key` does not exist, it is treated as an empty sorted set, and the command returns an empty array.
 
         Examples:
-            >>> client.zrange("my_sorted_set", RangeByIndex(0, -1))
+            >>> await client.zrange("my_sorted_set", RangeByIndex(0, -1))
                 [b'member1', b'member2', b'member3']  # Returns all members in ascending order.
-            >>> client.zrange("my_sorted_set", RangeByScore(InfBound.NEG_INF, ScoreBoundary(3)))
+            >>> await client.zrange("my_sorted_set", RangeByScore(InfBound.NEG_INF, ScoreBoundary(3)))
                 [b'member2', b'member3'] # Returns members with scores within the range of negative infinity to 3, in
                                          # ascending order.
         """
         args = _create_zrange_args(key, range_query, reverse, with_scores=False)
 
-        return cast(List[bytes], self._execute_command(RequestType.ZRange, args))
+        return cast(List[bytes], await self._execute_command(RequestType.ZRange, args))
 
-    def zrange_withscores(
+    async def zrange_withscores(
         self,
         key: TEncodable,
         range_query: Union[RangeByIndex, RangeByScore],
@@ -4521,19 +4580,19 @@ class CoreCommands(Protocol):
             If `key` does not exist, it is treated as an empty sorted set, and the command returns an empty map.
 
         Examples:
-            >>> client.zrange_withscores("my_sorted_set", RangeByScore(ScoreBoundary(10), ScoreBoundary(20)))
+            >>> await client.zrange_withscores("my_sorted_set", RangeByScore(ScoreBoundary(10), ScoreBoundary(20)))
                 {b'member1': 10.5, b'member2': 15.2}  # Returns members with scores between 10 and 20 with their scores.
-           >>> client.zrange_withscores("my_sorted_set", RangeByScore(InfBound.NEG_INF, ScoreBoundary(3)))
+           >>> await client.zrange_withscores("my_sorted_set", RangeByScore(InfBound.NEG_INF, ScoreBoundary(3)))
                 {b'member4': -2.0, b'member7': 1.5} # Returns members with with scores within the range of negative infinity
                                                     # to 3, with their scores.
         """
         args = _create_zrange_args(key, range_query, reverse, with_scores=True)
 
         return cast(
-            Mapping[bytes, float], self._execute_command(RequestType.ZRange, args)
+            Mapping[bytes, float], await self._execute_command(RequestType.ZRange, args)
         )
 
-    def zrangestore(
+    async def zrangestore(
         self,
         destination: TEncodable,
         source: TEncodable,
@@ -4568,18 +4627,18 @@ class CoreCommands(Protocol):
             int: The number of elements in the resulting sorted set.
 
         Examples:
-            >>> client.zrangestore("destination_key", "my_sorted_set", RangeByIndex(0, 2), True)
+            >>> await client.zrangestore("destination_key", "my_sorted_set", RangeByIndex(0, 2), True)
                 3  # The 3 members with the highest scores from "my_sorted_set" were stored in the sorted set at
                    # "destination_key".
-            >>> client.zrangestore("destination_key", "my_sorted_set", RangeByScore(InfBound.NEG_INF, ScoreBoundary(3)))
+            >>> await client.zrangestore("destination_key", "my_sorted_set", RangeByScore(InfBound.NEG_INF, ScoreBoundary(3)))
                 2  # The 2 members with scores between negative infinity and 3 (inclusive) from "my_sorted_set" were stored in
                    # the sorted set at "destination_key".
         """
         args = _create_zrange_args(source, range_query, reverse, False, destination)
 
-        return cast(int, self._execute_command(RequestType.ZRangeStore, args))
+        return cast(int, await self._execute_command(RequestType.ZRangeStore, args))
 
-    def zrank(
+    async def zrank(
         self,
         key: TEncodable,
         member: TEncodable,
@@ -4601,16 +4660,16 @@ class CoreCommands(Protocol):
             If `key` doesn't exist, or if `member` is not present in the set, None will be returned.
 
         Examples:
-            >>> client.zrank("my_sorted_set", "member2")
+            >>> await client.zrank("my_sorted_set", "member2")
                 1  # Indicates that "member2" has the second-lowest score in the sorted set "my_sorted_set".
-            >>> client.zrank("my_sorted_set", "non_existing_member")
+            >>> await client.zrank("my_sorted_set", "non_existing_member")
                 None  # Indicates that "non_existing_member" is not present in the sorted set "my_sorted_set".
         """
         return cast(
-            Optional[int], self._execute_command(RequestType.ZRank, [key, member])
+            Optional[int], await self._execute_command(RequestType.ZRank, [key, member])
         )
 
-    def zrank_withscore(
+    async def zrank_withscore(
         self,
         key: TEncodable,
         member: TEncodable,
@@ -4631,20 +4690,20 @@ class CoreCommands(Protocol):
             If `key` doesn't exist, or if `member` is not present in the set, None will be returned.
 
         Examples:
-            >>> client.zrank_withscore("my_sorted_set", "member2")
+            >>> await client.zrank_withscore("my_sorted_set", "member2")
                 [1 , 6.0]  # Indicates that "member2" with score 6.0 has the second-lowest score in the sorted set
                            # "my_sorted_set".
-            >>> client.zrank_withscore("my_sorted_set", "non_existing_member")
+            >>> await client.zrank_withscore("my_sorted_set", "non_existing_member")
                 None  # Indicates that "non_existing_member" is not present in the sorted set "my_sorted_set".
 
         Since: Valkey version 7.2.0.
         """
         return cast(
             Optional[List[Union[int, float]]],
-            self._execute_command(RequestType.ZRank, [key, member, "WITHSCORE"]),
+            await self._execute_command(RequestType.ZRank, [key, member, "WITHSCORE"]),
         )
 
-    def zrevrank(self, key: TEncodable, member: TEncodable) -> Optional[int]:
+    async def zrevrank(self, key: TEncodable, member: TEncodable) -> Optional[int]:
         """
         Returns the rank of `member` in the sorted set stored at `key`, where scores are ordered from the highest to
         lowest, starting from `0`.
@@ -4663,16 +4722,16 @@ class CoreCommands(Protocol):
             If `key` doesn't exist, or if `member` is not present in the set, `None` will be returned.
 
         Examples:
-            >>> client.zadd("my_sorted_set", {"member1": 10.5, "member2": 8.2, "member3": 9.6})
-            >>> client.zrevrank("my_sorted_set", "member2")
+            >>> await client.zadd("my_sorted_set", {"member1": 10.5, "member2": 8.2, "member3": 9.6})
+            >>> await client.zrevrank("my_sorted_set", "member2")
                 2  # "member2" has the third-highest score in the sorted set "my_sorted_set"
         """
         return cast(
             Optional[int],
-            self._execute_command(RequestType.ZRevRank, [key, member]),
+            await self._execute_command(RequestType.ZRevRank, [key, member]),
         )
 
-    def zrevrank_withscore(
+    async def zrevrank_withscore(
         self, key: TEncodable, member: TEncodable
     ) -> Optional[List[Union[int, float]]]:
         """
@@ -4692,18 +4751,20 @@ class CoreCommands(Protocol):
             If `key` doesn't exist, or if `member` is not present in the set, `None` will be returned.
 
         Examples:
-            >>> client.zadd("my_sorted_set", {"member1": 10.5, "member2": 8.2, "member3": 9.6})
-            >>> client.zrevrank("my_sorted_set", "member2")
+            >>> await client.zadd("my_sorted_set", {"member1": 10.5, "member2": 8.2, "member3": 9.6})
+            >>> await client.zrevrank("my_sorted_set", "member2")
                 [2, 8.2]  # "member2" with score 8.2 has the third-highest score in the sorted set "my_sorted_set"
 
         Since: Valkey version 7.2.0.
         """
         return cast(
             Optional[List[Union[int, float]]],
-            self._execute_command(RequestType.ZRevRank, [key, member, "WITHSCORE"]),
+            await self._execute_command(
+                RequestType.ZRevRank, [key, member, "WITHSCORE"]
+            ),
         )
 
-    def zrem(
+    async def zrem(
         self,
         key: TEncodable,
         members: List[TEncodable],
@@ -4724,17 +4785,17 @@ class CoreCommands(Protocol):
             If `key` does not exist, it is treated as an empty sorted set, and the command returns 0.
 
         Examples:
-            >>> client.zrem("my_sorted_set", ["member1", "member2"])
+            >>> await client.zrem("my_sorted_set", ["member1", "member2"])
                 2  # Indicates that two members have been removed from the sorted set "my_sorted_set."
-            >>> client.zrem("non_existing_sorted_set", ["member1", "member2"])
+            >>> await client.zrem("non_existing_sorted_set", ["member1", "member2"])
                 0  # Indicates that no members were removed as the sorted set "non_existing_sorted_set" does not exist.
         """
         return cast(
             int,
-            self._execute_command(RequestType.ZRem, [key] + members),
+            await self._execute_command(RequestType.ZRem, [key] + members),
         )
 
-    def zremrangebyscore(
+    async def zremrangebyscore(
         self,
         key: TEncodable,
         min_score: Union[InfBound, ScoreBoundary],
@@ -4761,10 +4822,10 @@ class CoreCommands(Protocol):
             If `min_score` is greater than `max_score`, 0 is returned.
 
         Examples:
-            >>> client.zremrangebyscore("my_sorted_set",  ScoreBoundary(5.0 , is_inclusive=true) , InfBound.POS_INF)
+            >>> await client.zremrangebyscore("my_sorted_set",  ScoreBoundary(5.0 , is_inclusive=true) , InfBound.POS_INF)
                 2  # Indicates that  2 members with scores between 5.0 (not exclusive) and +inf have been removed from the
                    # sorted set "my_sorted_set".
-            >>> client.zremrangebyscore(
+            >>> await client.zremrangebyscore(
             ...     "non_existing_sorted_set",
             ...     ScoreBoundary(5.0 , is_inclusive=true),
             ...     ScoreBoundary(10.0 , is_inclusive=false)
@@ -4784,12 +4845,12 @@ class CoreCommands(Protocol):
 
         return cast(
             int,
-            self._execute_command(
+            await self._execute_command(
                 RequestType.ZRemRangeByScore, [key, score_min, score_max]
             ),
         )
 
-    def zremrangebylex(
+    async def zremrangebylex(
         self,
         key: TEncodable,
         min_lex: Union[InfBound, LexBoundary],
@@ -4818,10 +4879,10 @@ class CoreCommands(Protocol):
             If `min_lex` is greater than `max_lex`, `0` is returned.
 
         Examples:
-            >>> client.zremrangebylex("my_sorted_set",  LexBoundary("a", is_inclusive=False), LexBoundary("e"))
+            >>> await client.zremrangebylex("my_sorted_set",  LexBoundary("a", is_inclusive=False), LexBoundary("e"))
                 4  # Indicates that 4 members, with lexicographical values ranging from "a" (exclusive) to "e" (inclusive),
                    # have been removed from "my_sorted_set".
-            >>> client.zremrangebylex("non_existing_sorted_set", InfBound.NEG_INF, LexBoundary("e"))
+            >>> await client.zremrangebylex("non_existing_sorted_set", InfBound.NEG_INF, LexBoundary("e"))
                 0  # Indicates that no members were removed as the sorted set "non_existing_sorted_set" does not exist.
         """
         min_lex_arg = (
@@ -4833,12 +4894,12 @@ class CoreCommands(Protocol):
 
         return cast(
             int,
-            self._execute_command(
+            await self._execute_command(
                 RequestType.ZRemRangeByLex, [key, min_lex_arg, max_lex_arg]
             ),
         )
 
-    def zremrangebyrank(
+    async def zremrangebyrank(
         self,
         key: TEncodable,
         start: int,
@@ -4866,20 +4927,20 @@ class CoreCommands(Protocol):
             If `key` does not exist, `0` is returned.
 
         Examples:
-            >>> client.zremrangebyrank("my_sorted_set", 0, 4)
+            >>> await client.zremrangebyrank("my_sorted_set", 0, 4)
                 5  # Indicates that 5 elements, with ranks ranging from 0 to 4 (inclusive), have been removed from
                    # "my_sorted_set".
-            >>> client.zremrangebyrank("my_sorted_set", 0, 4)
+            >>> await client.zremrangebyrank("my_sorted_set", 0, 4)
                 0  # Indicates that nothing was removed.
         """
         return cast(
             int,
-            self._execute_command(
+            await self._execute_command(
                 RequestType.ZRemRangeByRank, [key, str(start), str(end)]
             ),
         )
 
-    def zlexcount(
+    async def zlexcount(
         self,
         key: TEncodable,
         min_lex: Union[InfBound, LexBoundary],
@@ -4908,10 +4969,10 @@ class CoreCommands(Protocol):
             If `max_lex < min_lex`, `0` is returned.
 
         Examples:
-            >>> client.zlexcount("my_sorted_set",  LexBoundary("c" , is_inclusive=True), InfBound.POS_INF)
+            >>> await client.zlexcount("my_sorted_set",  LexBoundary("c" , is_inclusive=True), InfBound.POS_INF)
                 2  # Indicates that there are 2 members with lexicographical values between "c" (inclusive) and positive
                    # infinity in the sorted set "my_sorted_set".
-            >>> client.zlexcount(
+            >>> await client.zlexcount(
             ...     "my_sorted_set",
             ...     LexBoundary("c" , is_inclusive=True),
             ...     LexBoundary("k" , is_inclusive=False)
@@ -4928,12 +4989,12 @@ class CoreCommands(Protocol):
 
         return cast(
             int,
-            self._execute_command(
+            await self._execute_command(
                 RequestType.ZLexCount, [key, min_lex_arg, max_lex_arg]
             ),
         )
 
-    def zscore(self, key: TEncodable, member: TEncodable) -> Optional[float]:
+    async def zscore(self, key: TEncodable, member: TEncodable) -> Optional[float]:
         """
         Returns the score of `member` in the sorted set stored at `key`.
 
@@ -4951,17 +5012,17 @@ class CoreCommands(Protocol):
             If `key` does not exist,  None is returned.
 
         Examples:
-            >>> client.zscore("my_sorted_set", "member")
+            >>> await client.zscore("my_sorted_set", "member")
                 10.5  # Indicates that the score of "member" in the sorted set "my_sorted_set" is 10.5.
-            >>> client.zscore("my_sorted_set", "non_existing_member")
+            >>> await client.zscore("my_sorted_set", "non_existing_member")
                 None
         """
         return cast(
             Optional[float],
-            self._execute_command(RequestType.ZScore, [key, member]),
+            await self._execute_command(RequestType.ZScore, [key, member]),
         )
 
-    def zmscore(
+    async def zmscore(
         self,
         key: TEncodable,
         members: List[TEncodable],
@@ -4981,15 +5042,15 @@ class CoreCommands(Protocol):
             If a member does not exist in the sorted set, the corresponding value in the list will be None.
 
         Examples:
-            >>> client.zmscore("my_sorted_set", ["one", "non_existent_member", "three"])
+            >>> await client.zmscore("my_sorted_set", ["one", "non_existent_member", "three"])
                 [1.0, None, 3.0]
         """
         return cast(
             List[Optional[float]],
-            self._execute_command(RequestType.ZMScore, [key] + members),
+            await self._execute_command(RequestType.ZMScore, [key] + members),
         )
 
-    def zdiff(self, keys: List[TEncodable]) -> List[bytes]:
+    async def zdiff(self, keys: List[TEncodable]) -> List[bytes]:
         """
         Returns the difference between the first sorted set and all the successive sorted sets.
         To get the elements with their scores, see `zdiff_withscores`.
@@ -5009,20 +5070,20 @@ class CoreCommands(Protocol):
             empty list.
 
         Examples:
-            >>> client.zadd("sorted_set1", {"element1":1.0, "element2": 2.0, "element3": 3.0})
-            >>> client.zadd("sorted_set2", {"element2": 2.0})
-            >>> client.zadd("sorted_set3", {"element3": 3.0})
-            >>> client.zdiff("sorted_set1", "sorted_set2", "sorted_set3")
+            >>> await client.zadd("sorted_set1", {"element1":1.0, "element2": 2.0, "element3": 3.0})
+            >>> await client.zadd("sorted_set2", {"element2": 2.0})
+            >>> await client.zadd("sorted_set3", {"element3": 3.0})
+            >>> await client.zdiff("sorted_set1", "sorted_set2", "sorted_set3")
                 [b"element1"]  # Indicates that "element1" is in "sorted_set1" but not "sorted_set2" or "sorted_set3".
         """
         args: List[TEncodable] = [str(len(keys))]
         args.extend(keys)
         return cast(
             List[bytes],
-            self._execute_command(RequestType.ZDiff, args),
+            await self._execute_command(RequestType.ZDiff, args),
         )
 
-    def zdiff_withscores(self, keys: List[TEncodable]) -> Mapping[bytes, float]:
+    async def zdiff_withscores(self, keys: List[TEncodable]) -> Mapping[bytes, float]:
         """
         Returns the difference between the first sorted set and all the successive sorted sets, with the associated scores.
 
@@ -5042,20 +5103,20 @@ class CoreCommands(Protocol):
             empty list.
 
         Examples:
-            >>> client.zadd("sorted_set1", {"element1":1.0, "element2": 2.0, "element3": 3.0})
-            >>> client.zadd("sorted_set2", {"element2": 2.0})
-            >>> client.zadd("sorted_set3", {"element3": 3.0})
-            >>> client.zdiff_withscores("sorted_set1", "sorted_set2", "sorted_set3")
+            >>> await client.zadd("sorted_set1", {"element1":1.0, "element2": 2.0, "element3": 3.0})
+            >>> await client.zadd("sorted_set2", {"element2": 2.0})
+            >>> await client.zadd("sorted_set3", {"element3": 3.0})
+            >>> await client.zdiff_withscores("sorted_set1", "sorted_set2", "sorted_set3")
                 {b"element1": 1.0}  # Indicates that "element1" is in "sorted_set1" but not "sorted_set2" or "sorted_set3".
         """
         return cast(
             Mapping[bytes, float],
-            self._execute_command(
+            await self._execute_command(
                 RequestType.ZDiff, [str(len(keys))] + keys + ["WITHSCORES"]
             ),
         )
 
-    def zdiffstore(self, destination: TEncodable, keys: List[TEncodable]) -> int:
+    async def zdiffstore(self, destination: TEncodable, keys: List[TEncodable]) -> int:
         """
         Calculates the difference between the first sorted set and all the successive sorted sets at `keys` and stores
         the difference as a sorted set to `destination`, overwriting it if it already exists. Non-existent keys are
@@ -5074,23 +5135,23 @@ class CoreCommands(Protocol):
             int: The number of members in the resulting sorted set stored at `destination`.
 
         Examples:
-            >>> client.zadd("key1", {"member1": 10.5, "member2": 8.2})
+            >>> await client.zadd("key1", {"member1": 10.5, "member2": 8.2})
                 2  # Indicates that two elements have been added to the sorted set at "key1".
-            >>> client.zadd("key2", {"member1": 10.5})
+            >>> await client.zadd("key2", {"member1": 10.5})
                 1  # Indicates that one element has been added to the sorted set at "key2".
-            >>> client.zdiffstore("my_sorted_set", ["key1", "key2"])
+            >>> await client.zdiffstore("my_sorted_set", ["key1", "key2"])
                 1  # One member exists in "key1" but not "key2", and this member was stored in "my_sorted_set".
-            >>> client.zrange("my_sorted_set", RangeByIndex(0, -1))
+            >>> await client.zrange("my_sorted_set", RangeByIndex(0, -1))
                 ['member2']  # "member2" is now stored in "my_sorted_set"
         """
         return cast(
             int,
-            self._execute_command(
+            await self._execute_command(
                 RequestType.ZDiffStore, [destination, str(len(keys))] + keys
             ),
         )
 
-    def zinter(
+    async def zinter(
         self,
         keys: List[TEncodable],
     ) -> List[bytes]:
@@ -5111,19 +5172,19 @@ class CoreCommands(Protocol):
             List[bytes]: The resulting array of intersecting elements.
 
         Examples:
-            >>> client.zadd("key1", {"member1": 10.5, "member2": 8.2})
-            >>> client.zadd("key2", {"member1": 9.5})
-            >>> client.zinter(["key1", "key2"])
+            >>> await client.zadd("key1", {"member1": 10.5, "member2": 8.2})
+            >>> await client.zadd("key2", {"member1": 9.5})
+            >>> await client.zinter(["key1", "key2"])
                 [b'member1']
         """
         args: List[TEncodable] = [str(len(keys))]
         args.extend(keys)
         return cast(
             List[bytes],
-            self._execute_command(RequestType.ZInter, args),
+            await self._execute_command(RequestType.ZInter, args),
         )
 
-    def zinter_withscores(
+    async def zinter_withscores(
         self,
         keys: Union[List[TEncodable], List[Tuple[TEncodable, float]]],
         aggregation_type: Optional[AggregationType] = None,
@@ -5152,21 +5213,21 @@ class CoreCommands(Protocol):
             Mapping[bytes, float]: The resulting sorted set with scores.
 
         Examples:
-            >>> client.zadd("key1", {"member1": 10.5, "member2": 8.2})
-            >>> client.zadd("key2", {"member1": 9.5})
-            >>> client.zinter_withscores(["key1", "key2"])
+            >>> await client.zadd("key1", {"member1": 10.5, "member2": 8.2})
+            >>> await client.zadd("key2", {"member1": 9.5})
+            >>> await client.zinter_withscores(["key1", "key2"])
                 {b'member1': 20}  # "member1" with score of 20 is the result
-            >>> client.zinter_withscores(["key1", "key2"], AggregationType.MAX)
+            >>> await client.zinter_withscores(["key1", "key2"], AggregationType.MAX)
                 {b'member1': 10.5}  # "member1" with score of 10.5 is the result.
         """
         args = _create_zinter_zunion_cmd_args(keys, aggregation_type)
         args.append("WITHSCORES")
         return cast(
             Mapping[bytes, float],
-            self._execute_command(RequestType.ZInter, args),
+            await self._execute_command(RequestType.ZInter, args),
         )
 
-    def zinterstore(
+    async def zinterstore(
         self,
         destination: TEncodable,
         keys: Union[List[TEncodable], List[Tuple[TEncodable, float]]],
@@ -5196,25 +5257,25 @@ class CoreCommands(Protocol):
             int: The number of elements in the resulting sorted set stored at `destination`.
 
         Examples:
-            >>> client.zadd("key1", {"member1": 10.5, "member2": 8.2})
-            >>> client.zadd("key2", {"member1": 9.5})
-            >>> client.zinterstore("my_sorted_set", ["key1", "key2"])
+            >>> await client.zadd("key1", {"member1": 10.5, "member2": 8.2})
+            >>> await client.zadd("key2", {"member1": 9.5})
+            >>> await client.zinterstore("my_sorted_set", ["key1", "key2"])
                 1 # Indicates that the sorted set "my_sorted_set" contains one element.
-            >>> client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
+            >>> await client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
                 {b'member1': 20}  # "member1" is now stored in "my_sorted_set" with score of 20.
-            >>> client.zinterstore("my_sorted_set", ["key1", "key2"], AggregationType.MAX)
+            >>> await client.zinterstore("my_sorted_set", ["key1", "key2"], AggregationType.MAX)
                 1 # Indicates that the sorted set "my_sorted_set" contains one element, and its score is the maximum score
                   # between the sets.
-            >>> client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
+            >>> await client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
                 {b'member1': 10.5}  # "member1" is now stored in "my_sorted_set" with score of 10.5.
         """
         args = _create_zinter_zunion_cmd_args(keys, aggregation_type, destination)
         return cast(
             int,
-            self._execute_command(RequestType.ZInterStore, args),
+            await self._execute_command(RequestType.ZInterStore, args),
         )
 
-    def zunion(
+    async def zunion(
         self,
         keys: List[TEncodable],
     ) -> List[bytes]:
@@ -5235,19 +5296,19 @@ class CoreCommands(Protocol):
             List[bytes]: The resulting array of union elements.
 
         Examples:
-            >>> client.zadd("key1", {"member1": 10.5, "member2": 8.2})
-            >>> client.zadd("key2", {"member1": 9.5})
-            >>> client.zunion(["key1", "key2"])
+            >>> await client.zadd("key1", {"member1": 10.5, "member2": 8.2})
+            >>> await client.zadd("key2", {"member1": 9.5})
+            >>> await client.zunion(["key1", "key2"])
                 [b'member1', b'member2']
         """
         args: List[TEncodable] = [str(len(keys))]
         args.extend(keys)
         return cast(
             List[bytes],
-            self._execute_command(RequestType.ZUnion, args),
+            await self._execute_command(RequestType.ZUnion, args),
         )
 
-    def zunion_withscores(
+    async def zunion_withscores(
         self,
         keys: Union[List[TEncodable], List[Tuple[TEncodable, float]]],
         aggregation_type: Optional[AggregationType] = None,
@@ -5275,21 +5336,21 @@ class CoreCommands(Protocol):
             Mapping[bytes, float]: The resulting sorted set with scores.
 
         Examples:
-            >>> client.zadd("key1", {"member1": 10.5, "member2": 8.2})
-            >>> client.zadd("key2", {"member1": 9.5})
-            >>> client.zunion_withscores(["key1", "key2"])
+            >>> await client.zadd("key1", {"member1": 10.5, "member2": 8.2})
+            >>> await client.zadd("key2", {"member1": 9.5})
+            >>> await client.zunion_withscores(["key1", "key2"])
                 {b'member1': 20, b'member2': 8.2}
-            >>> client.zunion_withscores(["key1", "key2"], AggregationType.MAX)
+            >>> await client.zunion_withscores(["key1", "key2"], AggregationType.MAX)
                 {b'member1': 10.5, b'member2': 8.2}
         """
         args = _create_zinter_zunion_cmd_args(keys, aggregation_type)
         args.append("WITHSCORES")
         return cast(
             Mapping[bytes, float],
-            self._execute_command(RequestType.ZUnion, args),
+            await self._execute_command(RequestType.ZUnion, args),
         )
 
-    def zunionstore(
+    async def zunionstore(
         self,
         destination: TEncodable,
         keys: Union[List[TEncodable], List[Tuple[TEncodable, float]]],
@@ -5319,25 +5380,25 @@ class CoreCommands(Protocol):
             int: The number of elements in the resulting sorted set stored at `destination`.
 
         Examples:
-            >>> client.zadd("key1", {"member1": 10.5, "member2": 8.2})
-            >>> client.zadd("key2", {"member1": 9.5})
-            >>> client.zunionstore("my_sorted_set", ["key1", "key2"])
+            >>> await client.zadd("key1", {"member1": 10.5, "member2": 8.2})
+            >>> await client.zadd("key2", {"member1": 9.5})
+            >>> await client.zunionstore("my_sorted_set", ["key1", "key2"])
                 2 # Indicates that the sorted set "my_sorted_set" contains two elements.
-            >>> client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
+            >>> await client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
                 {b'member1': 20, b'member2': 8.2}
-            >>> client.zunionstore("my_sorted_set", ["key1", "key2"], AggregationType.MAX)
+            >>> await client.zunionstore("my_sorted_set", ["key1", "key2"], AggregationType.MAX)
                 2 # Indicates that the sorted set "my_sorted_set" contains two elements, and each score is the maximum score
                   # between the sets.
-            >>> client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
+            >>> await client.zrange_withscores("my_sorted_set", RangeByIndex(0, -1))
                 {b'member1': 10.5, b'member2': 8.2}
         """
         args = _create_zinter_zunion_cmd_args(keys, aggregation_type, destination)
         return cast(
             int,
-            self._execute_command(RequestType.ZUnionStore, args),
+            await self._execute_command(RequestType.ZUnionStore, args),
         )
 
-    def zrandmember(self, key: TEncodable) -> Optional[bytes]:
+    async def zrandmember(self, key: TEncodable) -> Optional[bytes]:
         """
         Returns a random member from the sorted set stored at 'key'.
 
@@ -5352,18 +5413,18 @@ class CoreCommands(Protocol):
             If the sorted set does not exist or is empty, the response will be None.
 
         Examples:
-            >>> client.zadd("my_sorted_set", {"member1": 1.0, "member2": 2.0})
-            >>> client.zrandmember("my_sorted_set")
+            >>> await client.zadd("my_sorted_set", {"member1": 1.0, "member2": 2.0})
+            >>> await client.zrandmember("my_sorted_set")
                 b"member1"  # "member1" is a random member of "my_sorted_set".
-            >>> client.zrandmember("non_existing_sorted_set")
+            >>> await client.zrandmember("non_existing_sorted_set")
                 None  # "non_existing_sorted_set" is not an existing key, so None was returned.
         """
         return cast(
             Optional[bytes],
-            self._execute_command(RequestType.ZRandMember, [key]),
+            await self._execute_command(RequestType.ZRandMember, [key]),
         )
 
-    def zrandmember_count(self, key: TEncodable, count: int) -> List[bytes]:
+    async def zrandmember_count(self, key: TEncodable, count: int) -> List[bytes]:
         """
         Retrieves up to the absolute value of `count` random members from the sorted set stored at 'key'.
 
@@ -5382,19 +5443,19 @@ class CoreCommands(Protocol):
             If the sorted set does not exist or is empty, the response will be an empty list.
 
         Examples:
-            >>> client.zadd("my_sorted_set", {"member1": 1.0, "member2": 2.0})
-            >>> client.zrandmember("my_sorted_set", -3)
+            >>> await client.zadd("my_sorted_set", {"member1": 1.0, "member2": 2.0})
+            >>> await client.zrandmember("my_sorted_set", -3)
                 [b"member1", b"member1", b"member2"]  # "member1" and "member2" are random members of "my_sorted_set".
-            >>> client.zrandmember("non_existing_sorted_set", 3)
+            >>> await client.zrandmember("non_existing_sorted_set", 3)
                 []  # "non_existing_sorted_set" is not an existing key, so an empty list was returned.
         """
         args: List[TEncodable] = [key, str(count)]
         return cast(
             List[bytes],
-            self._execute_command(RequestType.ZRandMember, args),
+            await self._execute_command(RequestType.ZRandMember, args),
         )
 
-    def zrandmember_withscores(
+    async def zrandmember_withscores(
         self, key: TEncodable, count: int
     ) -> List[List[Union[bytes, float]]]:
         """
@@ -5417,21 +5478,21 @@ class CoreCommands(Protocol):
             If the sorted set does not exist or is empty, the response will be an empty list.
 
         Examples:
-            >>> client.zadd("my_sorted_set", {"member1": 1.0, "member2": 2.0})
-            >>> client.zrandmember_withscores("my_sorted_set", -3)
+            >>> await client.zadd("my_sorted_set", {"member1": 1.0, "member2": 2.0})
+            >>> await client.zrandmember_withscores("my_sorted_set", -3)
                 [[b"member1", 1.0], [b"member1", 1.0], [b"member2", 2.0]]  # "member1" and "member2" are random members of
                                                                            # "my_sorted_set", and have scores of 1.0 and 2.0,
                                                                            # respectively.
-            >>> client.zrandmember_withscores("non_existing_sorted_set", 3)
+            >>> await client.zrandmember_withscores("non_existing_sorted_set", 3)
                 []  # "non_existing_sorted_set" is not an existing key, so an empty list was returned.
         """
         args: List[TEncodable] = [key, str(count), "WITHSCORES"]
         return cast(
             List[List[Union[bytes, float]]],
-            self._execute_command(RequestType.ZRandMember, args),
+            await self._execute_command(RequestType.ZRandMember, args),
         )
 
-    def zmpop(
+    async def zmpop(
         self,
         keys: List[TEncodable],
         filter: ScoreFilter,
@@ -5464,9 +5525,9 @@ class CoreCommands(Protocol):
             If no members could be popped, returns None.
 
         Examples:
-            >>> client.zadd("zSet1", {"one": 1.0, "two": 2.0, "three": 3.0})
-            >>> client.zadd("zSet2", {"four": 4.0})
-            >>> client.zmpop(["zSet1", "zSet2"], ScoreFilter.MAX, 2)
+            >>> await client.zadd("zSet1", {"one": 1.0, "two": 2.0, "three": 3.0})
+            >>> await client.zadd("zSet2", {"four": 4.0})
+            >>> await client.zmpop(["zSet1", "zSet2"], ScoreFilter.MAX, 2)
                 [b'zSet1', {b'three': 3.0, b'two': 2.0}]  # "three" with score 3.0 and "two" with score 2.0 were
                                                           # popped from "zSet1".
 
@@ -5478,10 +5539,10 @@ class CoreCommands(Protocol):
 
         return cast(
             Optional[List[Union[bytes, Mapping[bytes, float]]]],
-            self._execute_command(RequestType.ZMPop, args),
+            await self._execute_command(RequestType.ZMPop, args),
         )
 
-    def bzmpop(
+    async def bzmpop(
         self,
         keys: List[TEncodable],
         modifier: ScoreFilter,
@@ -5521,9 +5582,9 @@ class CoreCommands(Protocol):
             If no members could be popped and the timeout expired, returns None.
 
         Examples:
-            >>> client.zadd("zSet1", {"one": 1.0, "two": 2.0, "three": 3.0})
-            >>> client.zadd("zSet2", {"four": 4.0})
-            >>> client.bzmpop(["zSet1", "zSet2"], ScoreFilter.MAX, 0.5, 2)
+            >>> await client.zadd("zSet1", {"one": 1.0, "two": 2.0, "three": 3.0})
+            >>> await client.zadd("zSet2", {"four": 4.0})
+            >>> await client.bzmpop(["zSet1", "zSet2"], ScoreFilter.MAX, 0.5, 2)
                 [b'zSet1', {b'three': 3.0, b'two': 2.0}]  # "three" with score 3.0 and "two" with score 2.0 were
                                                           # popped from "zSet1".
 
@@ -5535,10 +5596,12 @@ class CoreCommands(Protocol):
 
         return cast(
             Optional[List[Union[bytes, Mapping[bytes, float]]]],
-            self._execute_command(RequestType.BZMPop, args),
+            await self._execute_command(RequestType.BZMPop, args),
         )
 
-    def zintercard(self, keys: List[TEncodable], limit: Optional[int] = None) -> int:
+    async def zintercard(
+        self, keys: List[TEncodable], limit: Optional[int] = None
+    ) -> int:
         """
         Returns the cardinality of the intersection of the sorted sets specified by `keys`. When provided with the
         optional `limit` argument, if the intersection cardinality reaches `limit` partway through the computation, the
@@ -5558,11 +5621,11 @@ class CoreCommands(Protocol):
             int: The cardinality of the intersection of the given sorted sets, or the `limit` if reached.
 
         Examples:
-            >>> client.zadd("key1", {"member1": 10.5, "member2": 8.2, "member3": 9.6})
-            >>> client.zadd("key2", {"member1": 10.5, "member2": 3.5})
-            >>> client.zintercard(["key1", "key2"])
+            >>> await client.zadd("key1", {"member1": 10.5, "member2": 8.2, "member3": 9.6})
+            >>> await client.zadd("key2", {"member1": 10.5, "member2": 3.5})
+            >>> await client.zintercard(["key1", "key2"])
                 2  # Indicates that the intersection of the sorted sets at "key1" and "key2" has a cardinality of 2.
-            >>> client.zintercard(["key1", "key2"], 1)
+            >>> await client.zintercard(["key1", "key2"], 1)
                 1  # A `limit` of 1 was provided, so the intersection computation exits early and yields the `limit` value
                    # of 1.
 
@@ -5574,10 +5637,32 @@ class CoreCommands(Protocol):
 
         return cast(
             int,
-            self._execute_command(RequestType.ZInterCard, args),
+            await self._execute_command(RequestType.ZInterCard, args),
         )
 
-    def pfadd(self, key: TEncodable, elements: List[TEncodable]) -> int:
+    async def script_show(self, sha1: TEncodable) -> bytes:
+        """
+        Returns the original source code of a script in the script cache.
+
+        See [valkey.io](https://valkey.io/commands/script-show) for more details.
+
+        Args:
+            sha1 (TEncodable): The SHA1 digest of the script.
+
+        Returns:
+            bytes: The original source code of the script, if present in the cache.
+
+            If the script is not found in the cache, an error is thrown.
+
+        Example:
+            >>> await client.script_show(script.get_hash())
+                b"return { KEYS[1], ARGV[1] }"
+
+        Since: Valkey version 8.0.0.
+        """
+        return cast(bytes, await self._execute_command(RequestType.ScriptShow, [sha1]))
+
+    async def pfadd(self, key: TEncodable, elements: List[TEncodable]) -> int:
         """
         Adds all elements to the HyperLogLog data structure stored at the specified `key`.
         Creates a new structure if the `key` does not exist.
@@ -5590,23 +5675,23 @@ class CoreCommands(Protocol):
             elements (List[TEncodable]): A list of members to add to the HyperLogLog stored at `key`.
 
         Returns:
-            int: If the HyperLogLog is newly created, or if the HyperLogLog approximated cardinality is
-            altered, then returns 1.
+            bool: If the HyperLogLog is newly created, or if the HyperLogLog approximated cardinality is
+            altered, then returns `True`.
 
-            Otherwise, returns 0.
+            Otherwise, returns `False`.
 
         Examples:
-            >>> client.pfadd("hll_1", ["a", "b", "c" ])
-                1 # A data structure was created or modified
-            >>> client.pfadd("hll_2", [])
-                1 # A new empty data structure was created
+            >>> await client.pfadd("hll_1", ["a", "b", "c" ])
+                True # A data structure was created or modified
+            >>> await client.pfadd("hll_2", [])
+                True # A new empty data structure was created
         """
         return cast(
-            int,
-            self._execute_command(RequestType.PfAdd, [key] + elements),
+            bool,
+            await self._execute_command(RequestType.PfAdd, [key] + elements),
         )
 
-    def pfcount(self, keys: List[TEncodable]) -> int:
+    async def pfcount(self, keys: List[TEncodable]) -> int:
         """
         Estimates the cardinality of the data stored in a HyperLogLog structure for a single key or
         calculates the combined cardinality of multiple keys by merging their HyperLogLogs temporarily.
@@ -5625,15 +5710,17 @@ class CoreCommands(Protocol):
             The cardinality of a key that does not exist is 0.
 
         Examples:
-            >>> client.pfcount(["hll_1", "hll_2"])
+            >>> await client.pfcount(["hll_1", "hll_2"])
                 4  # The approximated cardinality of the union of "hll_1" and "hll_2" is 4.
         """
         return cast(
             int,
-            self._execute_command(RequestType.PfCount, keys),
+            await self._execute_command(RequestType.PfCount, keys),
         )
 
-    def pfmerge(self, destination: TEncodable, source_keys: List[TEncodable]) -> TOK:
+    async def pfmerge(
+        self, destination: TEncodable, source_keys: List[TEncodable]
+    ) -> TOK:
         """
         Merges multiple HyperLogLog values into a unique value. If the destination variable exists, it is treated as one
         of the source HyperLogLog data sets, otherwise a new HyperLogLog is created.
@@ -5651,19 +5738,23 @@ class CoreCommands(Protocol):
             OK: A simple OK response.
 
         Examples:
-            >>> client.pfadd("hll1", ["a", "b"])
-            >>> client.pfadd("hll2", ["b", "c"])
-            >>> client.pfmerge("new_hll", ["hll1", "hll2"])
+            >>> await client.pfadd("hll1", ["a", "b"])
+            >>> await client.pfadd("hll2", ["b", "c"])
+            >>> await client.pfmerge("new_hll", ["hll1", "hll2"])
                 OK  # The value of "hll1" merged with "hll2" was stored in "new_hll".
-            >>> client.pfcount(["new_hll"])
+            >>> await client.pfcount(["new_hll"])
                 3  # The approximated cardinality of "new_hll" is 3.
         """
         return cast(
             TOK,
-            self._execute_command(RequestType.PfMerge, [destination] + source_keys),
+            await self._execute_command(
+                RequestType.PfMerge, [destination] + source_keys
+            ),
         )
 
-    def bitcount(self, key: TEncodable, options: Optional[OffsetOptions] = None) -> int:
+    async def bitcount(
+        self, key: TEncodable, options: Optional[OffsetOptions] = None
+    ) -> int:
         """
         Counts the number of set bits (population counting) in the string stored at `key`. The `options` argument can
         optionally be provided to count the number of bits in a specific string interval.
@@ -5682,15 +5773,15 @@ class CoreCommands(Protocol):
             Otherwise, if `key` is missing, returns `0` as it is treated as an empty string.
 
         Examples:
-            >>> client.bitcount("my_key1")
+            >>> await client.bitcount("my_key1")
                 2  # The string stored at "my_key1" contains 2 set bits.
-            >>> client.bitcount("my_key2", OffsetOptions(1))
+            >>> await client.bitcount("my_key2", OffsetOptions(1))
                 8  # From the second to last bytes of the string stored at "my_key2" there are 8 set bits.
-            >>> client.bitcount("my_key2", OffsetOptions(1, 3))
+            >>> await client.bitcount("my_key2", OffsetOptions(1, 3))
                 2  # The second to fourth bytes of the string stored at "my_key2" contain 2 set bits.
-            >>> client.bitcount("my_key3", OffsetOptions(1, 1, BitmapIndexType.BIT))
+            >>> await client.bitcount("my_key3", OffsetOptions(1, 1, BitmapIndexType.BIT))
                 1  # Indicates that the second bit of the string stored at "my_key3" is set.
-            >>> client.bitcount("my_key3", OffsetOptions(-1, -1, BitmapIndexType.BIT))
+            >>> await client.bitcount("my_key3", OffsetOptions(-1, -1, BitmapIndexType.BIT))
                 1  # Indicates that the last bit of the string stored at "my_key3" is set.
         """
         args: List[TEncodable] = [key]
@@ -5699,10 +5790,10 @@ class CoreCommands(Protocol):
 
         return cast(
             int,
-            self._execute_command(RequestType.BitCount, args),
+            await self._execute_command(RequestType.BitCount, args),
         )
 
-    def setbit(self, key: TEncodable, offset: int, value: int) -> int:
+    async def setbit(self, key: TEncodable, offset: int, value: int) -> int:
         """
         Sets or clears the bit at `offset` in the string value stored at `key`. The `offset` is a zero-based index,
         with `0` being the first element of the list, `1` being the next element, and so on. The `offset` must be less
@@ -5720,15 +5811,17 @@ class CoreCommands(Protocol):
             int: The bit value that was previously stored at `offset`.
 
         Examples:
-            >>> client.setbit("string_key", 1, 1)
+            >>> await client.setbit("string_key", 1, 1)
                 0  # The second bit value was 0 before setting to 1.
         """
         return cast(
             int,
-            self._execute_command(RequestType.SetBit, [key, str(offset), str(value)]),
+            await self._execute_command(
+                RequestType.SetBit, [key, str(offset), str(value)]
+            ),
         )
 
-    def getbit(self, key: TEncodable, offset: int) -> int:
+    async def getbit(self, key: TEncodable, offset: int) -> int:
         """
         Returns the bit value at `offset` in the string value stored at `key`.
         `offset` should be greater than or equal to zero.
@@ -5745,15 +5838,15 @@ class CoreCommands(Protocol):
             Returns `0` if the key is empty or if the `offset` exceeds the length of the string.
 
         Examples:
-            >>> client.getbit("my_key", 1)
+            >>> await client.getbit("my_key", 1)
                 1  # Indicates that the second bit of the string stored at "my_key" is set to 1.
         """
         return cast(
             int,
-            self._execute_command(RequestType.GetBit, [key, str(offset)]),
+            await self._execute_command(RequestType.GetBit, [key, str(offset)]),
         )
 
-    def bitpos(
+    async def bitpos(
         self, key: TEncodable, bit: int, options: Optional[OffsetOptions] = None
     ) -> int:
         """
@@ -5780,18 +5873,18 @@ class CoreCommands(Protocol):
             If `start` was provided, the search begins at the offset indicated by `start`.
 
         Examples:
-            >>> client.set("key1", "A1")  # "A1" has binary value 01000001 00110001
-            >>> client.bitpos("key1", 1)
+            >>> await client.set("key1", "A1")  # "A1" has binary value 01000001 00110001
+            >>> await client.bitpos("key1", 1)
                 1  # The first occurrence of bit value 1 in the string stored at "key1" is at the second position.
-            >>> client.bitpos("key1", 1, OffsetOptions(-1))
+            >>> await client.bitpos("key1", 1, OffsetOptions(-1))
                 10  # The first occurrence of bit value 1, starting at the last byte in the string stored at "key1",
                     # is at the eleventh position.
 
-            >>> client.set("key2", "A12")  # "A12" has binary value 01000001 00110001 00110010
-            >>> client.bitpos("key2", 1, OffsetOptions(1, -1))
+            >>> await client.set("key2", "A12")  # "A12" has binary value 01000001 00110001 00110010
+            >>> await client.bitpos("key2", 1, OffsetOptions(1, -1))
                 10  # The first occurrence of bit value 1 in the second byte to the last byte of the string stored at "key1"
                     # is at the eleventh position.
-            >>> client.bitpos("key2", 1, OffsetOptions(2, 9, BitmapIndexType.BIT))
+            >>> await client.bitpos("key2", 1, OffsetOptions(2, 9, BitmapIndexType.BIT))
                 7  # The first occurrence of bit value 1 in the third to tenth bits of the string stored at "key1"
                    # is at the eighth position.
         """
@@ -5801,10 +5894,10 @@ class CoreCommands(Protocol):
 
         return cast(
             int,
-            self._execute_command(RequestType.BitPos, args),
+            await self._execute_command(RequestType.BitPos, args),
         )
 
-    def bitop(
+    async def bitop(
         self,
         operation: BitwiseOperation,
         destination: TEncodable,
@@ -5828,21 +5921,21 @@ class CoreCommands(Protocol):
             int: The size of the string stored in `destination`.
 
         Examples:
-            >>> client.set("key1", "A")  # "A" has binary value 01000001
-            >>> client.set("key2", "B")  # "B" has binary value 01000010
-            >>> client.bitop(BitwiseOperation.AND, "destination", ["key1", "key2"])
+            >>> await client.set("key1", "A")  # "A" has binary value 01000001
+            >>> await client.set("key2", "B")  # "B" has binary value 01000010
+            >>> await client.bitop(BitwiseOperation.AND, "destination", ["key1", "key2"])
                 1  # The size of the resulting string stored in "destination" is 1
-            >>> client.get("destination")
+            >>> await client.get("destination")
                 "@"  # "@" has binary value 01000000
         """
         return cast(
             int,
-            self._execute_command(
+            await self._execute_command(
                 RequestType.BitOp, [operation.value, destination] + keys
             ),
         )
 
-    def bitfield(
+    async def bitfield(
         self, key: TEncodable, subcommands: List[BitFieldSubCommands]
     ) -> List[Optional[int]]:
         """
@@ -5872,8 +5965,8 @@ class CoreCommands(Protocol):
                   response.
 
         Examples:
-            >>> client.set("my_key", "A")  # "A" has binary value 01000001
-            >>> client.bitfield(
+            >>> await client.set("my_key", "A")  # "A" has binary value 01000001
+            >>> await client.bitfield(
             ...     "my_key",
             ...     [BitFieldSet(UnsignedEncoding(2), BitOffset(1), 3), BitFieldGet(UnsignedEncoding(2), BitOffset(1))]
             ... )
@@ -5883,10 +5976,10 @@ class CoreCommands(Protocol):
         args = [key] + _create_bitfield_args(subcommands)
         return cast(
             List[Optional[int]],
-            self._execute_command(RequestType.BitField, args),
+            await self._execute_command(RequestType.BitField, args),
         )
 
-    def bitfield_read_only(
+    async def bitfield_read_only(
         self, key: TEncodable, subcommands: List[BitFieldGet]
     ) -> List[int]:
         """
@@ -5902,8 +5995,8 @@ class CoreCommands(Protocol):
             List[int]: An array of results from the "GET" subcommands.
 
         Examples:
-            >>> client.set("my_key", "A")  # "A" has binary value 01000001
-            >>> client.bitfield_read_only("my_key", [BitFieldGet(UnsignedEncoding(2), Offset(1))])
+            >>> await client.set("my_key", "A")  # "A" has binary value 01000001
+            >>> await client.bitfield_read_only("my_key", [BitFieldGet(UnsignedEncoding(2), Offset(1))])
                 [2]  # The value at offset 1 with an unsigned encoding of 2 is 2.
 
         Since: Valkey version 6.0.0.
@@ -5911,10 +6004,10 @@ class CoreCommands(Protocol):
         args = [key] + _create_bitfield_read_only_args(subcommands)
         return cast(
             List[int],
-            self._execute_command(RequestType.BitFieldReadOnly, args),
+            await self._execute_command(RequestType.BitFieldReadOnly, args),
         )
 
-    def object_encoding(self, key: TEncodable) -> Optional[bytes]:
+    async def object_encoding(self, key: TEncodable) -> Optional[bytes]:
         """
         Returns the internal encoding for the Valkey object stored at `key`.
 
@@ -5930,15 +6023,15 @@ class CoreCommands(Protocol):
             Otherwise, returns None.
 
         Examples:
-            >>> client.object_encoding("my_hash")
+            >>> await client.object_encoding("my_hash")
                 b"listpack"  # The hash stored at "my_hash" has an internal encoding of "listpack".
         """
         return cast(
             Optional[bytes],
-            self._execute_command(RequestType.ObjectEncoding, [key]),
+            await self._execute_command(RequestType.ObjectEncoding, [key]),
         )
 
-    def object_freq(self, key: TEncodable) -> Optional[int]:
+    async def object_freq(self, key: TEncodable) -> Optional[int]:
         """
         Returns the logarithmic access frequency counter of a Valkey object stored at `key`.
 
@@ -5954,15 +6047,15 @@ class CoreCommands(Protocol):
             Otherwise, returns None.
 
         Examples:
-            >>> client.object_freq("my_hash")
+            >>> await client.object_freq("my_hash")
                 2  # The logarithmic access frequency counter of "my_hash" has a value of 2.
         """
         return cast(
             Optional[int],
-            self._execute_command(RequestType.ObjectFreq, [key]),
+            await self._execute_command(RequestType.ObjectFreq, [key]),
         )
 
-    def object_idletime(self, key: TEncodable) -> Optional[int]:
+    async def object_idletime(self, key: TEncodable) -> Optional[int]:
         """
         Returns the time in seconds since the last access to the value stored at `key`.
 
@@ -5977,15 +6070,15 @@ class CoreCommands(Protocol):
             Otherwise, returns None.
 
         Examples:
-            >>> client.object_idletime("my_hash")
+            >>> await client.object_idletime("my_hash")
                 13  # "my_hash" was last accessed 13 seconds ago.
         """
         return cast(
             Optional[int],
-            self._execute_command(RequestType.ObjectIdleTime, [key]),
+            await self._execute_command(RequestType.ObjectIdleTime, [key]),
         )
 
-    def object_refcount(self, key: TEncodable) -> Optional[int]:
+    async def object_refcount(self, key: TEncodable) -> Optional[int]:
         """
         Returns the reference count of the object stored at `key`.
 
@@ -6000,15 +6093,15 @@ class CoreCommands(Protocol):
             Otherwise, returns None.
 
         Examples:
-            >>> client.object_refcount("my_hash")
+            >>> await client.object_refcount("my_hash")
                 2  # "my_hash" has a reference count of 2.
         """
         return cast(
             Optional[int],
-            self._execute_command(RequestType.ObjectRefCount, [key]),
+            await self._execute_command(RequestType.ObjectRefCount, [key]),
         )
 
-    def srandmember(self, key: TEncodable) -> Optional[bytes]:
+    async def srandmember(self, key: TEncodable) -> Optional[bytes]:
         """
         Returns a random element from the set value stored at 'key'.
 
@@ -6023,19 +6116,19 @@ class CoreCommands(Protocol):
             `None` if 'key' does not exist.
 
         Examples:
-            >>> client.sadd("my_set", {"member1": 1.0, "member2": 2.0})
-            >>> client.srandmember(b"my_set")
+            >>> await client.sadd("my_set", {"member1": 1.0, "member2": 2.0})
+            >>> await client.srandmember(b"my_set")
                 b"member1"  # "member1" is a random member of "my_set".
-            >>> client.srandmember("non_existing_set")
+            >>> await client.srandmember("non_existing_set")
                 None  # "non_existing_set" is not an existing key, so None was returned.
         """
         args: List[TEncodable] = [key]
         return cast(
             Optional[bytes],
-            self._execute_command(RequestType.SRandMember, args),
+            await self._execute_command(RequestType.SRandMember, args),
         )
 
-    def srandmember_count(self, key: TEncodable, count: int) -> List[bytes]:
+    async def srandmember_count(self, key: TEncodable, count: int) -> List[bytes]:
         """
         Returns one or more random elements from the set value stored at 'key'.
 
@@ -6054,18 +6147,18 @@ class CoreCommands(Protocol):
             If the set does not exist or is empty, the response will be an empty list.
 
         Examples:
-            >>> client.sadd("my_set", {"member1": 1.0, "member2": 2.0})
-            >>> client.srandmember("my_set", -3)
+            >>> await client.sadd("my_set", {"member1": 1.0, "member2": 2.0})
+            >>> await client.srandmember("my_set", -3)
                 [b"member1", b"member1", b"member2"]  # "member1" and "member2" are random members of "my_set".
-            >>> client.srandmember("non_existing_set", 3)
+            >>> await client.srandmember("non_existing_set", 3)
                 []  # "non_existing_set" is not an existing key, so an empty list was returned.
         """
         return cast(
             List[bytes],
-            self._execute_command(RequestType.SRandMember, [key, str(count)]),
+            await self._execute_command(RequestType.SRandMember, [key, str(count)]),
         )
 
-    def getex(
+    async def getex(
         self,
         key: TEncodable,
         expiry: Optional[ExpiryGetEx] = None,
@@ -6086,14 +6179,14 @@ class CoreCommands(Protocol):
             If `key` does not exist, return `None`
 
         Examples:
-            >>> client.set("key", "value")
+            >>> await client.set("key", "value")
                 'OK'
-            >>> client.getex("key")
+            >>> await client.getex("key")
                 b'value'
-            >>> client.getex("key", ExpiryGetEx(ExpiryTypeGetEx.SEC, 1))
+            >>> await client.getex("key", ExpiryGetEx(ExpiryTypeGetEx.SEC, 1))
                 b'value'
             >>> time.sleep(1)
-            >>> client.getex(b"key")
+            >>> await client.getex(b"key")
                 None
 
         Since: Valkey version 6.2.0.
@@ -6103,10 +6196,10 @@ class CoreCommands(Protocol):
             args.extend(expiry.get_cmd_args())
         return cast(
             Optional[bytes],
-            self._execute_command(RequestType.GetEx, args),
+            await self._execute_command(RequestType.GetEx, args),
         )
 
-    def dump(
+    async def dump(
         self,
         key: TEncodable,
     ) -> Optional[bytes]:
@@ -6124,17 +6217,17 @@ class CoreCommands(Protocol):
             If `key` does not exist, `None` will be returned.
 
         Examples:
-            >>> client.dump("key")
+            >>> await client.dump("key")
                 b"value" # The serialized value stored at `key`.
-            >>> client.dump("nonExistingKey")
+            >>> await client.dump("nonExistingKey")
                 None # Non-existing key will return `None`.
         """
         return cast(
             Optional[bytes],
-            self._execute_command(RequestType.Dump, [key]),
+            await self._execute_command(RequestType.Dump, [key]),
         )
 
-    def restore(
+    async def restore(
         self,
         key: TEncodable,
         ttl: int,
@@ -6167,15 +6260,15 @@ class CoreCommands(Protocol):
             OK: If the `key` was successfully restored with a `value`.
 
         Examples:
-            >>> client.restore("newKey", 0, value)
+            >>> await client.restore("newKey", 0, value)
                 OK # Indicates restore `newKey` without any ttl expiry nor any option
-            >>> client.restore("newKey", 0, value, replace=True)
+            >>> await client.restore("newKey", 0, value, replace=True)
                 OK # Indicates restore `newKey` with `REPLACE` option
-            >>> client.restore("newKey", 0, value, absttl=True)
+            >>> await client.restore("newKey", 0, value, absttl=True)
                 OK # Indicates restore `newKey` with `ABSTTL` option
-            >>> client.restore("newKey", 0, value, idletime=10)
+            >>> await client.restore("newKey", 0, value, idletime=10)
                 OK # Indicates restore `newKey` with `IDLETIME` option
-            >>> client.restore("newKey", 0, value, frequency=5)
+            >>> await client.restore("newKey", 0, value, frequency=5)
                 OK # Indicates restore `newKey` with `FREQ` option
         """
         args = [key, str(ttl), value]
@@ -6183,16 +6276,20 @@ class CoreCommands(Protocol):
             args.append("REPLACE")
         if absttl is True:
             args.append("ABSTTL")
+        if idletime is not None and frequency is not None:
+            raise RequestError(
+                "syntax error: IDLETIME and FREQ cannot be set at the same time."
+            )
         if idletime is not None:
             args.extend(["IDLETIME", str(idletime)])
         if frequency is not None:
             args.extend(["FREQ", str(frequency)])
         return cast(
             TOK,
-            self._execute_command(RequestType.Restore, args),
+            await self._execute_command(RequestType.Restore, args),
         )
 
-    def sscan(
+    async def sscan(
         self,
         key: TEncodable,
         cursor: TEncodable,
@@ -6228,7 +6325,7 @@ class CoreCommands(Protocol):
 
             >>> result_cursor = "0"
             >>> while True:
-            ...     result = client.sscan("key", "0", match="*")
+            ...     result = await client.sscan("key", "0", match="*")
             ...     new_cursor = str(result [0])
             ...     print("Cursor: ", new_cursor)
             ...     print("Members: ", result[1])
@@ -6250,10 +6347,10 @@ class CoreCommands(Protocol):
 
         return cast(
             List[Union[bytes, List[bytes]]],
-            self._execute_command(RequestType.SScan, args),
+            await self._execute_command(RequestType.SScan, args),
         )
 
-    def zscan(
+    async def zscan(
         self,
         key: TEncodable,
         cursor: TEncodable,
@@ -6294,7 +6391,7 @@ class CoreCommands(Protocol):
 
             >>> result_cursor = "0"
             >>> while True:
-            ...     result = client.zscan("key", "0", match="*", count=5)
+            ...     result = await client.zscan("key", "0", match="*", count=5)
             ...     new_cursor = str(result [0])
             ...     print("Cursor: ", new_cursor)
             ...     print("Members: ", result[1])
@@ -6312,7 +6409,7 @@ class CoreCommands(Protocol):
 
             >>> result_cursor = "0"
             >>> while True:
-            ...     result = client.zscan("key", "0", match="*", count=5, no_scores=True)
+            ...     result = await client.zscan("key", "0", match="*", count=5, no_scores=True)
             ...     new_cursor = str(result[0])
             ...     print("Cursor: ", new_cursor)
             ...     print("Members: ", result[1])
@@ -6336,10 +6433,10 @@ class CoreCommands(Protocol):
 
         return cast(
             List[Union[bytes, List[bytes]]],
-            self._execute_command(RequestType.ZScan, args),
+            await self._execute_command(RequestType.ZScan, args),
         )
 
-    def hscan(
+    async def hscan(
         self,
         key: TEncodable,
         cursor: TEncodable,
@@ -6380,7 +6477,7 @@ class CoreCommands(Protocol):
 
             >>> result_cursor = "0"
             >>> while True:
-            ...     result = client.hscan("key", "0", match="*", count=3)
+            ...     result = await client.hscan("key", "0", match="*", count=3)
             ...     new_cursor = str(result [0])
             ...     print("Cursor: ", new_cursor)
             ...     print("Members: ", result[1])
@@ -6398,7 +6495,7 @@ class CoreCommands(Protocol):
 
             >>> result_cursor = "0"
             >>> while True:
-            ...     result = client.hscan("key", "0", match="*", count=3, no_values=True)
+            ...     result = await client.hscan("key", "0", match="*", count=3, no_values=True)
             ...     new_cursor = str(result [0])
             ...     print("Cursor: ", new_cursor)
             ...     print("Members: ", result[1])
@@ -6422,10 +6519,10 @@ class CoreCommands(Protocol):
 
         return cast(
             List[Union[bytes, List[bytes]]],
-            self._execute_command(RequestType.HScan, args),
+            await self._execute_command(RequestType.HScan, args),
         )
 
-    def fcall(
+    async def fcall(
         self,
         function: TEncodable,
         keys: Optional[List[TEncodable]] = None,
@@ -6451,7 +6548,7 @@ class CoreCommands(Protocol):
             TResult: The invoked function's return value.
 
         Example:
-            >>> client.fcall("Deep_Thought")
+            >>> await client.fcall("Deep_Thought")
                 b'new_value' # Returns the function's return value.
 
         Since: Valkey version 7.0.0.
@@ -6465,10 +6562,10 @@ class CoreCommands(Protocol):
             args.extend(arguments)
         return cast(
             TResult,
-            self._execute_command(RequestType.FCall, args),
+            await self._execute_command(RequestType.FCall, args),
         )
 
-    def fcall_ro(
+    async def fcall_ro(
         self,
         function: TEncodable,
         keys: Optional[List[TEncodable]] = None,
@@ -6494,7 +6591,7 @@ class CoreCommands(Protocol):
             TResult: The return value depends on the function that was executed.
 
         Examples:
-            >>> client.fcall_ro("Deep_Thought", ["key1"], ["Answer", "to", "the",
+            >>> await client.fcall_ro("Deep_Thought", ["key1"], ["Answer", "to", "the",
                     "Ultimate", "Question", "of", "Life,", "the", "Universe,", "and", "Everything"])
                 42 # The return value on the function that was executed
 
@@ -6509,10 +6606,10 @@ class CoreCommands(Protocol):
             args.extend(arguments)
         return cast(
             TResult,
-            self._execute_command(RequestType.FCallReadOnly, args),
+            await self._execute_command(RequestType.FCallReadOnly, args),
         )
 
-    def watch(self, keys: List[TEncodable]) -> TOK:
+    async def watch(self, keys: List[TEncodable]) -> TOK:
         """
         Marks the given keys to be watched for conditional execution of an atomic batch (Transaction).
         Transactions will only execute commands if the watched keys are not modified before execution of the
@@ -6521,7 +6618,7 @@ class CoreCommands(Protocol):
         See [valkey.io](https://valkey.io/commands/watch) for more details.
 
         Note:
-            In cluster mode, if keys in `key_value_map` map to different hash slots,
+            In cluster mode, if keys in `keys` map to different hash slots,
             the command will be split across these slots and executed separately for each.
             This means the command is atomic only at the slot level. If one or more slot-specific
             requests fail, the entire call will return the first encountered error, even
@@ -6536,27 +6633,63 @@ class CoreCommands(Protocol):
             TOK: A simple "OK" response.
 
         Examples:
-            >>> client.watch("sampleKey")
+            >>> await client.watch("sampleKey")
                 'OK'
             >>> transaction.set("sampleKey", "foobar")
-            >>> client.exec(transaction)
-                'OK' # Executes successfully and keys are unwatched.
+            >>> await client.exec(transaction)
+                ['OK'] # Executes successfully and keys are unwatched.
 
-            >>> client.watch("sampleKey")
+            >>> await client.watch("sampleKey")
                 'OK'
             >>> transaction.set("sampleKey", "foobar")
-            >>> client.set("sampleKey", "hello world")
+            >>> await client.set("sampleKey", "hello world")
                 'OK'
-            >>> client.exec(transaction)
+            >>> await client.exec(transaction)
                 None  # None is returned when the watched key is modified before transaction execution.
         """
 
         return cast(
             TOK,
-            self._execute_command(RequestType.Watch, keys),
+            await self._execute_command(RequestType.Watch, keys),
         )
 
-    def lcs(
+    async def get_pubsub_message(self) -> PubSubMsg:
+        """
+        Returns the next pubsub message.
+        Throws WrongConfiguration in cases:
+
+            1. No pubsub subscriptions are configured for the client
+            2. Callback is configured with the pubsub subsciptions
+
+        See [valkey.io](https://valkey.io/docs/topics/pubsub/) for more details.
+
+        Returns:
+            PubSubMsg: The next pubsub message
+
+        Examples:
+            >>> pubsub_msg = await listening_client.get_pubsub_message()
+        """
+        ...
+
+    def try_get_pubsub_message(self) -> Optional[PubSubMsg]:
+        """
+        Tries to return the next pubsub message.
+        Throws WrongConfiguration in cases:
+
+            1. No pubsub subscriptions are configured for the client
+            2. Callback is configured with the pubsub subsciptions
+
+        See [valkey.io](https://valkey.io/docs/topics/pubsub/) for more details.
+
+        Returns:
+            Optional[PubSubMsg]: The next pubsub message or None
+
+        Examples:
+            >>> pubsub_msg = listening_client.try_get_pubsub_message()
+        """
+        ...
+
+    async def lcs(
         self,
         key1: TEncodable,
         key2: TEncodable,
@@ -6583,9 +6716,9 @@ class CoreCommands(Protocol):
             An empty String is returned if the keys do not exist or have no common subsequences.
 
         Examples:
-            >>> client.mset({"testKey1" : "abcd", "testKey2": "axcd"})
+            >>> await client.mset({"testKey1" : "abcd", "testKey2": "axcd"})
                 b'OK'
-            >>> client.lcs("testKey1", "testKey2")
+            >>> await client.lcs("testKey1", "testKey2")
                 b'acd'
 
         Since: Valkey version 7.0.0.
@@ -6594,10 +6727,10 @@ class CoreCommands(Protocol):
 
         return cast(
             bytes,
-            self._execute_command(RequestType.LCS, args),
+            await self._execute_command(RequestType.LCS, args),
         )
 
-    def lcs_len(
+    async def lcs_len(
         self,
         key1: TEncodable,
         key2: TEncodable,
@@ -6622,9 +6755,9 @@ class CoreCommands(Protocol):
             The length of the longest common subsequence between the 2 strings.
 
         Examples:
-            >>> client.mset({"testKey1" : "abcd", "testKey2": "axcd"})
+            >>> await client.mset({"testKey1" : "abcd", "testKey2": "axcd"})
                 'OK'
-            >>> client.lcs_len("testKey1", "testKey2")
+            >>> await client.lcs_len("testKey1", "testKey2")
                 3  # the length of the longest common subsequence between these 2 strings (b"acd") is 3.
 
         Since: Valkey version 7.0.0.
@@ -6633,10 +6766,10 @@ class CoreCommands(Protocol):
 
         return cast(
             int,
-            self._execute_command(RequestType.LCS, args),
+            await self._execute_command(RequestType.LCS, args),
         )
 
-    def lcs_idx(
+    async def lcs_idx(
         self,
         key1: TEncodable,
         key2: TEncodable,
@@ -6672,9 +6805,9 @@ class CoreCommands(Protocol):
                   with the length of the match after each matches, if with_match_len is enabled.
 
         Examples:
-            >>> client.mset({"testKey1" : "abcd1234", "testKey2": "bcdef1234"})
+            >>> await client.mset({"testKey1" : "abcd1234", "testKey2": "bcdef1234"})
                 'OK'
-            >>> client.lcs_idx("testKey1", "testKey2")
+            >>> await client.lcs_idx("testKey1", "testKey2")
                 {
                     b'matches': [
                         [
@@ -6688,7 +6821,7 @@ class CoreCommands(Protocol):
                     ],
                     b'len': 7  # length of the entire longest common subsequence
                 }
-            >>> client.lcs_idx("testKey1", "testKey2", min_match_len=4)
+            >>> await client.lcs_idx("testKey1", "testKey2", min_match_len=4)
                 {
                     b'matches': [
                         [
@@ -6699,7 +6832,7 @@ class CoreCommands(Protocol):
                     ],
                     b'len': 7
                 }
-            >>> client.lcs_idx("testKey1", "testKey2", with_match_len=True)
+            >>> await client.lcs_idx("testKey1", "testKey2", with_match_len=True)
                 {
                     b'matches': [
                         [
@@ -6728,10 +6861,10 @@ class CoreCommands(Protocol):
 
         return cast(
             Mapping[bytes, Union[List[List[Union[List[int], int]]], int]],
-            self._execute_command(RequestType.LCS, args),
+            await self._execute_command(RequestType.LCS, args),
         )
 
-    def lpos(
+    async def lpos(
         self,
         key: TEncodable,
         element: TEncodable,
@@ -6761,16 +6894,16 @@ class CoreCommands(Protocol):
             With the `count` option, a list of indices of matching elements will be returned.
 
         Examples:
-            >>> client.rpush(key, ['a', 'b', 'c', '1', '2', '3', 'c', 'c'])
-            >>> client.lpos(key, 'c')
+            >>> await client.rpush(key, ['a', 'b', 'c', '1', '2', '3', 'c', 'c'])
+            >>> await client.lpos(key, 'c')
                 2
-            >>> client.lpos(key, 'c', rank = 2)
+            >>> await client.lpos(key, 'c', rank = 2)
                 6
-            >>> client.lpos(key, 'c', rank = -1)
+            >>> await client.lpos(key, 'c', rank = -1)
                 7
-            >>> client.lpos(key, 'c', count = 2)
+            >>> await client.lpos(key, 'c', count = 2)
                 [2, 6]
-            >>> client.lpos(key, 'c', count = 0)
+            >>> await client.lpos(key, 'c', count = 0)
                 [2, 6, 7]
 
         Since: Valkey version 6.0.6.
@@ -6788,10 +6921,99 @@ class CoreCommands(Protocol):
 
         return cast(
             Union[int, List[int], None],
-            self._execute_command(RequestType.LPos, args),
+            await self._execute_command(RequestType.LPos, args),
         )
 
-    def sort(
+    async def pubsub_channels(
+        self, pattern: Optional[TEncodable] = None
+    ) -> List[bytes]:
+        """
+        Lists the currently active channels.
+        The command is routed to all nodes, and aggregates the response to a single array.
+
+        See [valkey.io](https://valkey.io/commands/pubsub-channels) for more details.
+
+        Args:
+            pattern (Optional[TEncodable]): A glob-style pattern to match active channels.
+                If not provided, all active channels are returned.
+
+        Returns:
+            List[bytes]: A list of currently active channels matching the given pattern.
+
+            If no pattern is specified, all active channels are returned.
+
+        Examples:
+            >>> await client.pubsub_channels()
+                [b"channel1", b"channel2"]
+
+            >>> await client.pubsub_channels("news.*")
+                [b"news.sports", "news.weather"]
+        """
+
+        return cast(
+            List[bytes],
+            await self._execute_command(
+                RequestType.PubSubChannels, [pattern] if pattern else []
+            ),
+        )
+
+    async def pubsub_numpat(self) -> int:
+        """
+        Returns the number of unique patterns that are subscribed to by clients.
+
+        Note:
+            This is the total number of unique patterns all the clients are subscribed to,
+            not the count of clients subscribed to patterns.
+
+            The command is routed to all nodes, and aggregates the response the sum of all pattern subscriptions.
+
+        See [valkey.io](https://valkey.io/commands/pubsub-numpat) for more details.
+
+        Returns:
+            int: The number of unique patterns.
+
+        Examples:
+            >>> await client.pubsub_numpat()
+                3
+        """
+        return cast(int, await self._execute_command(RequestType.PubSubNumPat, []))
+
+    async def pubsub_numsub(
+        self, channels: Optional[List[TEncodable]] = None
+    ) -> Mapping[bytes, int]:
+        """
+        Returns the number of subscribers (exclusive of clients subscribed to patterns) for the specified channels.
+
+        Note:
+            It is valid to call this command without channels. In this case, it will just return an empty map.
+
+            The command is routed to all nodes, and aggregates the response to a single map of the channels and their number
+            of subscriptions.
+
+        See [valkey.io](https://valkey.io/commands/pubsub-numsub) for more details.
+
+        Args:
+            channels (Optional[List[TEncodable]]): The list of channels to query for the number of subscribers.
+                If not provided, returns an empty map.
+
+        Returns:
+            Mapping[bytes, int]: A map where keys are the channel names and values are the number of subscribers.
+
+        Examples:
+            >>> await client.pubsub_numsub(["channel1", "channel2"])
+                {b'channel1': 3, b'channel2': 5}
+
+            >>> await client.pubsub_numsub()
+                {}
+        """
+        return cast(
+            Mapping[bytes, int],
+            await self._execute_command(
+                RequestType.PubSubNumSub, channels if channels else []
+            ),
+        )
+
+    async def sort(
         self,
         key: TEncodable,
         by_pattern: Optional[TEncodable] = None,
@@ -6850,25 +7072,25 @@ class CoreCommands(Protocol):
             List[Optional[bytes]]: Returns a list of sorted elements.
 
         Examples:
-            >>> client.lpush("mylist", [b"3", b"1", b"2"])
-            >>> client.sort("mylist")
+            >>> await client.lpush("mylist", [b"3", b"1", b"2"])
+            >>> await client.sort("mylist")
                 [b'1', b'2', b'3']
-            >>> client.sort("mylist", order=OrderBy.DESC)
+            >>> await client.sort("mylist", order=OrderBy.DESC)
                 [b'3', b'2', b'1']
-            >>> client.lpush("mylist2", ['2', '1', '2', '3', '3', '1'])
-            >>> client.sort("mylist2", limit=Limit(2, 3))
+            >>> await client.lpush("mylist2", ['2', '1', '2', '3', '3', '1'])
+            >>> await client.sort("mylist2", limit=Limit(2, 3))
                 [b'2', b'2', b'3']
-            >>> client.hset("user:1": {"name": "Alice", "age": '30'})
-            >>> client.hset("user:2", {"name": "Bob", "age": '25'})
-            >>> client.lpush("user_ids", ['2', '1'])
-            >>> client.sort("user_ids", by_pattern="user:*->age", get_patterns=["user:*->name"])
+            >>> await client.hset("user:1": {"name": "Alice", "age": '30'})
+            >>> await client.hset("user:2", {"name": "Bob", "age": '25'})
+            >>> await client.lpush("user_ids", ['2', '1'])
+            >>> await client.sort("user_ids", by_pattern="user:*->age", get_patterns=["user:*->name"])
                 [b'Bob', b'Alice']
         """
         args = _build_sort_args(key, by_pattern, limit, get_patterns, order, alpha)
-        result = self._execute_command(RequestType.Sort, args)
+        result = await self._execute_command(RequestType.Sort, args)
         return cast(List[Optional[bytes]], result)
 
-    def sort_ro(
+    async def sort_ro(
         self,
         key: TEncodable,
         by_pattern: Optional[TEncodable] = None,
@@ -6926,27 +7148,27 @@ class CoreCommands(Protocol):
             List[Optional[bytes]]: Returns a list of sorted elements.
 
         Examples:
-            >>> client.lpush("mylist", 3, 1, 2)
-            >>> client.sort_ro("mylist")
+            >>> await client.lpush("mylist", 3, 1, 2)
+            >>> await client.sort_ro("mylist")
                 [b'1', b'2', b'3']
-            >>> client.sort_ro("mylist", order=OrderBy.DESC)
+            >>> await client.sort_ro("mylist", order=OrderBy.DESC)
                 [b'3', b'2', b'1']
-            >>> client.lpush("mylist2", 2, 1, 2, 3, 3, 1)
-            >>> client.sort_ro("mylist2", limit=Limit(2, 3))
+            >>> await client.lpush("mylist2", 2, 1, 2, 3, 3, 1)
+            >>> await client.sort_ro("mylist2", limit=Limit(2, 3))
                 [b'2', b'2', b'3']
-            >>> client.hset("user:1", "name", "Alice", "age", 30)
-            >>> client.hset("user:2", "name", "Bob", "age", 25)
-            >>> client.lpush("user_ids", 2, 1)
-            >>> client.sort_ro("user_ids", by_pattern="user:*->age", get_patterns=["user:*->name"])
+            >>> await client.hset("user:1", "name", "Alice", "age", 30)
+            >>> await client.hset("user:2", "name", "Bob", "age", 25)
+            >>> await client.lpush("user_ids", 2, 1)
+            >>> await client.sort_ro("user_ids", by_pattern="user:*->age", get_patterns=["user:*->name"])
                 [b'Bob', b'Alice']
 
         Since: Valkey version 7.0.0.
         """
         args = _build_sort_args(key, by_pattern, limit, get_patterns, order, alpha)
-        result = self._execute_command(RequestType.SortReadOnly, args)
+        result = await self._execute_command(RequestType.SortReadOnly, args)
         return cast(List[Optional[bytes]], result)
 
-    def sort_store(
+    async def sort_store(
         self,
         key: TEncodable,
         destination: TEncodable,
@@ -7006,14 +7228,14 @@ class CoreCommands(Protocol):
             int: The number of elements in the sorted key stored at `store`.
 
         Examples:
-            >>> client.lpush("mylist", ['3', '1', '2'])
-            >>> client.sort_store("mylist", "{mylist}sorted_list")
+            >>> await client.lpush("mylist", ['3', '1', '2'])
+            >>> await client.sort_store("mylist", "{mylist}sorted_list")
                 3  # Indicates that the sorted list "{mylist}sorted_list" contains three elements.
-            >>> client.lrange("{mylist}sorted_list", 0, -1)
+            >>> await client.lrange("{mylist}sorted_list", 0, -1)
                 [b'1', b'2', b'3']
         """
         args = _build_sort_args(
             key, by_pattern, limit, get_patterns, order, alpha, store=destination
         )
-        result = self._execute_command(RequestType.Sort, args)
+        result = await self._execute_command(RequestType.Sort, args)
         return cast(int, result)
