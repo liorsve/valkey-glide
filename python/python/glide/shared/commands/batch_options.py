@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from glide.constants import TSingleNodeRoute
+from glide.shared.constants import TSingleNodeRoute
 
 
 class BatchRetryStrategy:
