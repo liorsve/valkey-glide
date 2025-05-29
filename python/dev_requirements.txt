@@ -17,5 +17,7 @@ psutil
 pytest_asyncio
 
 # Sync
-cffi
-types-cffi
+types-cffi # where is it used?
+setuptools
+wheel >= 0.45
+build
