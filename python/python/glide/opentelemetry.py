@@ -37,7 +37,7 @@ If you need to change configuration, restart the process with new settings.
 import random
 from typing import Optional
 
-from glide.exceptions import ConfigurationError
+from glide.shared.exceptions import ConfigurationError
 from glide.logger import Level, Logger
 
 from .glide import OpenTelemetryConfig, OpenTelemetryTracesConfig, init_opentelemetry

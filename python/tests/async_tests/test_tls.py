@@ -1,6 +1,6 @@
 import pytest
 
-from glide.config import ProtocolVersion
+from glide.shared.config import ProtocolVersion
 from glide.glide_client import TGlideClient
 
 

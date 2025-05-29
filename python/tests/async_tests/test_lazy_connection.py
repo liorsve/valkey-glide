@@ -4,9 +4,9 @@ from typing import Any, AsyncGenerator, Union, cast
 
 import pytest
 
-from glide.config import NodeAddress, ProtocolVersion
+from glide.shared.config import NodeAddress, ProtocolVersion
 from glide.glide_client import GlideClient, GlideClusterClient
-from glide.routes import AllNodes
+from glide.shared.routes import AllNodes
 from tests.async_tests.conftest import create_client
 from tests.utils.cluster import ValkeyCluster
 
