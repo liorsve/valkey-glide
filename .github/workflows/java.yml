@@ -303,14 +303,14 @@ jobs:
               name: lint java rust
 
     test-modules:
-        if: (github.repository_owner == 'valkey-io' && github.event_name == 'workflow_dispatch') || github.event.pull_request.head.repo.owner.login == 'valkey-io'
+        if: (github.repository_owner == 'liorsve' && github.event_name == 'workflow_dispatch') || github.event.pull_request.head.repo.owner.login == 'valkey-io'
         environment: AWS_ACTIONS
         name: Modules Tests
-        runs-on: [self-hosted, linux, ARM64, persistent]
+        runs-on: ubuntu-latest
         timeout-minutes: 15
         steps:
-            - name: Setup self-hosted runner access
-              run: sudo chown -R $USER:$USER /home/ubuntu/actions-runner/_work/valkey-glide
+            # - name: Setup self-hosted runner access
+            #   run: sudo chown -R $USER:$USER /home/ubuntu/actions-runner/_work/valkey-glide
 
             - uses: actions/checkout@v4
 
@@ -326,15 +326,15 @@ jobs:
                   version: "29.1"
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-            - uses: actions/cache@v4
-              with:
-                  path: |
-                      java/target
-                      glide-core/src/generated
-                  key: aarch64-unknown-linux-gnu-java
-                  restore-keys: |
-                      aarch64-unknown-linux-gnu-glide-core
-                      aarch64-unknown-linux-gnu
+            # - uses: actions/cache@v4
+            #   with:
+            #       path: |
+            #           java/target
+            #           glide-core/src/generated
+            #       key: aarch64-unknown-linux-gnu-java
+            #       restore-keys: |
+            #           aarch64-unknown-linux-gnu-glide-core
+            #           aarch64-unknown-linux-gnu
 
             - name: Install zig
               uses: ./.github/workflows/install-zig
