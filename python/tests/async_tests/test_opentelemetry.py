@@ -9,15 +9,15 @@ import anyio
 import psutil  # type: ignore[import-untyped]
 import pytest
 
-from glide import (
+from glide.glide import (
     OpenTelemetryConfig,
     OpenTelemetryMetricsConfig,
     OpenTelemetryTracesConfig,
 )
-from glide.async_commands.batch import Batch, ClusterBatch
-from glide.config import ProtocolVersion
+from glide.shared.commands.batch import Batch, ClusterBatch
+from glide.shared.config import ProtocolVersion
 from glide.opentelemetry import OpenTelemetry
-from tests.conftest import create_client
+from tests.async_tests.conftest import create_client
 
 # Constants
 TIMEOUT = 50  # seconds

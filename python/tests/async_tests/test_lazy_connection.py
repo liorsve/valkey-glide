@@ -4,10 +4,10 @@ from typing import Any, Union, cast
 
 import pytest
 
-from glide.config import NodeAddress, ProtocolVersion
+from glide.shared.config import NodeAddress, ProtocolVersion
 from glide.glide_client import GlideClient, GlideClusterClient
-from glide.routes import AllNodes
-from tests.conftest import create_client
+from glide.shared.routes import AllNodes
+from tests.async_tests.conftest import create_client
 
 
 async def get_client_list_output_count(output: Union[bytes, str, None]) -> int:

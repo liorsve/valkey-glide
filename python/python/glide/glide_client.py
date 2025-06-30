@@ -32,6 +32,7 @@ from glide.glide import (
 )
 from glide.logger import Level as LogLevel
 from glide.logger import Logger as ClientLogger
+from glide.opentelemetry import OpenTelemetry
 from glide.shared.commands.async_commands.cluster_commands import ClusterCommands
 from glide.shared.commands.async_commands.core import CoreCommands
 from glide.shared.commands.async_commands.standalone_commands import StandaloneCommands

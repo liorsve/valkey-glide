@@ -47,7 +47,7 @@ def create_sync_client(
     addresses: Optional[List[NodeAddress]] = None,
     client_name: Optional[str] = None,
     protocol: ProtocolVersion = ProtocolVersion.RESP3,
-    timeout: Optional[int] = 1000,
+    request_timeout: Optional[int] = 1000,
     connection_timeout: Optional[int] = 1000,
     cluster_mode_pubsub: Optional[
         GlideClusterClientConfiguration.PubSubSubscriptions
@@ -60,6 +60,9 @@ def create_sync_client(
     client_az: Optional[str] = None,
     reconnect_strategy: Optional[BackoffStrategy] = None,
     valkey_cluster: Optional[ValkeyCluster] = None,
+    use_tls: Optional[bool] = None,
+    tls_insecure: Optional[bool] = None,
+    lazy_connect: Optional[bool] = False,
 ) -> TSyncGlideClient:
     # Create sync client
     config = create_client_config(
@@ -68,9 +71,10 @@ def create_sync_client(
         credentials,
         database_id,
         addresses,
+        use_tls,
         client_name,
         protocol,
-        timeout,
+        request_timeout,
         connection_timeout,
         cluster_mode_pubsub,
         standalone_mode_pubsub,
@@ -78,6 +82,8 @@ def create_sync_client(
         read_from,
         client_az,
         reconnect_strategy,
+        lazy_connect,
+        tls_insecure,
         valkey_cluster,
     )
     if cluster_mode:
