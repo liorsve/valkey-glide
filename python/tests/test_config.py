@@ -2,7 +2,7 @@
 
 import pytest
 
-from glide.shared.config import (
+from glide_shared.config import (
     AdvancedGlideClientConfiguration,
     AdvancedGlideClusterClientConfiguration,
     BackoffStrategy,
@@ -16,9 +16,9 @@ from glide.shared.config import (
     ReadFrom,
     TlsAdvancedConfiguration,
 )
-from glide.shared.protobuf.connection_request_pb2 import ConnectionRequest
-from glide.shared.protobuf.connection_request_pb2 import ReadFrom as ProtobufReadFrom
-from glide.shared.protobuf.connection_request_pb2 import TlsMode
+from glide_shared.protobuf.connection_request_pb2 import ConnectionRequest
+from glide_shared.protobuf.connection_request_pb2 import ReadFrom as ProtobufReadFrom
+from glide_shared.protobuf.connection_request_pb2 import TlsMode
 
 
 def test_default_client_config():

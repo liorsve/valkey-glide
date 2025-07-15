@@ -4,7 +4,63 @@ This document describes how to set up your development environment to build and 
 
 The Valkey GLIDE Python wrapper consists of both Python and Rust code. Rust bindings for Python are implemented using [PyO3](https://github.com/PyO3/pyo3), and the Python package is built using [maturin](https://github.com/PyO3/maturin). The Python and Rust components communicate using the [protobuf](https://github.com/protocolbuffers/protobuf) protocol.
 
-# Prerequisites
+
+## 📁 Python Project Structure
+---
+
+The python/ directory contains three separate components:
+
+
+#### 🔹 glide-async/
+-	Purpose: Async client for Valkey, implemented as a hybrid Python/Rust project.
+-	Rust bindings: via PyO3, defined in `valkey-glide/python/glide-async/src/lib.rs`.
+-	Communication Layer: Communicates with Glide's Rust core using a Unix Domain Socket (UDS).
+-	Import path: `import glide`
+-	PyPI package name: `valkey-glide`
+-	Build backend: Maturin (Rust-based)
+
+
+#### 🔹 glide-sync/
+-	Purpose: Sync client for Valkey, implemented via CFFI, built with setuptools.
+-	Rust bindings: via CFFI, defined in `valkey-glide/ffi/src/lib.rs`.
+-	Communication Layer: Communicates with Glide's Rust core via direct FFI.
+-	Import path: `import glide_sync`
+-	PyPI package name: `valkey-glide-sync`
+-	Build backend: setuptools (C-based)
+
+
+#### 🔹 glide-shared/
+-	Purpose: Shared Python logic used by both clients — includes command builders, exceptions, constants, protobuf message handling, and more.
+-	Import path: `import glide_shared`
+-	Installation: Installed locally via `pip install valkey-glide/python/glide-shared` during each client’s build process. Not published separately to PyPI.
+
+
+### 🧱 High-Level Folder Structure
+```
+python/
+├── glide-async/            # Async client (PyO3 + Maturin)
+│   ├── Cargo.toml
+│   ├── pyproject.toml
+│   ├── python/glide/       # Python code for async client
+│   └── src/                # Rust code with PyO3 bindings
+├── glide-sync/             # Sync client (CFFI + setuptools)
+│   ├── pyproject.toml
+│   └── glide_sync/         # Python code for sync client
+├── glide-shared/           # Shared logic used by both clients
+│   ├── pyproject.toml
+│   └── glide_shared/       # Shared source code
+└── tests/                  # Shared test suite
+ffi/
+├── src/                    # Rust code provides a C-compatible FFI (used in glide-sync)
+```
+
+### 📦 Packaging and Installation Notes
+-	During development, glide_shared must be installed locally (editable or standard install).
+-	Each client is built and released independently, with its own isolated package name and pyproject.toml.
+-	Shared logic remains fully decoupled from both clients and reusable between them.
+
+
+## Prerequisites
 ---
 
 Before building the package from source, make sure that you have installed the listed dependencies below:
@@ -115,7 +171,7 @@ cargo install --locked cargo-zigbuild
 
 </details>
 
-# Cloning the Repository
+## Cloning the Repository
 ---
 
 To begin development, clone the repository:
@@ -127,7 +183,7 @@ git clone https://github.com/valkey-io/valkey-glide.git
 cd valkey-glide
 ```
 
-# Build
+## Build
 ---
 
 After installing prerequisites and cloning the repository, you can build the async Python client using the `dev.py` CLI utility that can be found in the root `python/` directory.
@@ -150,7 +206,7 @@ Run the following to see all available commands:
 python3 dev.py --help
 ```
 
-# Tests
+## Tests
 ---
 
 Ensure you have installed `valkey-server` and `valkey-cli` on your host (or `redis-server` and `redis-cli`).
@@ -173,7 +229,7 @@ python3 dev.py test --args \
   --standalone-endpoints=localhost:6379
 ```
 
-# Manually Running Tests
+## Manually Running Tests
 ---
 
 If needed, you can invoke `pytest` directly from the root `python/` directory for custom workflows:
@@ -194,7 +250,7 @@ source .env/bin/activate
 pytest -v --async-backend=trio --async-backend=asyncio
 ```
 
-# Protobuf
+## Protobuf
 ---
 During the initial build, Python protobuf files were created in `python/python/glide/shared/protobuf`. If modifications are made to the protobuf definition files (`.proto` files located in `glide-core/src/protofuf`), it becomes necessary to regenerate the Python protobuf files.
 
@@ -206,7 +262,7 @@ python3 dev.py protobuf
 
 This generates `.py` and `.pyi` interface files for type checking and places them in the `python/python/glide/shared/protobuf` folder.
 
-# Linters
+## Linters
 ---
 
 Development on the Python wrapper may involve changes in either the Python or Rust code. Each language has distinct linter tests that must be passed before committing changes.
@@ -239,7 +295,7 @@ cargo fmt --manifest-path ./Cargo.toml --all
 
 > These are not included in the `dev.py` utility and should be run separately from the `python` root folder.
 
-# Documentation
+## Documentation
 ---
 
 > **NOTE:**  We are currently in process of switching our documentation tool from `sphinx` to `mkdocs`. Currently the files located in `python/docs` are required for `sphinx`'s CI validation step (`docs-test`) as they are the configuration files for how `sphinx` works in documenting Valkey GLIDE. Once we switch to `mkdocs`, `sphinx` related files and validation should be removed, and `mkdocs`'s files and validation should be used instead.
@@ -485,7 +541,7 @@ Format: `` `text <link>`_ ``
 Example: `` `SORT <https://valkey.io/commands/sort/>`_ ``
 
 
-# Recommended extensions for VS Code
+## Recommended extensions for VS Code
 ---
 
 -   [Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)
@@ -494,6 +550,6 @@ Example: `` `SORT <https://valkey.io/commands/sort/>`_ ``
 -   [Flake8](https://marketplace.visualstudio.com/items?itemName=ms-python.flake8)
 -   [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 
-# Community Support and Feedback
+## Community Support and Feedback
 
 We encourage you to join our community to support, share feedback, and ask questions. You can approach us for anything on our Valkey Slack: [Join Valkey Slack](https://join.slack.com/t/valkey-oss-developer/shared_invite/zt-2nxs51chx-EB9hu9Qdch3GMfRcztTSkQ).

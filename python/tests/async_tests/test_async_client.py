@@ -10,12 +10,11 @@ from typing import Any, Dict, List, Mapping, Optional, Union, cast
 
 import anyio
 import pytest
-
-from glide import ClosingError, RequestError, Script
-from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
-from glide.shared.commands.batch import Batch, ClusterBatch
-from glide.shared.commands.batch_options import ClusterBatchOptions
-from glide.shared.commands.bitmap import (
+from glide import GlideClient, GlideClusterClient, Script, TGlideClient
+from glide_shared import ClosingError, RequestError
+from glide_shared.commands.batch import Batch, ClusterBatch
+from glide_shared.commands.batch_options import ClusterBatchOptions
+from glide_shared.commands.bitmap import (
     BitFieldGet,
     BitFieldIncrBy,
     BitFieldOverflow,
@@ -29,8 +28,8 @@ from glide.shared.commands.bitmap import (
     SignedEncoding,
     UnsignedEncoding,
 )
-from glide.shared.commands.command_args import Limit, ListDirection, OrderBy
-from glide.shared.commands.core_options import (
+from glide_shared.commands.command_args import Limit, ListDirection, OrderBy
+from glide_shared.commands.core_options import (
     ConditionalChange,
     ExpireOptions,
     ExpiryGetEx,
@@ -44,7 +43,7 @@ from glide.shared.commands.core_options import (
     OnlyIfEqual,
     UpdateOptions,
 )
-from glide.shared.commands.sorted_set import (
+from glide_shared.commands.sorted_set import (
     AggregationType,
     GeoSearchByBox,
     GeoSearchByRadius,
@@ -59,7 +58,7 @@ from glide.shared.commands.sorted_set import (
     ScoreBoundary,
     ScoreFilter,
 )
-from glide.shared.commands.stream import (
+from glide_shared.commands.stream import (
     ExclusiveIdBound,
     IdBound,
     MaxId,
@@ -73,14 +72,14 @@ from glide.shared.commands.stream import (
     TrimByMaxLen,
     TrimByMinId,
 )
-from glide.shared.config import BackoffStrategy, ProtocolVersion, ServerCredentials
-from glide.shared.constants import (
+from glide_shared.config import BackoffStrategy, ProtocolVersion, ServerCredentials
+from glide_shared.constants import (
     OK,
     TEncodable,
     TFunctionStatsSingleNodeResponse,
     TResult,
 )
-from glide.shared.routes import (
+from glide_shared.routes import (
     AllNodes,
     AllPrimaries,
     ByAddressRoute,
@@ -90,6 +89,7 @@ from glide.shared.routes import (
     SlotKeyRoute,
     SlotType,
 )
+
 from tests.async_tests.conftest import create_client
 from tests.utils.utils import (
     check_function_list_response,
