@@ -16,8 +16,8 @@ sphinx-rtd-theme
 psutil
 pytest_asyncio
 
-# Sync
-types-cffi # where is it used?
+# Sync Client
+types-cffi
 setuptools
 wheel >= 0.45
 build
