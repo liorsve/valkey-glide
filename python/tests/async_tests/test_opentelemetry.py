@@ -8,15 +8,15 @@ from typing import Dict, List, Tuple
 import anyio
 import psutil  # type: ignore[import-untyped]
 import pytest
-
 from glide import (
     OpenTelemetryConfig,
     OpenTelemetryMetricsConfig,
     OpenTelemetryTracesConfig,
 )
+from glide.opentelemetry import OpenTelemetry
 from glide_shared.commands.batch import Batch, ClusterBatch
 from glide_shared.config import ProtocolVersion
-from glide.opentelemetry import OpenTelemetry
+
 from tests.async_tests.conftest import create_client
 
 # Constants
@@ -163,6 +163,7 @@ def test_wrong_opentelemetry_config():
         )
 
 
+@pytest.mark.anyio
 async def test_span_not_exported_before_init_otel(request):
     """Test that spans are not exported before OpenTelemetry is initialized"""
     # Clean up any existing files
@@ -184,6 +185,7 @@ async def test_span_not_exported_before_init_otel(request):
     await client.close()
 
 
+@pytest.mark.anyio
 class TestOpenTelemetryGlide:
     @pytest.fixture(scope="class")
     async def setup_class(self, request):
@@ -193,7 +195,6 @@ class TestOpenTelemetryGlide:
         # Test that spans are not exported before OpenTelemetry is initialized
         await test_span_not_exported_before_init_otel(request)
 
-    @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.fixture(autouse=True)
     async def setup_test(self, request, cluster_mode):
         # Initialize OpenTelemetry with 100% sampling for tests

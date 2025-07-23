@@ -1,10 +1,12 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 
 from typing import AsyncGenerator, List, Optional, Union
+
 import anyio
 import pytest
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
-from glide.logger import Logger, Level as logLevel
+from glide.logger import Level as logLevel
+from glide.logger import Logger
 from glide_shared.config import (
     BackoffStrategy,
     GlideClientConfiguration,
@@ -22,9 +24,6 @@ from tests.utils.utils import (
     INITIAL_PASSWORD,
     NEW_PASSWORD,
     USERNAME,
-    TEST_TEARDOWN_MAX_RETRIES,
-    TEST_TEARDOWN_BASE_DELAY,
-    MAX_BACKOFF_TIME,
     auth_client,
     config_set_new_password,
     create_client_config,
@@ -32,6 +31,11 @@ from tests.utils.utils import (
 )
 
 Logger.set_logger_config(DEFAULT_TEST_LOG_LEVEL)
+
+# Test teardown retry configuration
+TEST_TEARDOWN_MAX_RETRIES = 3
+TEST_TEARDOWN_BASE_DELAY = 1  # seconds
+MAX_BACKOFF_TIME = 8  # seconds
 
 
 @pytest.fixture(scope="function")
@@ -90,7 +94,7 @@ async def acl_glide_client(
     yield client
     await test_teardown(request, cluster_mode, protocol)
     await client.close()
-    
+
 
 async def create_client(
     request,
@@ -143,6 +147,7 @@ async def create_client(
     else:
         return await GlideClient.create(config)
 
+
 async def test_teardown(request, cluster_mode: bool, protocol: ProtocolVersion):
     """
     Perform teardown tasks such as flushing all data from the cluster.
@@ -182,7 +187,8 @@ async def test_teardown(request, cluster_mode: bool, protocol: ProtocolVersion):
                     f"Teardown attempt {attempt + 1} failed, retrying in {delay}s: {e}",
                 )
                 await anyio.sleep(delay)
-                
+
+
 async def _attempt_teardown(request, cluster_mode: bool, protocol: ProtocolVersion):
     """
     Single attempt at teardown operations. This function may raise exceptions
@@ -228,6 +234,7 @@ async def _attempt_teardown(request, cluster_mode: bool, protocol: ProtocolVersi
             raise TimeoutError(f"Connection timeout during teardown: {e}")
         else:
             raise e
+
 
 @pytest.fixture
 def tls_insecure(request) -> bool:

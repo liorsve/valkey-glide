@@ -3,10 +3,10 @@
 from typing import Any, AsyncGenerator, Union, cast
 
 import pytest
-
-from glide_shared.config import NodeAddress, ProtocolVersion
 from glide.glide_client import GlideClient, GlideClusterClient
+from glide_shared.config import NodeAddress, ProtocolVersion
 from glide_shared.routes import AllNodes
+
 from tests.async_tests.conftest import create_client
 from tests.utils.cluster import ValkeyCluster
 

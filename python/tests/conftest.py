@@ -291,4 +291,3 @@ def skip_if_version_below(request):
                 )
         finally:
             client.close()
-            

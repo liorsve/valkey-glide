@@ -1,7 +1,6 @@
 import pytest
-
-from glide_shared.config import ProtocolVersion
 from glide.glide_client import TGlideClient
+from glide_shared.config import ProtocolVersion
 
 
 @pytest.mark.anyio

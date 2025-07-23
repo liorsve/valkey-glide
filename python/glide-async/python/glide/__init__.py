@@ -2,10 +2,10 @@
 
 from glide.glide import (
     ClusterScanCursor,
-    Script,
     OpenTelemetryConfig,
+    OpenTelemetryMetricsConfig,
     OpenTelemetryTracesConfig,
-    OpenTelemetryMetricsConfig
+    Script,
 )
 from glide_shared import (
     OK,
@@ -160,10 +160,6 @@ __all__ = [
     "ClusterTransaction",
     "Transaction",
     "TBatch",
-    # Batch Options
-    "BatchOptions",
-    "BatchRetryStrategy",
-    "ClusterBatchOptions",
     # Config
     "AdvancedGlideClientConfiguration",
     "AdvancedGlideClusterClientConfiguration",

@@ -2100,8 +2100,8 @@ class CoreCommands(Protocol):
         Returns:
             TOK: A simple "OK" response.
 
-            If `start` exceeds the end of the list, or if `start` is greater than `end`, the list is emptied
-            and the key is removed.
+            If `start` exceeds the end of the list, or if `start` is greater than `end`, the result will be an empty list
+            (which causes `key` to be removed).
 
             If `end` exceeds the actual end of the list, it will be treated like the last element of the list.
 
@@ -2119,6 +2119,9 @@ class CoreCommands(Protocol):
     def lrem(self, key: TEncodable, count: int, element: TEncodable) -> int:
         """
         Removes the first `count` occurrences of elements equal to `element` from the list stored at `key`.
+        If `count` is positive, it removes elements equal to `element` moving from head to tail.
+        If `count` is negative, it removes elements equal to `element` moving from tail to head.
+        If `count` is 0 or greater than the occurrences of elements equal to `element`, it removes all elements
         equal to `element`.
 
         See [valkey.io](https://valkey.io/commands/lrem/) for more details.
@@ -2126,11 +2129,6 @@ class CoreCommands(Protocol):
         Args:
             key (TEncodable): The key of the list.
             count (int): The count of occurrences of elements equal to `element` to remove.
-
-                - If `count` is positive, it removes elements equal to `element` moving from head to tail.
-                - If `count` is negative, it removes elements equal to `element` moving from tail to head.
-                - If `count` is 0 or greater than the occurrences of elements equal to `element`, it removes all elements
-
             element (TEncodable): The element to remove from the list.
 
         Returns:
@@ -5581,10 +5579,10 @@ class CoreCommands(Protocol):
             elements (List[TEncodable]): A list of members to add to the HyperLogLog stored at `key`.
 
         Returns:
-            bool: If the HyperLogLog is newly created, or if the HyperLogLog approximated cardinality is
-            altered, then returns `True`.
+            int: If the HyperLogLog is newly created, or if the HyperLogLog approximated cardinality is
+            altered, then returns 1.
 
-            Otherwise, returns `False`.
+            Otherwise, returns 0.
 
         Examples:
             >>> client.pfadd("hll_1", ["a", "b", "c" ])
@@ -6512,7 +6510,7 @@ class CoreCommands(Protocol):
         See [valkey.io](https://valkey.io/commands/watch) for more details.
 
         Note:
-            In cluster mode, if keys in `keys` map to different hash slots,
+            In cluster mode, if keys in `key_value_map` map to different hash slots,
             the command will be split across these slots and executed separately for each.
             This means the command is atomic only at the slot level. If one or more slot-specific
             requests fail, the entire call will return the first encountered error, even

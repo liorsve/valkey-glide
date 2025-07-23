@@ -15,6 +15,11 @@ from glide_shared.commands.batch import (
     ClusterTransaction,
     Transaction,
 )
+from glide_shared.commands.batch_options import (
+    BatchOptions,
+    BatchRetryStrategy,
+    ClusterBatchOptions,
+)
 from glide_shared.commands.bitmap import (
     BitFieldGet,
     BitFieldSet,

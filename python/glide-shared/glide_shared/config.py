@@ -8,12 +8,16 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from glide_shared.commands.core_options import PubSubMsg
 from glide_shared.exceptions import ConfigurationError
-from glide_shared.protobuf.connection_request_pb2 import ConnectionRequest
+from glide_shared.protobuf.connection_request_pb2 import (
+    ConnectionRequest,
+)
 from glide_shared.protobuf.connection_request_pb2 import (
     ProtocolVersion as SentProtocolVersion,
 )
 from glide_shared.protobuf.connection_request_pb2 import ReadFrom as ProtobufReadFrom
-from glide_shared.protobuf.connection_request_pb2 import TlsMode
+from glide_shared.protobuf.connection_request_pb2 import (
+    TlsMode,
+)
 
 
 class NodeAddress:

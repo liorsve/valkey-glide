@@ -22,6 +22,7 @@ from glide_shared.constants import (
     TResult,
     TSingleNodeRoute,
 )
+from glide_shared.exceptions import RequestError
 from glide_shared.protobuf.command_request_pb2 import RequestType
 from glide_shared.routes import Route
 

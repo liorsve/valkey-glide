@@ -29,6 +29,7 @@ from glide_shared.config import (
     ProtocolVersion,
     ReadFrom,
     ServerCredentials,
+    TlsAdvancedConfiguration,
 )
 from glide_shared.constants import (
     TClusterResponse,
@@ -36,7 +37,6 @@ from glide_shared.constants import (
     TFunctionStatsSingleNodeResponse,
     TResult,
 )
-from glide_shared.config import TlsAdvancedConfiguration
 from glide_shared.routes import AllNodes
 from glide_sync import GlideClient as SyncGlideClient
 from glide_sync import GlideClusterClient as SyncGlideClusterClient
@@ -53,11 +53,6 @@ USERNAME = "username"
 INITIAL_PASSWORD = "initial_password"
 NEW_PASSWORD = "new_secure_password"
 WRONG_PASSWORD = "wrong_password"
-
-# Test teardown retry configuration
-TEST_TEARDOWN_MAX_RETRIES = 3
-TEST_TEARDOWN_BASE_DELAY = 1  # seconds
-MAX_BACKOFF_TIME = 8  # seconds
 
 
 version_str = ""
@@ -483,8 +478,10 @@ def create_client_config(
     tls_insecure: Optional[bool] = None,
     lazy_connect: Optional[bool] = False,
 ) -> Union[GlideClusterClientConfiguration, GlideClientConfiguration]:
-    if use_tls is None:
-            use_tls = request.config.getoption("--tls")
+    if use_tls is not None:
+        use_tls = use_tls
+    else:
+        use_tls = request.config.getoption("--tls")
     tls_adv_conf = TlsAdvancedConfiguration(use_insecure_tls=tls_insecure)
     if cluster_mode:
         valkey_cluster = valkey_cluster or pytest.valkey_cluster  # type: ignore
@@ -512,9 +509,7 @@ def create_client_config(
         valkey_cluster = valkey_cluster or pytest.standalone_cluster  # type: ignore
         assert type(valkey_cluster) is ValkeyCluster
         config = GlideClientConfiguration(
-            addresses=(
-                pytest.standalone_cluster.nodes_addr if addresses is None else addresses  # type: ignore
-            ),
+            addresses=(valkey_cluster.nodes_addr if addresses is None else addresses),
             use_tls=use_tls,
             credentials=credentials,
             database_id=database_id,
@@ -525,10 +520,10 @@ def create_client_config(
             inflight_requests_limit=inflight_requests_limit,
             read_from=read_from,
             client_az=client_az,
-            reconnect_strategy=reconnect_strategy,
             advanced_config=AdvancedGlideClientConfiguration(
                 connection_timeout, tls_config=tls_adv_conf
             ),
+            reconnect_strategy=reconnect_strategy,
             lazy_connect=lazy_connect,
         )
     return config
@@ -588,8 +583,8 @@ def config_set_new_password(client: TAnyGlideClient, password):
 def kill_connections(client: TAnyGlideClient):
     """
     Kills all connections to the given TGlideClient server connected.
-    When passing a sync client, this returns the reuslt of the CLIENT KILL command.
-    When passing an async client, this returns a coroutine that should be awaited.
+        When passing a sync client, this returns the reuslt of the CLIENT KILL command.
+        When passing an async client, this returns a coroutine that should be awaited.
     """
     if isinstance(client, (GlideClient, SyncGlideClient)):
         return client.custom_command(["CLIENT", "KILL", "TYPE", "normal"])
