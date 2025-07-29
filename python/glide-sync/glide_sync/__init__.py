@@ -143,6 +143,8 @@ from .config import (
     GlideClusterClientConfiguration,
 )
 from .glide_client import GlideClient, GlideClusterClient, TGlideClient
+from .logger import Level as LogLevel
+from .logger import Logger
 
 __all__ = [
     "Batch",
@@ -252,6 +254,8 @@ __all__ = [
     "ConnectionError",
     "ExecAbortError",
     "GlideError",
+    "Logger",
+    "LogLevel",
     "RequestError",
     "TimeoutError",
     "DataType",
