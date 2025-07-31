@@ -88,9 +88,9 @@ class CoreCommands(Protocol):
         route: Optional[Route] = None,
     ) -> TResult: ...
 
-    def _update_connection_password(
-        self, password: Optional[str], immediate_auth: bool
-    ) -> TResult: ...
+    # def _update_connection_password(
+    #     self, password: Optional[str], immediate_auth: bool
+    # ) -> TResult: ...
 
     def update_connection_password(
         self, password: Optional[str], immediate_auth=False
