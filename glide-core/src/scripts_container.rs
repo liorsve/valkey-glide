@@ -26,58 +26,53 @@ pub fn add_script(script: &[u8]) -> String {
     let mut hash = Sha1::new();
     hash.update(script);
     let hash = hash.digest().to_string();
-    log_info(
-        "script lifetime",
-        format!("Added script with hash: `{hash}`"),
-    );
+    println!("[add_script] Adding script with hash: {hash}");
 
     let mut container = CONTAINER.lock().expect(LOCK_ERR);
-    let entry = container
-        .entry(hash.clone())
-        .or_insert_with(|| ScriptEntry {
+    let entry = container.entry(hash.clone()).or_insert_with(|| {
+        println!("[add_script] Creating new ScriptEntry for hash={hash}, initial ref_count=0");
+        ScriptEntry {
             script: Arc::new(BytesMut::from(script)),
             ref_count: Cell::new(0),
-        });
+        }
+    });
     let new_count = entry.ref_count.get() + 1;
     entry.ref_count.set(new_count);
-    log_info(
-        "script_lifetime",
-        format!("Added script with hash: `{hash}`, ref_count = {new_count}"),
-    );
+
+    println!("[add_script] Script `{hash}` ref_count incremented → {new_count}");
     hash
 }
 
 pub fn get_script(hash: &str) -> Option<Arc<BytesMut>> {
-    CONTAINER
-        .lock()
-        .expect(LOCK_ERR)
-        .get(hash)
-        .map(|entry| entry.script.clone())
+    let container = CONTAINER.lock().expect(LOCK_ERR);
+    if let Some(entry) = container.get(hash) {
+        println!(
+            "[get_script] Found script `{hash}`, current ref_count={}",
+            entry.ref_count.get()
+        );
+        Some(entry.script.clone())
+    } else {
+        println!("[get_script] Script `{hash}` not found in container");
+        None
+    }
 }
 
 pub fn remove_script(hash: &str) {
     let mut container = CONTAINER.lock().expect(LOCK_ERR);
     if let Some(entry) = container.get(hash) {
-        let new_count = entry.ref_count.get() - 1;
+        let new_count = entry.ref_count.get().saturating_sub(1);
         entry.ref_count.set(new_count);
+
+        println!("[remove_script] Script `{hash}` decremented, new ref_count={new_count}");
 
         if new_count == 0 {
             container.remove(hash);
-            log_info(
-                "script_lifetime",
-                format!("Removed script with hash `{hash}` (ref_count reached 0)."),
-            );
-        } else {
-            log_info(
-                "script_lifetime",
-                format!("Decremented ref_count for script `{hash}`: new ref_count = {new_count}."),
+            println!(
+                "[remove_script] Script `{hash}` removed (ref_count=0, dropped from container)"
             );
         }
     } else {
-        log_warn(
-            "script_lifetime",
-            format!("Attempted to remove non-existent script with hash `{hash}`."),
-        );
+        println!("[remove_script] Tried to remove `{hash}`, but no such entry exists");
     }
 }
 

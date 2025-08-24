@@ -167,8 +167,10 @@ jobs:
             - name: Test with pytest (full matrix, all async backends)
               if: ${{ env.RUN_FULL_MATRIX == 'true' }}
               working-directory: ./python
+              env:
+                  TEST_NAME_ARG: ${{ inputs.name && format('-k {0}', inputs.name) || '' }}
               run: |
-                  python3 dev.py test --args --async-backend=asyncio --async-backend=trio --html=pytest_report.html --self-contained-html
+                  python3 dev.py test --args -s --async-backend=asyncio --async-backend=trio --html=pytest_report.html --self-contained-html "$TEST_NAME_ARG"
 
             - name: Test with pytest (async only)
               if: ${{ env.RUN_ASYNC_ONLY == 'true' && env.RUN_FULL_MATRIX != 'true'}}
@@ -243,15 +245,19 @@ jobs:
 
             - name: Test pubsub with pytest (asyncio only)
               if: ${{ env.RUN_FULL_MATRIX != 'true' }}
-              working-directory: ./python
+              working-directory: ./python\
+              env:
+                  TEST_NAME_ARG: ${{ inputs.name && format('-k {0}', inputs.name) || '' }}
               run: |
-                  python3 dev.py test --args -k test_pubsub --html=pytest_report.html --self-contained-html
+                  python3 dev.py test --args -k test_pubsub --html=pytest_report.html --self-contained-html "$TEST_NAME_ARG"
 
             - name: Test pubsub with pytest (full matrix)
               if: ${{ env.RUN_FULL_MATRIX == 'true' }}
               working-directory: ./python
+              env:
+                  TEST_NAME_ARG: ${{ inputs.name && format('-k {0}', inputs.name) || '' }}
               run: |
-                  python3 dev.py test --args -k test_pubsub --async-backend=asyncio --async-backend=trio --html=pytest_report.html --self-contained-html
+                  python3 dev.py test --args -k test_pubsub --async-backend=asyncio --async-backend=trio --html=pytest_report.html --self-contained-html "$TEST_NAME_ARG"
 
             - name: Upload test reports
               if: always()
