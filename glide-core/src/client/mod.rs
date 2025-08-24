@@ -695,31 +695,68 @@ impl Client {
         })
     }
 
-    pub async fn invoke_script<'a>(
-        &'a mut self,
-        hash: &'a str,
-        keys: &Vec<&[u8]>,
-        args: &Vec<&[u8]>,
-        routing: Option<RoutingInfo>,
-    ) -> redis::RedisResult<Value> {
-        let _ = self.get_or_initialize_client().await?;
+pub async fn invoke_script<'a>(
+    &'a mut self,
+    hash: &'a str,
+    keys: &Vec<&[u8]>,
+    args: &Vec<&[u8]>,
+    routing: Option<RoutingInfo>,
+) -> redis::RedisResult<Value> {
+    println!("[invoke_script] called with hash={}", hash);
+    println!(
+        "[invoke_script] keys={:?}, args={:?}, routing={:?}",
+        keys, args, routing
+    );
 
-        let eval = eval_cmd(hash, keys, args);
-        let result = self.send_command(&eval, routing.clone()).await;
-        let Err(err) = result else {
-            return result;
-        };
-        if err.kind() == ErrorKind::NoScriptError {
-            let Some(code) = get_script(hash) else {
-                return Err(err);
-            };
-            let load = load_cmd(&code);
-            self.send_command(&load, None).await?;
-            self.send_command(&eval, routing).await
-        } else {
-            Err(err)
-        }
+    let _ = self.get_or_initialize_client().await?;
+    println!("[invoke_script] client initialized");
+
+    let eval = eval_cmd(hash, keys, args);
+    println!("[invoke_script] constructed eval command: {:?}", eval);
+
+    let result = self.send_command(&eval, routing.clone()).await;
+    match &result {
+        Ok(val) => println!("[invoke_script] eval succeeded: {:?}", val),
+        Err(err) => println!("[invoke_script] eval failed: {:?}", err),
     }
+
+    let Err(err) = result else {
+        return result;
+    };
+
+    if err.kind() == ErrorKind::NoScriptError {
+        println!(
+            "[invoke_script] NoScriptError: script not cached on server, hash={}",
+            hash
+        );
+
+        let Some(code) = get_script(hash) else {
+            println!(
+                "[invoke_script] get_script returned None for hash={}",
+                hash
+            );
+            return Err(err);
+        };
+        println!(
+            "[invoke_script] script code retrieved (len={})",
+            code.len()
+        );
+
+        let load = load_cmd(&code);
+        println!("[invoke_script] constructed load command: {:?}", load);
+
+        self.send_command(&load, None).await?;
+        println!("[invoke_script] script loaded, retrying eval");
+
+        self.send_command(&eval, routing).await
+    } else {
+        println!(
+            "[invoke_script] error kind not handled: {:?}",
+            err.kind()
+        );
+        Err(err)
+    }
+}
 
     pub fn reserve_inflight_request(&self) -> bool {
         // We use this approach of checking the `inflight_requests_allowed` value

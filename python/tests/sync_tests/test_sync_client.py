@@ -10495,21 +10495,27 @@ class TestSyncScripts:
         assert glide_sync_client.invoke_script(script_1) == b"Script Exists"
         script_1.__del__()
 
+        print("1")
         # Flush the script from the server
         assert glide_sync_client.script_flush() == OK
+        print("2")
 
         # Script should not exist on the server anymore
         assert glide_sync_client.script_exists([script_1.get_hash()]) == [False]
+        print("3")
 
         # Run second script; it should not exist on the server but must be found in the local script cache
         assert glide_sync_client.invoke_script(script_2) == b"Script Exists"
-
+        print("4")
+        
         # Release script_2 and flush again
         script_2.__del__()
         assert glide_sync_client.script_flush() == OK
+        print("5")
 
         # Should now raise NOSCRIPT
         with pytest.raises(RequestError) as exc_info:
             glide_sync_client.invoke_script(script_2)
 
         assert "NOSCRIPT" in str(exc_info.value).upper()
+        print("6")
