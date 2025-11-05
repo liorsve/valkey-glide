@@ -7816,3 +7816,154 @@ class CoreCommands(Protocol):
         )
         result = await self._execute_command(RequestType.Sort, args)
         return cast(int, result)
+    
+    async def subscribe(
+        self,
+        channels: List[TEncodable]
+    ) -> TOK:
+        """
+        Subscribe to exact channels.
+            
+        Args:
+            channels: A list of channel names to subscribe to.
+        
+        Returns:
+            TOK: A simple "OK" response.
+        
+        Examples:
+            >>> await client.subscribe(["channel1"])
+                "OK"
+            >>> await client.subscribe(["channel1", "channel2"])
+                "OK"
+        """
+        return cast(
+            TOK,
+            await self._execute_command(RequestType.Subscribe, channels),
+        )
+
+    async def psubscribe(
+        self,
+        patterns: List[TEncodable]
+    ) -> TOK:
+        """
+        Subscribe to channel patterns.
+            
+        Args:
+            patterns: A list of patterns to subscribe to (e.g., ["news.*"]).
+        
+        Returns:
+            TOK: A simple "OK" response.
+        
+        Examples:
+            >>> await client.psubscribe(["news.*"])
+                "OK"
+            >>> await client.psubscribe([b"news.*", b"updates.*"])
+                "OK"
+        """
+        return cast(
+            TOK,
+            await self._execute_command(RequestType.PSubscribe, patterns),
+        )
+
+    async def unsubscribe(
+        self,
+        channels: Optional[List[TEncodable]] = None
+    ) -> TOK:
+        """
+        Unsubscribe from exact channels.
+        
+        Args:
+            channels: A list of channel names to unsubscribe from. 
+                    If None, unsubscribes from all exact channels.
+        
+        Returns:
+            TOK: A simple "OK" response.
+        
+        Examples:
+            >>> await client.unsubscribe(["channel1"])
+                "OK"
+            >>> await client.unsubscribe()  # Unsubscribe from all exact channels
+                "OK"
+        """
+        return cast(
+            TOK,
+            await self._execute_command(
+                RequestType.Unsubscribe, channels if channels else []
+            ),
+        )
+
+    async def punsubscribe(
+        self,
+        patterns: Optional[List[TEncodable]] = None
+    ) -> TOK:
+        """
+        Unsubscribe from channel patterns.
+        
+        Args:
+            patterns: A list of patterns to unsubscribe from.
+                    If None, unsubscribes from all patterns.
+        
+        Returns:
+            TOK: A simple "OK" response.
+        
+        Examples:
+            >>> await client.punsubscribe([b"news.*"])
+                "OK"
+            >>> await client.punsubscribe()  # Unsubscribe from all patterns
+                "OK"
+        """
+        return cast(
+            TOK,
+            await self._execute_command(
+                RequestType.PUnsubscribe, patterns if patterns else []
+            ),
+        )
+
+    async def get_active_subscriptions(
+        self,
+    ) -> Dict[str, Set[str]]:
+        """
+        Retrieves the current active subscriptions as tracked by the client.
+        
+        This reflects the client's view of what it is currently subscribed to.
+        
+        Returns:
+            Dict[str, Set[str]]: A dictionary mapping subscription types to channel names:
+                - "channels": Set of exact channel names
+                - "patterns": Set of channel patterns
+                - "sharded_channels": Set of sharded channel names (cluster mode only)
+        
+        Examples:
+            >>> # Check all active subscriptions
+            >>> active = await client.get_active_subscriptions()
+            >>> print(f"Channels: {active.get('channels', set())}")
+            >>> print(f"Patterns: {active.get('patterns', set())}")
+            >>> 
+            >>> # Check if subscribed to specific channel
+            >>> if "channel1" in active.get("channels", set()):
+            >>>     print("Subscribed to channel1")
+            >>> 
+            >>> # Health check: verify expected subscriptions
+            >>> expected = {"channel1", "channel2"}
+            >>> actual = active.get("channels", set())
+            >>> if not expected.issubset(actual):
+            >>>     missing = expected - actual
+            >>>     print(f"Warning: Missing subscriptions: {missing}")
+            >>> 
+            >>> # Check total count
+            >>> total = sum(len(s) for s in active.values())
+            >>> print(f"Total active subscriptions: {total}")
+        """
+        result = await self._execute_command(RequestType.GetActiveSubscriptions, [])
+        # Convert the result from the core to the expected format
+        # The core returns a dict with bytes keys and list values
+        # We need to convert it to Dict[str, Set[str]]
+        converted: Dict[str, Set[str]] = {}
+        if isinstance(result, dict):
+            for key, value in result.items():
+                key_str = key.decode() if isinstance(key, bytes) else str(key)
+                value_set = set(
+                    v.decode() if isinstance(v, bytes) else str(v) for v in value
+                )
+                converted[key_str] = value_set
+        return converted
