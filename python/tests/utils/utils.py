@@ -1,3 +1,4 @@
+import anyio
 import json
 import random
 import string
@@ -1697,3 +1698,112 @@ def get_ca_certificate() -> bytes:
     )
     ca_cert_path = os.path.join(glide_home, "utils", "tls_crts", "ca.crt")
     return load_root_certificates_from_file(ca_cert_path)
+
+
+async def wait_for_subscription_state(
+    client: TGlideClient,
+    expected_channels: Optional[Set[str]] = None,
+    expected_patterns: Optional[Set[str]] = None,
+    expected_sharded: Optional[Set[str]] = None,
+    timeout: float = 5.0,
+    poll_interval: float = 0.1,
+) -> Dict[str, Set[str]]:
+    """
+    Helper function that polls get_subscriptions until expected actual state is reached.
+    
+    This function verifies that the desired subscription state has been applied on the server
+    by checking the actual (current) subscriptions returned by get_subscriptions().
+    
+    Note:
+        When a subscription API (subscribe/unsubscribe/etc.) returns SubscriptionStatus.PENDING,
+        this function should be used to wait until the state is actually applied on the server
+        (i.e., when actual_subscriptions matches the expected state).
+
+    Args:
+        client: The Glide client to check subscriptions for
+        expected_channels: Expected channel names as strings
+        expected_patterns: Expected pattern names as strings
+        expected_sharded: Expected sharded channel names as strings
+        timeout: Maximum time to wait in seconds
+        poll_interval: How often to poll in seconds
+
+    Returns:
+        A dictionary with string keys for backward compatibility:
+            - "channels": Set of exact channel names
+            - "patterns": Set of channel patterns
+            - "sharded_channels": Set of sharded channel names
+
+    Raises:
+        TimeoutError: If the expected state is not reached within the timeout period
+    """
+    from glide_shared.config import (
+        GlideClientConfiguration,
+        GlideClusterClientConfiguration,
+    )
+    
+    # Determine which config type to use based on client type
+    if isinstance(client, GlideClusterClient):
+        PubSubChannelModes = GlideClusterClientConfiguration.PubSubChannelModes
+    else:
+        PubSubChannelModes = GlideClientConfiguration.PubSubChannelModes
+    
+    start_time = anyio.current_time()
+    last_actual_state = None
+
+    while True:
+        elapsed = anyio.current_time() - start_time
+        if elapsed > timeout:
+            error_msg = (
+                f"Subscription state not reached within {timeout}s.\n"
+                f"Expected - channels: {expected_channels}, patterns: {expected_patterns}, "
+                f"sharded: {expected_sharded}\n"
+            )
+            if last_actual_state:
+                error_msg += (
+                    f"Actual - channels: {last_actual_state.get('channels', set())}, "
+                    f"patterns: {last_actual_state.get('patterns', set())}, "
+                    f"sharded: {last_actual_state.get('sharded_channels', set())}\n"
+                )
+            raise TimeoutError(error_msg)
+
+        try:
+            # Get both desired and actual subscriptions
+            _, actual = await client.get_subscriptions()
+            
+            # Extract actual state using enum keys
+            channels_actual = actual.get(PubSubChannelModes.Exact, set())
+            patterns_actual = actual.get(PubSubChannelModes.Pattern, set())
+            
+            # Sharded channels only exist in cluster mode
+            if isinstance(client, GlideClusterClient):
+                sharded_actual = actual.get(PubSubChannelModes.Sharded, set())
+            else:
+                sharded_actual = set()
+            
+            # Store for error reporting (convert to old format for backward compatibility)
+            last_actual_state = {
+                "channels": channels_actual,
+                "patterns": patterns_actual,
+                "sharded_channels": sharded_actual,
+            }
+
+            # Compare strings with strings
+            channels_match = (
+                expected_channels is None or channels_actual == expected_channels
+            )
+            patterns_match = (
+                expected_patterns is None or patterns_actual == expected_patterns
+            )
+            sharded_match = (
+                expected_sharded is None or sharded_actual == expected_sharded
+            )
+
+            if channels_match and patterns_match and sharded_match:
+                # Return in backward-compatible format
+                return last_actual_state
+
+        except Exception as e:
+            if not isinstance(e, (ConnectionError, TimeoutError)):
+                raise
+            
+        await anyio.sleep(poll_interval)

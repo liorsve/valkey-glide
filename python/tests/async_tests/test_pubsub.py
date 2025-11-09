@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import Any, List, Optional, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Set, Tuple, Union, cast
 
 import anyio
 import pytest
 from glide.glide_client import GlideClient, GlideClusterClient, TGlideClient
-from glide_shared.commands.core_options import PubSubMsg
+from glide_shared.commands.core_options import PubSubMsg, SubscriptionStatus
 from glide_shared.config import (
     GlideClientConfiguration,
     GlideClusterClientConfiguration,
@@ -16,6 +16,7 @@ from glide_shared.config import (
 )
 from glide_shared.constants import OK
 from glide_shared.exceptions import ConfigurationError
+from glide.async_commands.mock_pubsub import MockPubSubBroker
 
 from tests.async_tests.conftest import create_client
 from tests.utils.utils import (
@@ -24,6 +25,7 @@ from tests.utils.utils import (
     decode_pubsub_msg,
     get_random_string,
     new_message,
+    wait_for_subscription_state,
 )
 
 
@@ -125,51 +127,80 @@ async def check_no_messages_left(
 
 async def client_cleanup(
     client: Optional[Union[GlideClient, GlideClusterClient]],
-    cluster_mode_subs: Optional[
-        GlideClusterClientConfiguration.PubSubSubscriptions
-    ] = None,
 ):
     """
-    This function tries its best to clear state assosiated with client
-    Its explicitly calls client.close() and deletes the object
-    In addition, it tries to clean up cluster mode subsciptions since it was found the closing the client via close() is
-    not enough.
-    Note that unsubscribing is not feasible in the current implementation since its unknown on which node the subs
-    are configured
+    This function tries its best to clear state associated with client.
+    It explicitly calls client.close() and deletes the object.
+    In addition, it tries to clean up subscriptions by unsubscribing from all active channels.
+    
+    Note:
+        This function uses the actual (current) subscriptions to determine what needs to be
+        unsubscribed, ensuring proper cleanup even if desired state differs from actual state.
     """
 
     if client is None:
         return
 
-    if cluster_mode_subs:
-        for (
-            channel_type,
-            channel_patterns,
-        ) in cluster_mode_subs.channels_and_patterns.items():
-            if channel_type == GlideClusterClientConfiguration.PubSubChannelModes.Exact:
-                cmd = "UNSUBSCRIBE"
-            elif (
-                channel_type
-                == GlideClusterClientConfiguration.PubSubChannelModes.Pattern
-            ):
-                cmd = "PUNSUBSCRIBE"
-            elif not await check_if_server_version_lt(client, "7.0.0"):
-                cmd = "SUNSUBSCRIBE"
-            else:
-                # disregard sharded config for versions < 7.0.0
-                continue
+    cleanup_error = None
 
-            for channel_patern in channel_patterns:
-                await client.custom_command([cmd, channel_patern])
+    try:
+        if isinstance(client, GlideClusterClient):
+            PubSubChannelModes = GlideClusterClientConfiguration.PubSubChannelModes
+        else:
+            PubSubChannelModes = GlideClientConfiguration.PubSubChannelModes
+        
+        # Get both desired and actual subscriptions
+        # We use actual to see what's really subscribed on the server
+        _, actual = await client.get_subscriptions()
+        
+        # Extract actual subscriptions using enum keys
+        has_channels = len(actual.get(PubSubChannelModes.Exact, set())) > 0
+        has_patterns = len(actual.get(PubSubChannelModes.Pattern, set())) > 0
+        has_sharded = (
+            isinstance(client, GlideClusterClient) 
+            and len(actual.get(PubSubChannelModes.Sharded, set())) > 0
+        )
 
-    await client.close()
-    del client
-    # The closure is not completed in the glide-core instantly
-    await anyio.sleep(1)
+        # Unsubscribe from all active subscriptions
+        if has_channels:
+            await client.unsubscribe()
+        if has_patterns:
+            await client.punsubscribe()
+        if has_sharded:
+            await client.sunsubscribe()
+
+        if has_channels or has_patterns or has_sharded:
+            await wait_for_subscription_state(
+                client,
+                expected_channels=set(),
+                expected_patterns=set(),
+                expected_sharded=set(),
+                timeout=5.0,
+            )
+
+    except Exception as e:
+        # We catch the error so that we can close the client, then re-raise it
+        cleanup_error = e
+    finally:
+        await client.close()
+        del client
+        # The closure is not completed in the glide-core instantly
+        await anyio.sleep(1)
+
+        # Re-raise cleanup error if it occurred
+        if cleanup_error:
+            raise cleanup_error
 
 
 @pytest.mark.anyio
 class TestPubSub:
+    @pytest.fixture(autouse=True)
+    async def reset_broker(self):
+        """Reset broker before each test in this class"""
+        # TODO: remove when mock pubsub is removed
+        yield
+        MockPubSubBroker.reset()
+        
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize(
         "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
@@ -226,8 +257,8 @@ class TestPubSub:
 
             await check_no_messages_left(method, listening_client, callback_messages, 1)
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     async def test_pubsub_exact_happy_path_coexistence(
@@ -287,8 +318,8 @@ class TestPubSub:
 
             assert listening_client.try_get_pubsub_message() is None
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize(
@@ -367,8 +398,8 @@ class TestPubSub:
             )
 
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     async def test_pubsub_exact_happy_path_many_channels_co_existence(
@@ -441,8 +472,8 @@ class TestPubSub:
             assert listening_client.try_get_pubsub_message() is None
 
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("cluster_mode", [True])
@@ -504,8 +535,8 @@ class TestPubSub:
             await check_no_messages_left(method, listening_client, callback_messages, 1)
 
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("cluster_mode", [True])
@@ -576,8 +607,8 @@ class TestPubSub:
 
             assert listening_client.try_get_pubsub_message() is None
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("cluster_mode", [True])
@@ -660,11 +691,9 @@ class TestPubSub:
 
         finally:
             if listening_client:
-                await client_cleanup(
-                    listening_client, pub_sub if cluster_mode else None
-                )
+                await client_cleanup(listening_client)
             if publishing_client:
-                await client_cleanup(publishing_client, None)
+                await client_cleanup(publishing_client)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize(
@@ -732,8 +761,8 @@ class TestPubSub:
             await check_no_messages_left(method, listening_client, callback_messages, 2)
 
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     async def test_pubsub_pattern_co_existence(self, request, cluster_mode: bool):
@@ -795,8 +824,8 @@ class TestPubSub:
             assert listening_client.try_get_pubsub_message() is None
 
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize(
@@ -866,8 +895,8 @@ class TestPubSub:
             )
 
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize(
@@ -977,10 +1006,8 @@ class TestPubSub:
                 method, listening_client, callback_messages, NUM_CHANNELS * 2
             )
         finally:
-            await client_cleanup(
-                listening_client, pub_sub_exact if cluster_mode else None
-            )
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize(
@@ -1136,14 +1163,10 @@ class TestPubSub:
             )
 
         finally:
-            await client_cleanup(
-                listening_client_exact, pub_sub_exact if cluster_mode else None
-            )
-            await client_cleanup(publishing_client, None)
-            await client_cleanup(
-                listening_client_pattern, pub_sub_pattern if cluster_mode else None
-            )
-            await client_cleanup(client_dont_care, None)
+            await client_cleanup(listening_client_exact)
+            await client_cleanup(publishing_client)
+            await client_cleanup(listening_client_pattern)
+            await client_cleanup(client_dont_care)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("cluster_mode", [True])
@@ -1274,10 +1297,8 @@ class TestPubSub:
             )
 
         finally:
-            await client_cleanup(
-                listening_client, pub_sub_exact if cluster_mode else None
-            )
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("cluster_mode", [True])
@@ -1494,16 +1515,10 @@ class TestPubSub:
             )
 
         finally:
-            await client_cleanup(
-                listening_client_exact, pub_sub_exact if cluster_mode else None
-            )
-            await client_cleanup(publishing_client, None)
-            await client_cleanup(
-                listening_client_pattern, pub_sub_pattern if cluster_mode else None
-            )
-            await client_cleanup(
-                listening_client_sharded, pub_sub_sharded if cluster_mode else None
-            )
+            await client_cleanup(listening_client_exact)
+            await client_cleanup(publishing_client)
+            await client_cleanup(listening_client_pattern)
+            await client_cleanup(listening_client_sharded)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("cluster_mode", [True])
@@ -1663,16 +1678,10 @@ class TestPubSub:
             )
 
         finally:
-            await client_cleanup(
-                listening_client_exact, pub_sub_exact if cluster_mode else None
-            )
-            await client_cleanup(publishing_client, None)
-            await client_cleanup(
-                listening_client_pattern, pub_sub_pattern if cluster_mode else None
-            )
-            await client_cleanup(
-                listening_client_sharded, pub_sub_sharded if cluster_mode else None
-            )
+            await client_cleanup(listening_client_exact)
+            await client_cleanup(publishing_client)
+            await client_cleanup(listening_client_pattern)
+            await client_cleanup(listening_client_sharded)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     @pytest.mark.parametrize(
@@ -1769,10 +1778,8 @@ class TestPubSub:
             )
 
         finally:
-            await client_cleanup(client_exact, pub_sub_exact if cluster_mode else None)
-            await client_cleanup(
-                client_pattern, pub_sub_pattern if cluster_mode else None
-            )
+            await client_cleanup(client_exact)
+            await client_cleanup(client_pattern)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("cluster_mode", [True])
@@ -1919,14 +1926,10 @@ class TestPubSub:
             )
 
         finally:
-            await client_cleanup(client_exact, pub_sub_exact if cluster_mode else None)
-            await client_cleanup(
-                client_pattern, pub_sub_pattern if cluster_mode else None
-            )
-            await client_cleanup(
-                client_sharded, pub_sub_sharded if cluster_mode else None
-            )
-            await client_cleanup(client_dont_care, None)
+            await client_cleanup(client_exact)
+            await client_cleanup(client_pattern)
+            await client_cleanup(client_sharded)
+            await client_cleanup(client_dont_care)
 
     @pytest.mark.skip(
         reason="This test requires special configuration for client-output-buffer-limit for valkey-server and timeouts seems "
@@ -1995,8 +1998,8 @@ class TestPubSub:
             assert listening_client.try_get_pubsub_message() is None
 
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.skip(
@@ -2075,8 +2078,8 @@ class TestPubSub:
             assert listening_client.try_get_pubsub_message() is None
 
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.skip(
         reason="This test requires special configuration for client-output-buffer-limit for valkey-server and timeouts seems "
@@ -2132,8 +2135,8 @@ class TestPubSub:
             assert callback_messages[0].pattern is None
 
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.skip(
@@ -2194,8 +2197,8 @@ class TestPubSub:
             assert callback_messages[0].pattern is None
 
         finally:
-            await client_cleanup(listening_client, pub_sub if cluster_mode else None)
-            await client_cleanup(publishing_client, None)
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     async def test_pubsub_resp2_raise_an_error(self, request, cluster_mode: bool):
@@ -2288,9 +2291,9 @@ class TestPubSub:
             assert len(non_matching_channels) == 0
 
         finally:
-            await client_cleanup(client1, pub_sub if cluster_mode else None)
-            await client_cleanup(client2, None)
-            await client_cleanup(client, None)
+            await client_cleanup(client1)
+            await client_cleanup(client2)
+            await client_cleanup(client)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     async def test_pubsub_numpat(self, request, cluster_mode: bool):
@@ -2335,9 +2338,9 @@ class TestPubSub:
             assert num_patterns == 2
 
         finally:
-            await client_cleanup(client1, pub_sub if cluster_mode else None)
-            await client_cleanup(client2, None)
-            await client_cleanup(client, None)
+            await client_cleanup(client1)
+            await client_cleanup(client2)
+            await client_cleanup(client)
 
     @pytest.mark.parametrize("cluster_mode", [True, False])
     async def test_pubsub_numsub(self, request, cluster_mode: bool):
@@ -2429,11 +2432,11 @@ class TestPubSub:
             assert empty_subscribers == {}
 
         finally:
-            await client_cleanup(client1, pub_sub1 if cluster_mode else None)
-            await client_cleanup(client2, pub_sub2 if cluster_mode else None)
-            await client_cleanup(client3, pub_sub3 if cluster_mode else None)
-            await client_cleanup(client4, None)
-            await client_cleanup(client, None)
+            await client_cleanup(client1)
+            await client_cleanup(client2)
+            await client_cleanup(client3)
+            await client_cleanup(client4)
+            await client_cleanup(client)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("cluster_mode", [True])
@@ -2490,9 +2493,9 @@ class TestPubSub:
             assert await client2.pubsub_shardchannels("non_matching_*") == []
 
         finally:
-            await client_cleanup(client1, pub_sub if cluster_mode else None)
-            await client_cleanup(client2, None)
-            await client_cleanup(client, None)
+            await client_cleanup(client1)
+            await client_cleanup(client2)
+            await client_cleanup(client)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("cluster_mode", [True])
@@ -2583,11 +2586,11 @@ class TestPubSub:
             assert empty_subscribers == {}
 
         finally:
-            await client_cleanup(client1, pub_sub1 if cluster_mode else None)
-            await client_cleanup(client2, pub_sub2 if cluster_mode else None)
-            await client_cleanup(client3, pub_sub3 if cluster_mode else None)
-            await client_cleanup(client4, None)
-            await client_cleanup(client, None)
+            await client_cleanup(client1)
+            await client_cleanup(client2)
+            await client_cleanup(client3)
+            await client_cleanup(client4)
+            await client_cleanup(client)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("cluster_mode", [True])
@@ -2633,8 +2636,8 @@ class TestPubSub:
             assert await client2.pubsub_shardchannels() == [shard_channel_bytes]
 
         finally:
-            await client_cleanup(client1, pub_sub if cluster_mode else None)
-            await client_cleanup(client2, None)
+            await client_cleanup(client1)
+            await client_cleanup(client2)
 
     @pytest.mark.skip_if_version_below("7.0.0")
     @pytest.mark.parametrize("cluster_mode", [True])
@@ -2705,5 +2708,1756 @@ class TestPubSub:
             }
 
         finally:
-            await client_cleanup(client1, pub_sub1 if cluster_mode else None)
-            await client_cleanup(client2, pub_sub2 if cluster_mode else None)
+            await client_cleanup(client1)
+            await client_cleanup(client2)
+
+
+@pytest.mark.anyio
+class TestDynamicPubSub:
+    """Tests for dynamic PubSub subscription/unsubscription API"""
+
+    @pytest.fixture(autouse=True)
+    async def reset_broker(self):
+        """Reset broker before each test in this class"""
+        # TODO: remove when mock pubsub is removed
+        yield
+        MockPubSubBroker.reset()
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_subscribe_basic(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test basic subscription using the subscribe() API.
+        Client starts with no subscriptions, then subscribes.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channel = get_random_string(10)
+            message = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            listening_client = await create_client(
+                request,
+                cluster_mode,
+                cluster_mode_pubsub=(
+                    GlideClusterClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if cluster_mode and callback
+                    else None
+                ),
+                standalone_mode_pubsub=(
+                    GlideClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if not cluster_mode and callback
+                    else None
+                ),
+            )
+            publishing_client = await create_client(request, cluster_mode)
+
+            await wait_for_subscription_state(
+                listening_client,
+                expected_channels=set(),
+                expected_patterns=set(),
+            )
+
+            result = await listening_client.subscribe([channel])
+            print(result)
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            # Verify subscription is active
+            await wait_for_subscription_state(
+                listening_client, expected_channels={channel}
+            )
+
+            await publishing_client.publish(message, channel)
+            await anyio.sleep(1)
+
+            pubsub_msg = await get_message_by_method(
+                method, listening_client, callback_messages, 0
+            )
+            assert pubsub_msg.message == message
+            assert pubsub_msg.channel == channel
+            assert pubsub_msg.pattern is None
+
+            await check_no_messages_left(method, listening_client, callback_messages, 1)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_unsubscribe_basic(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test basic unsubscription using the unsubscribe() API.
+        Client subscribes, then unsubscribes and verifies no messages received.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channel = get_random_string(10)
+            message1 = get_random_string(5)
+            message2 = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            pub_sub = create_pubsub_subscription(
+                cluster_mode,
+                {GlideClusterClientConfiguration.PubSubChannelModes.Exact: {channel}},
+                {GlideClientConfiguration.PubSubChannelModes.Exact: {channel}},
+                callback=callback,
+                context=context,
+            )
+            listening_client, publishing_client = await create_two_clients_with_pubsub(
+                request, cluster_mode, pub_sub
+            )
+
+            # Verify subscription is active
+            await wait_for_subscription_state(
+                listening_client, expected_channels={channel}
+            )
+
+            await publishing_client.publish(message1, channel)
+            await anyio.sleep(1)
+            pubsub_msg = await get_message_by_method(
+                method, listening_client, callback_messages, 0
+            )
+            assert pubsub_msg.message == message1
+
+            result = await listening_client.unsubscribe([channel])
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(listening_client, expected_channels=set())
+
+            # Publish second message - should not be received
+            await publishing_client.publish(message2, channel)
+            await anyio.sleep(1)
+
+            await check_no_messages_left(method, listening_client, callback_messages, 1)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_psubscribe_basic(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test basic pattern subscription using the psubscribe() API.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            pattern = "news.*"
+            channel1 = "news.sports"
+            message = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create clients without initial subscriptions
+            listening_client = await create_client(
+                request,
+                cluster_mode,
+                cluster_mode_pubsub=(
+                    GlideClusterClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if cluster_mode and callback
+                    else None
+                ),
+                standalone_mode_pubsub=(
+                    GlideClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if not cluster_mode and callback
+                    else None
+                ),
+            )
+            publishing_client = await create_client(request, cluster_mode)
+
+            # Verify no subscriptions initially
+            await wait_for_subscription_state(
+                listening_client,
+                expected_channels=set(),
+                expected_patterns=set(),
+            )
+
+            result = await listening_client.psubscribe([pattern])
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            # Verify pattern subscription is active
+            await wait_for_subscription_state(
+                listening_client, expected_patterns={pattern}
+            )
+
+            await publishing_client.publish(message, channel1)
+            await anyio.sleep(1)
+
+            pubsub_msg = await get_message_by_method(
+                method, listening_client, callback_messages, 0
+            )
+            assert pubsub_msg.message == message
+            assert pubsub_msg.channel == channel1
+            assert pubsub_msg.pattern == pattern
+
+            await check_no_messages_left(method, listening_client, callback_messages, 1)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_punsubscribe_basic(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test basic pattern unsubscription using the punsubscribe() API.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            pattern = "news.*"
+            channel = "news.sports"
+            message1 = get_random_string(5)
+            message2 = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            pub_sub = create_pubsub_subscription(
+                cluster_mode,
+                {GlideClusterClientConfiguration.PubSubChannelModes.Pattern: {pattern}},
+                {GlideClientConfiguration.PubSubChannelModes.Pattern: {pattern}},
+                callback=callback,
+                context=context,
+            )
+            listening_client, publishing_client = await create_two_clients_with_pubsub(
+                request, cluster_mode, pub_sub
+            )
+
+            # Verify pattern subscription is active
+            await wait_for_subscription_state(
+                listening_client, expected_patterns={pattern}
+            )
+
+            await publishing_client.publish(message1, channel)
+            await anyio.sleep(1)
+            pubsub_msg = await get_message_by_method(
+                method, listening_client, callback_messages, 0
+            )
+            assert pubsub_msg.message == message1
+
+            result = await listening_client.punsubscribe([pattern])
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(listening_client, expected_patterns=set())
+
+            # Publish second message - should not be received
+            await publishing_client.publish(message2, channel)
+            await anyio.sleep(1)
+
+            await check_no_messages_left(method, listening_client, callback_messages, 1)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.skip_if_version_below("7.0.0")
+    @pytest.mark.parametrize("cluster_mode", [True])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_ssubscribe_basic(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test basic sharded subscription using the ssubscribe() API.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channel = get_random_string(10)
+            message = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            listening_client = await create_client(
+                request,
+                cluster_mode,
+                cluster_mode_pubsub=(
+                    GlideClusterClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if callback
+                    else None
+                ),
+            )
+            publishing_client = await create_client(request, cluster_mode)
+
+            await wait_for_subscription_state(
+                listening_client,
+                expected_channels=set(),
+                expected_sharded=set(),
+            )
+
+            result = await cast(GlideClusterClient, listening_client).ssubscribe(
+                [channel]
+            )
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            # Verify sharded subscription is active
+            await wait_for_subscription_state(
+                listening_client, expected_sharded={channel}
+            )
+
+            await cast(GlideClusterClient, publishing_client).publish(
+                message, channel, sharded=True
+            )
+            await anyio.sleep(1)
+
+            pubsub_msg = await get_message_by_method(
+                method, listening_client, callback_messages, 0
+            )
+            assert pubsub_msg.message == message
+            assert pubsub_msg.channel == channel
+            assert pubsub_msg.pattern is None
+
+            await check_no_messages_left(method, listening_client, callback_messages, 1)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.skip_if_version_below("7.0.0")
+    @pytest.mark.parametrize("cluster_mode", [True])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_sunsubscribe_basic(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test basic sharded unsubscription using the sunsubscribe() API.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channel = get_random_string(10)
+            message1 = get_random_string(5)
+            message2 = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            pub_sub = create_pubsub_subscription(
+                cluster_mode,
+                {GlideClusterClientConfiguration.PubSubChannelModes.Sharded: {channel}},
+                {},
+                callback=callback,
+                context=context,
+            )
+            listening_client, publishing_client = await create_two_clients_with_pubsub(
+                request, cluster_mode, pub_sub
+            )
+
+            await wait_for_subscription_state(
+                listening_client, expected_sharded={channel}
+            )
+
+            await cast(GlideClusterClient, publishing_client).publish(
+                message1, channel, sharded=True
+            )
+            await anyio.sleep(1)
+            pubsub_msg = await get_message_by_method(
+                method, listening_client, callback_messages, 0
+            )
+            assert pubsub_msg.message == message1
+
+            result = await cast(GlideClusterClient, listening_client).sunsubscribe(
+                [channel]
+            )
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(listening_client, expected_sharded=set())
+
+            # Publish second message - should not be received
+            await cast(GlideClusterClient, publishing_client).publish(
+                message2, channel, sharded=True
+            )
+            await anyio.sleep(1)
+
+            await check_no_messages_left(method, listening_client, callback_messages, 1)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    async def test_subscribe_coexistence_async_sync(self, request, cluster_mode: bool):
+        """
+        Test that async and sync message retrieval can coexist for dynamically subscribed channels.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channel = get_random_string(10)
+            message1 = get_random_string(5)
+            message2 = get_random_string(5)
+
+            listening_client = await create_client(request, cluster_mode)
+            publishing_client = await create_client(request, cluster_mode)
+
+            # Subscribe dynamically
+            await listening_client.subscribe([channel])
+            await wait_for_subscription_state(
+                listening_client, expected_channels={channel}
+            )
+
+            # Publish two messages
+            await publishing_client.publish(message1, channel)
+            await publishing_client.publish(message2, channel)
+            await anyio.sleep(1)
+
+            # Retrieve using both async and sync methods
+            async_msg = decode_pubsub_msg(await listening_client.get_pubsub_message())
+            sync_msg = decode_pubsub_msg(listening_client.try_get_pubsub_message())
+
+            assert async_msg.message in [message1, message2]
+            assert sync_msg.message in [message1, message2]
+            assert (
+                async_msg.message != sync_msg.message
+            )  # Both messages received, one by each method
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_subscribe_multiple_channels(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test subscribing to multiple channels in a single subscribe() call.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channels = [get_random_string(10) for _ in range(3)]
+            messages = {ch: get_random_string(5) for ch in channels}
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create client with no initial subscriptions
+            listening_client = await create_client(
+                request,
+                cluster_mode,
+                cluster_mode_pubsub=(
+                    GlideClusterClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if cluster_mode and callback
+                    else None
+                ),
+                standalone_mode_pubsub=(
+                    GlideClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if not cluster_mode and callback
+                    else None
+                ),
+            )
+            publishing_client = await create_client(request, cluster_mode)
+
+            result = await listening_client.subscribe(channels)
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(
+                listening_client, expected_channels=set(channels)
+            )
+
+            for channel, message in messages.items():
+                await publishing_client.publish(message, channel)
+
+            await anyio.sleep(1)
+
+            received_messages = {}
+            for index in range(len(channels)):
+                pubsub_msg = await get_message_by_method(
+                    method, listening_client, callback_messages, index
+                )
+                received_messages[pubsub_msg.channel] = pubsub_msg.message
+
+            assert received_messages == messages
+
+            await check_no_messages_left(
+                method, listening_client, callback_messages, len(channels)
+            )
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_psubscribe_multiple_patterns(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test subscribing to multiple patterns in a single psubscribe() call.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            patterns = ["news.*", "updates.*", "alerts.*"]
+            channels = {
+                "news.sports": get_random_string(5),
+                "updates.weather": get_random_string(5),
+                "alerts.security": get_random_string(5),
+            }
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create clients without initial subscriptions
+            listening_client = await create_client(
+                request,
+                cluster_mode,
+                cluster_mode_pubsub=(
+                    GlideClusterClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if cluster_mode and callback
+                    else None
+                ),
+                standalone_mode_pubsub=(
+                    GlideClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if not cluster_mode and callback
+                    else None
+                ),
+            )
+            publishing_client = await create_client(request, cluster_mode)
+
+            result = await listening_client.psubscribe(cast(list[str | bytes], patterns))
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(
+                listening_client, expected_patterns=set(patterns)
+            )
+
+            for channel, message in channels.items():
+                await publishing_client.publish(message, channel)
+
+            await anyio.sleep(1)
+
+            received = {}
+            for index in range(len(channels)):
+                pubsub_msg = await get_message_by_method(
+                    method, listening_client, callback_messages, index
+                )
+                received[pubsub_msg.channel] = pubsub_msg.message
+                assert pubsub_msg.pattern in patterns
+
+            # Verify all channels received messages
+            for channel, message in channels.items():
+                assert channel in received
+                assert received[channel] == message
+
+            await check_no_messages_left(
+                method, listening_client, callback_messages, len(channels)
+            )
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.skip_if_version_below("7.0.0")
+    @pytest.mark.parametrize("cluster_mode", [True])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_ssubscribe_multiple_channels(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test subscribing to multiple sharded channels in a single ssubscribe() call.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channels = [get_random_string(10) for _ in range(3)]
+            messages = {ch: get_random_string(5) for ch in channels}
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create clients without initial subscriptions
+            listening_client = await create_client(
+                request,
+                cluster_mode,
+                cluster_mode_pubsub=(
+                    GlideClusterClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if callback
+                    else None
+                ),
+            )
+            publishing_client = await create_client(request, cluster_mode)
+
+            result = await cast(GlideClusterClient, listening_client).ssubscribe(
+                channels
+            )
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(
+                listening_client, expected_sharded=set(channels)
+            )
+
+            for channel, message in messages.items():
+                await cast(GlideClusterClient, publishing_client).publish(
+                    message, channel, sharded=True
+                )
+
+            await anyio.sleep(1)
+
+            received_messages = {}
+            for index in range(len(channels)):
+                pubsub_msg = await get_message_by_method(
+                    method, listening_client, callback_messages, index
+                )
+                received_messages[pubsub_msg.channel] = pubsub_msg.message
+
+            assert received_messages == messages
+
+            await check_no_messages_left(
+                method, listening_client, callback_messages, len(channels)
+            )
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_unsubscribe_multiple_channels(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test unsubscribing from multiple specific channels (not all).
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channels = [get_random_string(10) for _ in range(5)]
+            channels_to_unsub = channels[:3]  # Unsubscribe from first 3
+            channels_remaining = channels[3:]  # Keep last 2
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create client with initial subscriptions to all channels
+            pub_sub = create_pubsub_subscription(
+                cluster_mode,
+                {
+                    GlideClusterClientConfiguration.PubSubChannelModes.Exact: set(
+                        channels
+                    )
+                },
+                {GlideClientConfiguration.PubSubChannelModes.Exact: set(channels)},
+                callback=callback,
+                context=context,
+            )
+            listening_client, publishing_client = await create_two_clients_with_pubsub(
+                request, cluster_mode, pub_sub
+            )
+
+            await wait_for_subscription_state(
+                listening_client, expected_channels=set(channels)
+            )
+
+            result = await listening_client.unsubscribe(channels_to_unsub)
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(
+                listening_client, expected_channels=set(channels_remaining)
+            )
+
+            # Publish to all original channels
+            messages = {ch: get_random_string(5) for ch in channels}
+            for channel, message in messages.items():
+                await publishing_client.publish(message, channel)
+
+            await anyio.sleep(1)
+
+            # Should only receive messages from remaining channels
+            received_channels = set()
+            for index in range(len(channels_remaining)):
+                pubsub_msg = await get_message_by_method(
+                    method, listening_client, callback_messages, index
+                )
+                received_channels.add(pubsub_msg.channel)
+
+            assert received_channels == set(channels_remaining)
+
+            # Verify unsubscribed channels did NOT receive messages
+            for ch in channels_to_unsub:
+                assert ch not in received_channels
+
+            await check_no_messages_left(
+                method, listening_client, callback_messages, len(channels_remaining)
+            )
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_punsubscribe_multiple_patterns(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test unsubscribing from multiple specific patterns (not all).
+        """
+        listening_client, publishing_client = None, None
+        try:
+            patterns = ["news.*", "updates.*", "alerts.*", "info.*"]
+            patterns_to_unsub = patterns[:2]  # Unsubscribe from first 2
+            patterns_remaining = patterns[2:]  # Keep last 2
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create client with initial pattern subscriptions
+            pub_sub = create_pubsub_subscription(
+                cluster_mode,
+                {
+                    GlideClusterClientConfiguration.PubSubChannelModes.Pattern: set(
+                        patterns
+                    )
+                },
+                {GlideClientConfiguration.PubSubChannelModes.Pattern: set(patterns)},
+                callback=callback,
+                context=context,
+            )
+            listening_client, publishing_client = await create_two_clients_with_pubsub(
+                request, cluster_mode, pub_sub
+            )
+
+            # Verify all pattern subscriptions are active
+            await wait_for_subscription_state(
+                listening_client, expected_patterns=set(patterns)
+            )
+
+            result = await listening_client.punsubscribe(cast(list[str | bytes], patterns_to_unsub))
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(
+                listening_client, expected_patterns=set(patterns_remaining)
+            )
+
+            # Publish to channels matching all original patterns
+            channels = {
+                "news.sports": get_random_string(5),
+                "updates.weather": get_random_string(5),
+                "alerts.security": get_random_string(5),
+                "info.general": get_random_string(5),
+            }
+            for channel, message in channels.items():
+                await publishing_client.publish(message, channel)
+
+            await anyio.sleep(1)
+
+            # Should only receive messages from remaining patterns
+            received_count = 0
+            for index in range(len(patterns_remaining)):
+                pubsub_msg = await get_message_by_method(
+                    method, listening_client, callback_messages, index
+                )
+                assert pubsub_msg.pattern in patterns_remaining
+                received_count += 1
+
+            assert received_count == len(patterns_remaining)
+
+            await check_no_messages_left(
+                method, listening_client, callback_messages, len(patterns_remaining)
+            )
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.skip_if_version_below("7.0.0")
+    @pytest.mark.parametrize("cluster_mode", [True])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_sunsubscribe_multiple_channels(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test unsubscribing from multiple specific sharded channels (not all).
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channels = [get_random_string(10) for _ in range(5)]
+            channels_to_unsub = channels[:3]  # Unsubscribe from first 3
+            channels_remaining = channels[3:]  # Keep last 2
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create client with initial sharded subscriptions
+            pub_sub = create_pubsub_subscription(
+                cluster_mode,
+                {
+                    GlideClusterClientConfiguration.PubSubChannelModes.Sharded: set(
+                        channels
+                    )
+                },
+                {},
+                callback=callback,
+                context=context,
+            )
+            listening_client, publishing_client = await create_two_clients_with_pubsub(
+                request, cluster_mode, pub_sub
+            )
+
+            await wait_for_subscription_state(
+                listening_client, expected_sharded=set(channels)
+            )
+
+            # Unsubscribe from multiple specific sharded channels
+            result = await cast(GlideClusterClient, listening_client).sunsubscribe(
+                channels_to_unsub
+            )
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(
+                listening_client, expected_sharded=set(channels_remaining)
+            )
+
+            # Publish to all original channels
+            messages = {ch: get_random_string(5) for ch in channels}
+            for channel, message in messages.items():
+                await cast(GlideClusterClient, publishing_client).publish(
+                    message, channel, sharded=True
+                )
+
+            await anyio.sleep(1)
+
+            # Should only receive messages from remaining channels
+            received_channels = set()
+            for index in range(len(channels_remaining)):
+                pubsub_msg = await get_message_by_method(
+                    method, listening_client, callback_messages, index
+                )
+                received_channels.add(pubsub_msg.channel)
+
+            assert received_channels == set(channels_remaining)
+
+            # Verify unsubscribed channels did NOT receive messages
+            for ch in channels_to_unsub:
+                assert ch not in received_channels
+
+            await check_no_messages_left(
+                method, listening_client, callback_messages, len(channels_remaining)
+            )
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_unsubscribe_all_channels(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test unsubscribing from all channels using unsubscribe() with no arguments.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channels = [get_random_string(10) for _ in range(3)]
+            message = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create client with initial subscriptions
+            pub_sub = create_pubsub_subscription(
+                cluster_mode,
+                {
+                    GlideClusterClientConfiguration.PubSubChannelModes.Exact: set(
+                        channels
+                    )
+                },
+                {GlideClientConfiguration.PubSubChannelModes.Exact: set(channels)},
+                callback=callback,
+                context=context,
+            )
+            listening_client, publishing_client = await create_two_clients_with_pubsub(
+                request, cluster_mode, pub_sub
+            )
+
+            # Verify all subscriptions are active
+            await wait_for_subscription_state(
+                listening_client, expected_channels=set(channels)
+            )
+
+            # Unsubscribe from all channels
+            result = await listening_client.unsubscribe()
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(listening_client, expected_channels=set())
+
+            # Publish to any channel - should not be received
+            await publishing_client.publish(message, channels[0])
+            await anyio.sleep(1)
+
+            await check_no_messages_left(method, listening_client, callback_messages, 0)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_punsubscribe_all_patterns(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test unsubscribing from all patterns using punsubscribe() with no arguments.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            patterns = ["news.*", "updates.*"]
+            channel = "news.sports"
+            message = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create client with initial pattern subscriptions
+            pub_sub = create_pubsub_subscription(
+                cluster_mode,
+                {
+                    GlideClusterClientConfiguration.PubSubChannelModes.Pattern: set(
+                        patterns
+                    )
+                },
+                {GlideClientConfiguration.PubSubChannelModes.Pattern: set(patterns)},
+                callback=callback,
+                context=context,
+            )
+            listening_client, publishing_client = await create_two_clients_with_pubsub(
+                request, cluster_mode, pub_sub
+            )
+
+            # Verify all pattern subscriptions are active
+            await wait_for_subscription_state(
+                listening_client, expected_patterns=set(patterns)
+            )
+
+            result = await listening_client.punsubscribe()
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(listening_client, expected_patterns=set())
+
+            # Publish to matching channel - should not be received
+            await publishing_client.publish(message, channel)
+            await anyio.sleep(1)
+
+            await check_no_messages_left(method, listening_client, callback_messages, 0)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.skip_if_version_below("7.0.0")
+    @pytest.mark.parametrize("cluster_mode", [True])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_sunsubscribe_all_sharded(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test unsubscribing from all sharded channels using sunsubscribe() with no arguments.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channels = [get_random_string(10) for _ in range(3)]
+            message = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create client with initial sharded subscriptions
+            pub_sub = create_pubsub_subscription(
+                cluster_mode,
+                {
+                    GlideClusterClientConfiguration.PubSubChannelModes.Sharded: set(
+                        channels
+                    )
+                },
+                {},
+                callback=callback,
+                context=context,
+            )
+            listening_client, publishing_client = await create_two_clients_with_pubsub(
+                request, cluster_mode, pub_sub
+            )
+
+            # Verify all sharded subscriptions are active
+            await wait_for_subscription_state(
+                listening_client, expected_sharded=set(channels)
+            )
+
+            result = await cast(GlideClusterClient, listening_client).sunsubscribe()
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(listening_client, expected_sharded=set())
+
+            # Publish to any channel - should not be received
+            await cast(GlideClusterClient, publishing_client).publish(
+                message, channels[0], sharded=True
+            )
+            await anyio.sleep(1)
+
+            await check_no_messages_left(method, listening_client, callback_messages, 0)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_subscribe_many_channels(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test subscribing to many channels (256) using dynamic API.
+        Verifies the system can handle a large number of subscriptions.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            NUM_CHANNELS = 256
+            shard_prefix = "{same-shard}"
+
+            # Create a map of channels to random messages with shard prefix
+            channels_and_messages = {
+                f"{shard_prefix}{get_random_string(10)}": get_random_string(5)
+                for _ in range(NUM_CHANNELS)
+            }
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            listening_client = await create_client(
+                request,
+                cluster_mode,
+                cluster_mode_pubsub=(
+                    GlideClusterClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if cluster_mode and callback
+                    else None
+                ),
+                standalone_mode_pubsub=(
+                    GlideClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if not cluster_mode and callback
+                    else None
+                ),
+            )
+            publishing_client = await create_client(request, cluster_mode)
+
+            result = await listening_client.subscribe(
+                list(channels_and_messages.keys())
+            )
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            # Verify all subscriptions are active
+            await wait_for_subscription_state(
+                listening_client, expected_channels=set(channels_and_messages.keys())
+            )
+
+            for channel, message in channels_and_messages.items():
+                result = await publishing_client.publish(message, channel)
+                if cluster_mode:
+                    assert result == 1
+
+            # Allow the messages to propagate
+            await anyio.sleep(1)
+
+            for index in range(len(channels_and_messages)):
+                pubsub_msg = await get_message_by_method(
+                    method, listening_client, callback_messages, index
+                )
+                assert pubsub_msg.channel in channels_and_messages.keys()
+                assert pubsub_msg.message == channels_and_messages[pubsub_msg.channel]
+                assert pubsub_msg.pattern is None
+                del channels_and_messages[pubsub_msg.channel]
+
+            # check that we received all messages
+            assert channels_and_messages == {}
+            # check no messages left
+            await check_no_messages_left(
+                method, listening_client, callback_messages, NUM_CHANNELS
+            )
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_mixed_config_and_api_subscriptions(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test mixing config-based subscriptions with API subscriptions.
+        Verifies both types work together correctly.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            config_channel = get_random_string(10)
+            api_channel = get_random_string(10)
+            message1 = get_random_string(5)
+            message2 = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create client with config-based subscription
+            pub_sub = create_pubsub_subscription(
+                cluster_mode,
+                {
+                    GlideClusterClientConfiguration.PubSubChannelModes.Exact: {
+                        config_channel
+                    }
+                },
+                {GlideClientConfiguration.PubSubChannelModes.Exact: {config_channel}},
+                callback=callback,
+                context=context,
+            )
+            listening_client, publishing_client = await create_two_clients_with_pubsub(
+                request, cluster_mode, pub_sub
+            )
+
+            # Verify config subscription is active
+            await wait_for_subscription_state(
+                listening_client, expected_channels={config_channel}
+            )
+
+            result = await listening_client.subscribe([api_channel])
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            # Verify both subscriptions are active
+            await wait_for_subscription_state(
+                listening_client, expected_channels={config_channel, api_channel}
+            )
+
+            await publishing_client.publish(message1, config_channel)
+            await publishing_client.publish(message2, api_channel)
+            await anyio.sleep(1)
+
+            received = {}
+            for index in range(2):
+                pubsub_msg = await get_message_by_method(
+                    method, listening_client, callback_messages, index
+                )
+                received[pubsub_msg.channel] = pubsub_msg.message
+
+            assert config_channel in received
+            assert api_channel in received
+            assert received[config_channel] == message1
+            assert received[api_channel] == message2
+
+            await check_no_messages_left(method, listening_client, callback_messages, 2)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_subscribe_then_unsubscribe_same_channel(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test subscribing and then unsubscribing from the same channel.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channel = get_random_string(10)
+            message1 = get_random_string(5)
+            message2 = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create clients without initial subscriptions
+            listening_client = await create_client(
+                request,
+                cluster_mode,
+                cluster_mode_pubsub=(
+                    GlideClusterClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if cluster_mode and callback
+                    else None
+                ),
+                standalone_mode_pubsub=(
+                    GlideClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if not cluster_mode and callback
+                    else None
+                ),
+            )
+            publishing_client = await create_client(request, cluster_mode)
+
+            result = await listening_client.subscribe([channel])
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(
+                listening_client, expected_channels={channel}
+            )
+
+            await publishing_client.publish(message1, channel)
+            await anyio.sleep(1)
+            pubsub_msg = await get_message_by_method(
+                method, listening_client, callback_messages, 0
+            )
+            assert pubsub_msg.message == message1
+
+            result = await listening_client.unsubscribe([channel])
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(listening_client, expected_channels=set())
+
+            # Publish again and verify no message received
+            await publishing_client.publish(message2, channel)
+            await anyio.sleep(1)
+            await check_no_messages_left(method, listening_client, callback_messages, 1)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_subscribe_to_already_subscribed_channel(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test subscribing to a channel that's already subscribed (idempotent).
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channel = get_random_string(10)
+            message = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create client with initial subscription
+            pub_sub = create_pubsub_subscription(
+                cluster_mode,
+                {GlideClusterClientConfiguration.PubSubChannelModes.Exact: {channel}},
+                {GlideClientConfiguration.PubSubChannelModes.Exact: {channel}},
+                callback=callback,
+                context=context,
+            )
+            listening_client, publishing_client = await create_two_clients_with_pubsub(
+                request, cluster_mode, pub_sub
+            )
+
+            # Verify subscription is active
+            await wait_for_subscription_state(
+                listening_client, expected_channels={channel}
+            )
+
+            result = await listening_client.subscribe([channel])
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            # Verify subscription is still active (idempotent)
+            await wait_for_subscription_state(
+                listening_client, expected_channels={channel}
+            )
+
+            # Publish and verify message received (should only receive once)
+            await publishing_client.publish(message, channel)
+            await anyio.sleep(1)
+            pubsub_msg = await get_message_by_method(
+                method, listening_client, callback_messages, 0
+            )
+            assert pubsub_msg.message == message
+
+            await check_no_messages_left(method, listening_client, callback_messages, 1)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    async def test_unsubscribe_from_non_subscribed_channel(
+        self, request, cluster_mode: bool
+    ):
+        """
+        Test unsubscribing from a channel that's not subscribed (should not error).
+        """
+        listening_client = None
+        try:
+            channel = get_random_string(10)
+
+            # Create client without subscriptions
+            listening_client = await create_client(request, cluster_mode)
+
+            # Verify no subscriptions
+            await wait_for_subscription_state(listening_client, expected_channels=set())
+
+            result = await listening_client.unsubscribe([channel])
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(listening_client, expected_channels=set())
+
+        finally:
+            await client_cleanup(listening_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    async def test_subscribe_with_empty_list(self, request, cluster_mode: bool):
+        """
+        Test subscribing with an empty channel list.
+        """
+        listening_client = None
+        try:
+            # Create client without subscriptions
+            listening_client = await create_client(request, cluster_mode)
+
+            await wait_for_subscription_state(listening_client, expected_channels=set())
+
+            result = await listening_client.subscribe([])
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            await wait_for_subscription_state(listening_client, expected_channels=set())
+
+        finally:
+            await client_cleanup(listening_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_subscribe_with_bytes_and_strings(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test subscribing with mix of bytes and string channel names.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channel1 = get_random_string(10)
+            channel2_bytes = get_random_string(10).encode()
+            message1 = get_random_string(5)
+            message2 = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create clients
+            listening_client = await create_client(
+                request,
+                cluster_mode,
+                cluster_mode_pubsub=(
+                    GlideClusterClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if cluster_mode and callback
+                    else None
+                ),
+                standalone_mode_pubsub=(
+                    GlideClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if not cluster_mode and callback
+                    else None
+                ),
+            )
+            publishing_client = await create_client(request, cluster_mode)
+
+            # Subscribe with mixed types
+            result = await listening_client.subscribe([channel1, channel2_bytes])
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            # Verify both subscriptions are active
+            # Note: get_active_subscriptions normalizes to strings
+            await wait_for_subscription_state(
+                listening_client,
+                expected_channels={
+                    channel1,
+                    channel2_bytes.decode(),
+                },
+            )
+
+            await publishing_client.publish(message1, channel1)
+            await publishing_client.publish(message2, channel2_bytes)
+            await anyio.sleep(1)
+
+            received_channels = set()
+            for index in range(2):
+                pubsub_msg = await get_message_by_method(
+                    method, listening_client, callback_messages, index
+                )
+                received_channels.add(pubsub_msg.channel)
+
+            assert len(received_channels) == 2
+
+            await check_no_messages_left(method, listening_client, callback_messages, 2)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.skip_if_version_below("7.0.0")
+    @pytest.mark.parametrize("cluster_mode", [True])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_mixed_exact_pattern_and_sharded(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test operations with all three subscription types:
+        exact, pattern, and sharded.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            exact_channel = get_random_string(10)
+            pattern = "news.*"
+            pattern_channel = "news.sports"
+            sharded_channel = get_random_string(10)
+            message_exact = get_random_string(5)
+            message_pattern = get_random_string(5)
+            message_sharded = get_random_string(5)
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            listening_client = await create_client(
+                request,
+                cluster_mode,
+                cluster_mode_pubsub=(
+                    GlideClusterClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if callback
+                    else None
+                ),
+            )
+            publishing_client = await create_client(request, cluster_mode)
+
+            await listening_client.subscribe([exact_channel])
+            await listening_client.psubscribe([pattern])
+            await cast(GlideClusterClient, listening_client).ssubscribe(
+                [sharded_channel]
+            )
+
+            # Verify all subscriptions are active
+            await wait_for_subscription_state(
+                listening_client,
+                expected_channels={exact_channel},
+                expected_patterns={pattern},
+                expected_sharded={sharded_channel},
+            )
+
+            await publishing_client.publish(message_exact, exact_channel)
+            await publishing_client.publish(message_pattern, pattern_channel)
+            await cast(GlideClusterClient, publishing_client).publish(
+                message_sharded, sharded_channel, sharded=True
+            )
+            await anyio.sleep(1)
+
+            received = {}
+            for index in range(3):
+                pubsub_msg = await get_message_by_method(
+                    method, listening_client, callback_messages, index
+                )
+                received[pubsub_msg.channel] = pubsub_msg.message
+
+            assert exact_channel in received
+            assert pattern_channel in received
+            assert sharded_channel in received
+
+            await check_no_messages_left(method, listening_client, callback_messages, 3)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    async def test_rapid_subscribe_unsubscribe(self, request, cluster_mode: bool):
+        """
+        Test rapid subscribe/unsubscribe operations on the same channel.
+        """
+        listening_client = None
+        try:
+            channel = get_random_string(10)
+
+            listening_client = await create_client(request, cluster_mode)
+
+            # Rapidly subscribe and unsubscribe
+            for _ in range(10):
+                result = await listening_client.subscribe([channel])
+                assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+                result = await listening_client.unsubscribe([channel])
+                assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+
+            # Final subscribe and verify
+            result = await listening_client.subscribe([channel])
+            assert result in [SubscriptionStatus.OK, SubscriptionStatus.PENDING]
+            await wait_for_subscription_state(
+                listening_client, expected_channels={channel}
+            )
+
+        finally:
+            await client_cleanup(listening_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize(
+        "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
+    )
+    async def test_partial_unsubscribe(
+        self, request, cluster_mode: bool, method: MethodTesting
+    ):
+        """
+        Test unsubscribing from a subset of subscribed channels.
+        """
+        listening_client, publishing_client = None, None
+        try:
+            channels = [get_random_string(10) for _ in range(3)]
+            messages = {ch: get_random_string(5) for ch in channels}
+
+            callback, context = None, None
+            callback_messages: List[PubSubMsg] = []
+            if method == MethodTesting.Callback:
+                callback = new_message
+                context = callback_messages
+
+            # Create clients
+            listening_client = await create_client(
+                request,
+                cluster_mode,
+                cluster_mode_pubsub=(
+                    GlideClusterClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if cluster_mode and callback
+                    else None
+                ),
+                standalone_mode_pubsub=(
+                    GlideClientConfiguration.PubSubSubscriptions(
+                        channels_and_patterns={},
+                        callback=callback,
+                        context=context,
+                    )
+                    if not cluster_mode and callback
+                    else None
+                ),
+            )
+            publishing_client = await create_client(request, cluster_mode)
+
+            # Subscribe to all channels
+            await listening_client.subscribe(channels)
+            await wait_for_subscription_state(
+                listening_client, expected_channels=set(channels)
+            )
+
+            # Unsubscribe from first channel only
+            await listening_client.unsubscribe([channels[0]])
+            await wait_for_subscription_state(
+                listening_client, expected_channels={channels[1], channels[2]}
+            )
+
+            # Publish to all channels
+            for channel, message in messages.items():
+                await publishing_client.publish(message, channel)
+            await anyio.sleep(1)
+
+            # Should receive messages from channels[1] and channels[2] only
+            received_channels = set()
+            for index in range(2):
+                pubsub_msg = await get_message_by_method(
+                    method, listening_client, callback_messages, index
+                )
+                received_channels.add(pubsub_msg.channel)
+
+            assert channels[0] not in received_channels
+            assert channels[1] in received_channels
+            assert channels[2] in received_channels
+
+            await check_no_messages_left(method, listening_client, callback_messages, 2)
+
+        finally:
+            await client_cleanup(listening_client)
+            await client_cleanup(publishing_client)
+
+    @pytest.mark.parametrize("cluster_mode", [True, False])
+    async def test_get_active_subscriptions_empty(self, request, cluster_mode: bool):
+        """
+        Test get_active_subscriptions() with no subscriptions returns empty sets.
+        """
+        client = None
+        try:
+            # Create client without subscriptions
+            client = await create_client(request, cluster_mode)
+
+            active = await wait_for_subscription_state(
+                client,
+                expected_channels=set(),
+                expected_patterns=set(),
+            )
+            assert "channels" in active
+            assert "patterns" in active
+
+        finally:
+            await client_cleanup(client)
