@@ -1,6 +1,7 @@
 # Copyright Valkey GLIDE Project Contributors - SPDX Identifier: Apache-2.0
 
 import sys
+import uuid
 import threading
 from typing import (
     TYPE_CHECKING,
@@ -59,6 +60,7 @@ from glide_shared.routes import Route, set_protobuf_route
 from .async_commands.cluster_commands import ClusterCommands
 from .async_commands.core import CoreCommands
 from .async_commands.standalone_commands import StandaloneCommands
+from .async_commands.mock_pubsub import MockPubSubBroker, normalize_args
 from .logger import Level as LogLevel
 from .logger import Logger as ClientLogger
 from .opentelemetry import OpenTelemetry
@@ -136,7 +138,76 @@ class BaseClient(CoreCommands):
         self._pending_push_notifications: List[Response] = list()
 
         self._pending_tasks: Optional[Set[Awaitable[None]]] = None
+
+        # Mock PubSub - TODO: Remove when Rust core implementation is ready
+        # To disable mock and use real implementation: set self._use_mock_pubsub = False
+        self._use_mock_pubsub = True
+        self._mock_pubsub_broker = MockPubSubBroker()
+
+        # Generate a unique client ID for pubsub
+
+        self._client_id = str(uuid.uuid4())
+
+        # Register with the broker
+        callback, context = config._get_pubsub_callback_and_context()
+        self._mock_pubsub_broker.register_client(self._client_id, callback, context)
         """asyncio-only to avoid gc on pending write tasks"""
+
+        if self._use_mock_pubsub and config._is_pubsub_configured():
+            self._register_config_subscriptions_with_mock()
+
+    def _register_config_subscriptions_with_mock(self):
+        """Register config-based pubsub subscriptions with the mock broker."""
+        if (
+            not hasattr(self.config, "pubsub_subscriptions")
+            or not self.config.pubsub_subscriptions
+        ):
+            return
+
+        channels_and_patterns = self.config.pubsub_subscriptions.channels_and_patterns
+
+        # Import the channel modes enum
+        from glide_shared.config import (
+            GlideClientConfiguration,
+            GlideClusterClientConfiguration,
+        )
+
+        # Check if standalone or cluster config
+        if isinstance(self.config, GlideClusterClientConfiguration):
+            # Cluster mode
+            ChannelModes = GlideClusterClientConfiguration.PubSubChannelModes
+
+            # Register exact channels
+            exact_channels = channels_and_patterns.get(ChannelModes.Exact, set())
+            if exact_channels:
+                self._mock_pubsub_broker.subscribe(
+                    self._client_id, list(exact_channels)
+                )
+
+            patterns = channels_and_patterns.get(ChannelModes.Pattern, set())
+            if patterns:
+                self._mock_pubsub_broker.psubscribe(self._client_id, list(patterns))
+
+            # Register sharded channels
+            sharded = channels_and_patterns.get(ChannelModes.Sharded, set())
+            if sharded:
+                self._mock_pubsub_broker.ssubscribe(self._client_id, list(sharded))
+
+        else:
+            # Standalone mode
+            ChannelModes = GlideClientConfiguration.PubSubChannelModes
+
+            # Register exact channels
+            exact_channels = channels_and_patterns.get(ChannelModes.Exact, set())
+            if exact_channels:
+                self._mock_pubsub_broker.subscribe(
+                    self._client_id, list(exact_channels)
+                )
+
+            # Register patterns
+            patterns = channels_and_patterns.get(ChannelModes.Pattern, set())
+            if patterns:
+                self._mock_pubsub_broker.psubscribe(self._client_id, list(patterns))
 
     def _create_task(self, task, *args, **kwargs):
         """framework agnostic free-floating task shim"""
@@ -296,6 +367,8 @@ class BaseClient(CoreCommands):
             for response_future in self._available_futures.values():
                 if not response_future.done():
                     response_future.set_exception(ClosingError(err_message))
+            if self._use_mock_pubsub and hasattr(self, "_mock_pubsub_broker"):
+                self._mock_pubsub_broker.unregister_client(self._client_id)
             try:
                 self._pubsub_lock.acquire()
                 for pubsub_future in self._pubsub_futures:
@@ -410,6 +483,11 @@ class BaseClient(CoreCommands):
             raise ClosingError(
                 "Unable to execute requests; the client is closed. Please create a new client."
             )
+
+        if self._use_mock_pubsub and hasattr(self, "_mock_pubsub_broker"):
+            mock_result = self._try_mock_pubsub_command(request_type, args)
+            if mock_result is not None:
+                return mock_result
 
         # Create span if OpenTelemetry is configured and sampling indicates we should trace
         span = None
@@ -528,14 +606,27 @@ class BaseClient(CoreCommands):
             )
 
         if not self.config._is_pubsub_configured():
-            raise ConfigurationError(
-                "The operation will never complete since there was no pubsub subscriptions applied to the client."
-            )
+            if not self._use_mock_pubsub:
+                raise ConfigurationError(
+                    "The operation will never complete since there was no pubsub subscriptions applied to the client."
+                )
 
         if self.config._get_pubsub_callback_and_context()[0] is not None:
-            raise ConfigurationError(
-                "The operation will never complete since messages will be passed to the configured callback."
-            )
+            if not self._use_mock_pubsub:
+                raise ConfigurationError(
+                    "The operation will never complete since messages will be passed to the configured callback."
+                )
+
+        # Check if using mock first
+        if self._use_mock_pubsub and hasattr(self, "_mock_pubsub_broker"):
+            # Poll the broker for messages
+            while not self._is_closed:
+                msg = self._mock_pubsub_broker.get_client_message(self._client_id)
+                if msg:
+                    return msg
+                # Wait a bit before checking again
+                await anyio.sleep(0.01)
+            raise ClosingError("Client closed while waiting for message")
 
         # locking might not be required
         response_future: "TFuture" = _get_new_future_instance()
@@ -555,14 +646,20 @@ class BaseClient(CoreCommands):
             )
 
         if not self.config._is_pubsub_configured():
-            raise ConfigurationError(
-                "The operation will never succeed since there was no pubsbub subscriptions applied to the client."
-            )
+            if not self._use_mock_pubsub:
+                raise ConfigurationError(
+                    "The operation will never succeed since there was no pubsbub subscriptions applied to the client."
+                )
 
         if self.config._get_pubsub_callback_and_context()[0] is not None:
-            raise ConfigurationError(
-                "The operation will never succeed since messages will be passed to the configured callback."
-            )
+            if not self._use_mock_pubsub:
+                raise ConfigurationError(
+                    "The operation will never succeed since messages will be passed to the configured callback."
+                )
+
+        # Check if using mock first
+        if self._use_mock_pubsub and hasattr(self, "_mock_pubsub_broker"):
+            return self._mock_pubsub_broker.get_client_message(self._client_id)
 
         # locking might not be required
         msg: Optional[PubSubMsg] = None
@@ -613,9 +710,27 @@ class BaseClient(CoreCommands):
             >>> total = sum(len(s) for s in active.values())
             >>> print(f"Total active subscriptions: {total}")
         """
-        raise NotImplementedError(
-            "get_active_subscriptions will be implemented in a future PR"
-        )
+        if self._use_mock_pubsub:
+            result = self._mock_pubsub_broker.get_client_subscriptions(self._client_id)
+            # Convert bytes to strings for Python API
+            return {
+                "channels": {
+                    ch.decode() if isinstance(ch, bytes) else ch
+                    for ch in result.get("channels", set())
+                },
+                "patterns": {
+                    p.decode() if isinstance(p, bytes) else p
+                    for p in result.get("patterns", set())
+                },
+                "sharded_channels": {
+                    s.decode() if isinstance(s, bytes) else s
+                    for s in result.get("sharded_channels", set())
+                },
+            }
+
+        # TODO: Real implementation will go here
+        # Will need to decode bytes from Rust as well
+        raise NotImplementedError("Real implementation pending")
 
     def _cancel_pubsub_futures_with_exception_safe(self, exception: ConnectionError):
         while len(self._pubsub_futures):
@@ -807,6 +922,62 @@ class BaseClient(CoreCommands):
         )  # Empty message, just triggers the refresh
         response = await self._write_request_await_response(request)
         return response
+
+    def _try_mock_pubsub_command(
+        self,
+        request_type: RequestType.ValueType,
+        args: List[TEncodable],
+    ) -> Optional[TResult]:
+        """Try to handle a pubsub command with the mock implementation."""
+        if not hasattr(self, "_mock_pubsub_broker"):
+            return None
+
+        # Normalize args to strings
+        normalized_args = normalize_args(args)
+
+        # Handle subscribe commands
+        if request_type == RequestType.Subscribe:
+            return self._mock_pubsub_broker.subscribe(self._client_id, normalized_args)
+
+        elif request_type == RequestType.PSubscribe:
+            return self._mock_pubsub_broker.psubscribe(self._client_id, normalized_args)
+
+        elif request_type == RequestType.Unsubscribe:
+            return self._mock_pubsub_broker.unsubscribe(
+                self._client_id, normalized_args if normalized_args else None
+            )
+
+        elif request_type == RequestType.PUnsubscribe:
+            return self._mock_pubsub_broker.punsubscribe(
+                self._client_id, normalized_args if normalized_args else None
+            )
+
+        elif request_type == RequestType.SSubscribe:
+            return self._mock_pubsub_broker.ssubscribe(self._client_id, normalized_args)
+
+        elif request_type == RequestType.SUnsubscribe:
+            return self._mock_pubsub_broker.sunsubscribe(
+                self._client_id, normalized_args if normalized_args else None
+            )
+
+        # Handle publish commands
+        elif request_type == RequestType.Publish:
+            # args[0] is channel, args[1] is message
+            if len(args) >= 2:
+                channel = normalized_args[0]
+                message = normalized_args[1]
+                return self._mock_pubsub_broker.publish(channel, message, sharded=False)
+            return 0
+
+        elif request_type == RequestType.SPublish:
+            # args[0] is channel, args[1] is message
+            if len(args) >= 2:
+                channel = normalized_args[0]
+                message = normalized_args[1]
+                return self._mock_pubsub_broker.publish(channel, message, sharded=True)
+            return 0
+
+        return None
 
 
 class GlideClusterClient(BaseClient, ClusterCommands):

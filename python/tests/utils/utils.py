@@ -1,3 +1,4 @@
+import anyio
 import json
 import random
 import string
@@ -1697,3 +1698,65 @@ def get_ca_certificate() -> bytes:
     )
     ca_cert_path = os.path.join(glide_home, "utils", "tls_crts", "ca.crt")
     return load_root_certificates_from_file(ca_cert_path)
+
+
+async def wait_for_subscription_state(
+    client: TGlideClient,
+    expected_channels: Optional[Set[str]] = None,
+    expected_patterns: Optional[Set[str]] = None,
+    expected_sharded: Optional[Set[str]] = None,
+    timeout: float = 5.0,
+    poll_interval: float = 0.1,
+) -> Dict[str, Set[str]]:  # ← Now returns strings
+    """
+    Helper function that polls get_active_subscriptions until expected state is reached.
+
+    Args:
+        expected_channels: Expected channel names as strings
+        expected_patterns: Expected pattern names as strings
+        expected_sharded: Expected sharded channel names as strings
+
+    Returns:
+        The final active subscriptions state with string values
+    """
+    start_time = anyio.current_time()
+    last_error = None
+
+    while True:
+        if anyio.current_time() - start_time > timeout:
+            raise TimeoutError(
+                f"Subscription state not reached within {timeout}s. "
+                f"Expected channels: {expected_channels}, patterns: {expected_patterns}, "
+                f"sharded: {expected_sharded}. Last error: {last_error}"
+            )
+
+        try:
+            active = await client.get_active_subscriptions()
+
+            # All are strings now - direct comparison
+            channels_actual = active.get("channels", set())
+            patterns_actual = active.get("patterns", set())
+            sharded_actual = active.get("sharded_channels", set())
+
+            # Compare strings with strings
+            channels_match = (
+                expected_channels is None or channels_actual == expected_channels
+            )
+            patterns_match = (
+                expected_patterns is None or patterns_actual == expected_patterns
+            )
+            sharded_match = (
+                expected_sharded is None or sharded_actual == expected_sharded
+            )
+
+            if channels_match and patterns_match and sharded_match:
+                return active
+
+            last_error = None
+
+        except Exception as e:
+            if not isinstance(e, (ConnectionError, TimeoutError)):
+                raise
+            last_error = str(e)
+
+        await anyio.sleep(poll_interval)
