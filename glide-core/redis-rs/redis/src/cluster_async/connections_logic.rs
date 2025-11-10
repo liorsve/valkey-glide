@@ -193,6 +193,7 @@ where
             discover_az,
             connection_timeout: Some(params.connection_timeout),
             connection_retry_strategy: None,
+            cluster_pubsub_push_sender: None
         },
     )
     .await

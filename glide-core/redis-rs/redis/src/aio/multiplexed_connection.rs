@@ -284,14 +284,12 @@ where
                 // Return Ok(Nil) to indicate success with no data
                 entry.output.send(Ok(Value::Nil)).ok();
             }
-
             // Case 2: First response is an error
             // Store it and wait for PONG
             Err(err) => {
                 entry.fenced_result = Some(Err(err));
                 in_flight.push_front(entry);
             }
-
             // Case 3: First response is a value (not PONG)
             // Store it and wait for PONG
             Ok(value) => {
@@ -614,6 +612,9 @@ impl MultiplexedConnection {
         let pm = PushManager::default();
         if let Some(sender) = glide_connection_options.push_sender {
             pm.replace_sender(sender);
+        }
+        if let Some(cluster_sender) = glide_connection_options.cluster_pubsub_push_sender {
+            pm.replace_cluster_sender(cluster_sender);
         }
 
         pipeline.set_push_manager(pm.clone()).await;

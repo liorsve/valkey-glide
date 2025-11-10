@@ -16,6 +16,7 @@ pub struct PushInfo {
 #[derive(Clone, Default)]
 pub struct PushManager {
     sender: Arc<ArcSwap<Option<mpsc::UnboundedSender<PushInfo>>>>,
+    cluster_sender: Arc<ArcSwap<Option<mpsc::UnboundedSender<PushInfo>>>>,
 }
 impl PushManager {
     /// It checks if value's type is Push
@@ -30,27 +31,62 @@ impl PushManager {
     /// then creates PushInfo and invokes `send` method of sender
     pub(crate) fn try_send_raw(&self, value: &Value) {
         if let Value::Push { kind, data } = value {
-            let guard = self.sender.load();
-            if let Some(sender) = guard.as_ref() {
-                let push_info = PushInfo {
-                    kind: kind.clone(),
-                    data: data.clone(),
-                };
-                if sender.send(push_info).is_err() {
-                    self.sender.compare_and_swap(guard, Arc::new(None));
+            let push_info = PushInfo {
+                kind: kind.clone(),
+                data: data.clone(),
+            };
+
+            // Send to client sender
+            let app_guard = self.sender.load();
+            if let Some(sender) = app_guard.as_ref() {
+                if sender.send(push_info.clone()).is_err() {
+                    self.sender.compare_and_swap(app_guard, Arc::new(None));
+                }
+            }
+
+            // Send to cluster sender
+            if self.is_subscription_or_message_push(kind) {
+                let cluster_guard = self.cluster_sender.load();
+                if let Some(sender) = cluster_guard.as_ref() {
+                    if sender.send(push_info).is_err() {
+                        self.cluster_sender
+                            .compare_and_swap(cluster_guard, Arc::new(None));
+                    }
                 }
             }
         }
+    }
+
+    /// Check if this is a subscription-related push notification or a pubsub message (indicates subscription to channel)
+    fn is_subscription_or_message_push(&self, kind: &PushKind) -> bool {
+        matches!(
+            kind,
+            PushKind::Subscribe
+                | PushKind::Unsubscribe
+                | PushKind::PSubscribe
+                | PushKind::PUnsubscribe
+                | PushKind::SSubscribe
+                | PushKind::SUnsubscribe
+                | PushKind::Message
+                | PushKind::PMessage
+                | PushKind::SMessage
+        )
     }
     /// Replace mpsc channel of `PushManager` with provided sender.
     pub fn replace_sender(&self, sender: mpsc::UnboundedSender<PushInfo>) {
         self.sender.store(Arc::new(Some(sender)));
     }
 
+    /// Replace cluster-internal mpsc channel
+    pub fn replace_cluster_sender(&self, sender: mpsc::UnboundedSender<PushInfo>) {
+        self.cluster_sender.store(Arc::new(Some(sender)));
+    }
+
     /// Creates new `PushManager`
     pub fn new() -> Self {
         PushManager {
             sender: Arc::from(ArcSwap::from(Arc::new(None))),
+            cluster_sender: Arc::from(ArcSwap::from(Arc::new(None))),
         }
     }
 }

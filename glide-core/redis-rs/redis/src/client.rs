@@ -96,6 +96,8 @@ pub struct GlideConnectionOptions {
     pub connection_timeout: Option<Duration>,
     /// Retry strategy configuration for reconnect attempts.
     pub connection_retry_strategy: Option<RetryStrategy>,
+    /// Cluster-internal push notifications sender for subscription state management
+    pub cluster_pubsub_push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
 }
 
 /// To enable async support you need to enable the feature: `tokio-comp`

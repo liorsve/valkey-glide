@@ -606,7 +606,6 @@ impl Client {
                 return broker.handle_pubsub_command(&client_id, cmd).await;
             }
 
-            // let expected_type = expected_type_for_cmd(cmd);
             let request_timeout = match get_request_timeout(cmd, self.request_timeout) {
                 Ok(request_timeout) => request_timeout,
                 Err(err) => return Err(err),

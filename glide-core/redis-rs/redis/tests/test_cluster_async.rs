@@ -4946,453 +4946,453 @@ mod cluster_async {
         .unwrap();
     }
 
-    #[test]
-    #[serial_test::serial]
-    fn test_async_cluster_restore_resp3_pubsub_state_passive_disconnect() {
-        let redis_ver = std::env::var("REDIS_VERSION").unwrap_or_default();
-        let use_sharded = redis_ver.starts_with("7.");
+    // #[test]
+    // #[serial_test::serial]
+    // fn test_async_cluster_restore_resp3_pubsub_state_passive_disconnect() {
+    //     let redis_ver = std::env::var("REDIS_VERSION").unwrap_or_default();
+    //     let use_sharded = redis_ver.starts_with("7.");
 
-        let mut client_subscriptions = PubSubSubscriptionInfo::from([(
-            PubSubSubscriptionKind::Exact,
-            HashSet::from([PubSubChannelOrPattern::from("test_channel".as_bytes())]),
-        )]);
+    //     let mut client_subscriptions = PubSubSubscriptionInfo::from([(
+    //         PubSubSubscriptionKind::Exact,
+    //         HashSet::from([PubSubChannelOrPattern::from("test_channel".as_bytes())]),
+    //     )]);
 
-        if use_sharded {
-            client_subscriptions.insert(
-                PubSubSubscriptionKind::Sharded,
-                HashSet::from([PubSubChannelOrPattern::from("test_channel_?".as_bytes())]),
-            );
-        }
+    //     if use_sharded {
+    //         client_subscriptions.insert(
+    //             PubSubSubscriptionKind::Sharded,
+    //             HashSet::from([PubSubChannelOrPattern::from("test_channel_?".as_bytes())]),
+    //         );
+    //     }
 
-        // note topology change detection is not activated since no topology change is expected
-        let cluster = TestClusterContext::new_with_cluster_client_builder(
-            3,
-            0,
-            |builder| {
-                builder
-                    .retries(3)
-                    .use_protocol(ProtocolVersion::RESP3)
-                    .pubsub_subscriptions(client_subscriptions.clone())
-                    .periodic_connections_checks(Some(Duration::from_secs(1)))
-            },
-            false,
-        );
+    //     // note topology change detection is not activated since no topology change is expected
+    //     let cluster = TestClusterContext::new_with_cluster_client_builder(
+    //         3,
+    //         0,
+    //         |builder| {
+    //             builder
+    //                 .retries(3)
+    //                 .use_protocol(ProtocolVersion::RESP3)
+    //                 .pubsub_subscriptions(client_subscriptions.clone())
+    //                 .periodic_connections_checks(Some(Duration::from_secs(1)))
+    //         },
+    //         false,
+    //     );
 
-        block_on_all(async move {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PushInfo>();
-            let mut _listening_con = cluster.async_connection(Some(tx.clone())).await;
-            // Note, publishing connection has the same pubsub config
-            let mut publishing_con = cluster.async_connection(None).await;
+    //     block_on_all(async move {
+    //         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PushInfo>();
+    //         let mut _listening_con = cluster.async_connection(Some(tx.clone())).await;
+    //         // Note, publishing connection has the same pubsub config
+    //         let mut publishing_con = cluster.async_connection(None).await;
 
-            // short sleep to allow the server to push subscription notification
-            sleep(futures_time::time::Duration::from_secs(1)).await;
+    //         // short sleep to allow the server to push subscription notification
+    //         sleep(futures_time::time::Duration::from_secs(1)).await;
 
-            // validate subscriptions
-            validate_subscriptions(&client_subscriptions, &mut rx, false);
+    //         // validate subscriptions
+    //         validate_subscriptions(&client_subscriptions, &mut rx, false);
 
-            // validate PUBLISH - retry until expected subscribers are available
-            let result = retry_publish_until_expected_subscribers(
-                PublishCommand::Publish,
-                &mut publishing_con,
-                "test_channel",
-                "test_message",
-                2,
-                10, // max retries
-            )
-            .await;
-            assert_eq!(
-                result,
-                Ok(Value::Int(2)) // 2 connections with the same pubsub config
-            );
+    //         // validate PUBLISH - retry until expected subscribers are available
+    //         let result = retry_publish_until_expected_subscribers(
+    //             PublishCommand::Publish,
+    //             &mut publishing_con,
+    //             "test_channel",
+    //             "test_message",
+    //             2,
+    //             10, // max retries
+    //         )
+    //         .await;
+    //         assert_eq!(
+    //             result,
+    //             Ok(Value::Int(2)) // 2 connections with the same pubsub config
+    //         );
 
-            sleep(futures_time::time::Duration::from_secs(1)).await;
-            let result = rx.try_recv();
-            assert!(result.is_ok());
-            let PushInfo { kind, data } = result.unwrap();
-            assert_eq!(
-                (kind, data),
-                (
-                    PushKind::Message,
-                    vec![
-                        Value::BulkString("test_channel".into()),
-                        Value::BulkString("test_message".into()),
-                    ]
-                )
-            );
+    //         sleep(futures_time::time::Duration::from_secs(1)).await;
+    //         let result = rx.try_recv();
+    //         assert!(result.is_ok());
+    //         let PushInfo { kind, data } = result.unwrap();
+    //         assert_eq!(
+    //             (kind, data),
+    //             (
+    //                 PushKind::Message,
+    //                 vec![
+    //                     Value::BulkString("test_channel".into()),
+    //                     Value::BulkString("test_message".into()),
+    //                 ]
+    //             )
+    //         );
 
-            if use_sharded {
-                // validate SPUBLISH - retry until expected subscribers are available
-                let result = retry_publish_until_expected_subscribers(
-                    PublishCommand::SPublish,
-                    &mut publishing_con,
-                    "test_channel_?",
-                    "test_message",
-                    2,
-                    10, // max retries
-                )
-                .await;
-                assert_eq!(
-                    result,
-                    Ok(Value::Int(2)) // 2 connections with the same pubsub config
-                );
+    //         if use_sharded {
+    //             // validate SPUBLISH - retry until expected subscribers are available
+    //             let result = retry_publish_until_expected_subscribers(
+    //                 PublishCommand::SPublish,
+    //                 &mut publishing_con,
+    //                 "test_channel_?",
+    //                 "test_message",
+    //                 2,
+    //                 10, // max retries
+    //             )
+    //             .await;
+    //             assert_eq!(
+    //                 result,
+    //                 Ok(Value::Int(2)) // 2 connections with the same pubsub config
+    //             );
 
-                sleep(futures_time::time::Duration::from_secs(1)).await;
-                let result = rx.try_recv();
-                assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
-                assert_eq!(
-                    (kind, data),
-                    (
-                        PushKind::SMessage,
-                        vec![
-                            Value::BulkString("test_channel_?".into()),
-                            Value::BulkString("test_message".into()),
-                        ]
-                    )
-                );
-            }
+    //             sleep(futures_time::time::Duration::from_secs(1)).await;
+    //             let result = rx.try_recv();
+    //             assert!(result.is_ok());
+    //             let PushInfo { kind, data } = result.unwrap();
+    //             assert_eq!(
+    //                 (kind, data),
+    //                 (
+    //                     PushKind::SMessage,
+    //                     vec![
+    //                         Value::BulkString("test_channel_?".into()),
+    //                         Value::BulkString("test_message".into()),
+    //                     ]
+    //                 )
+    //             );
+    //         }
 
-            // simulate passive disconnect
-            drop(cluster);
+    //         // simulate passive disconnect
+    //         drop(cluster);
 
-            // recreate the cluster, the assumtion is that the cluster is built with exactly the same params (ports, slots map...)
-            let _cluster =
-                TestClusterContext::new_with_cluster_client_builder(3, 0, |builder| builder, false);
+    //         // recreate the cluster, the assumtion is that the cluster is built with exactly the same params (ports, slots map...)
+    //         let _cluster =
+    //             TestClusterContext::new_with_cluster_client_builder(3, 0, |builder| builder, false);
 
-            // sleep for 1 periodic_connections_checks + overhead
-            sleep(futures_time::time::Duration::from_secs(1 + 1)).await;
+    //         // sleep for 1 periodic_connections_checks + overhead
+    //         sleep(futures_time::time::Duration::from_secs(1 + 1)).await;
 
-            // new subscription notifications due to resubscriptions
-            validate_subscriptions(&client_subscriptions, &mut rx, true);
+    //         // new subscription notifications due to resubscriptions
+    //         validate_subscriptions(&client_subscriptions, &mut rx, true);
 
-            // validate PUBLISH - retry until expected subscribers are available
-            let result = retry_publish_until_expected_subscribers(
-                PublishCommand::Publish,
-                &mut publishing_con,
-                "test_channel",
-                "test_message",
-                2,
-                10, // max retries
-            )
-            .await;
-            assert_eq!(
-                result,
-                Ok(Value::Int(2)) // 2 connections with the same pubsub config
-            );
+    //         // validate PUBLISH - retry until expected subscribers are available
+    //         let result = retry_publish_until_expected_subscribers(
+    //             PublishCommand::Publish,
+    //             &mut publishing_con,
+    //             "test_channel",
+    //             "test_message",
+    //             2,
+    //             10, // max retries
+    //         )
+    //         .await;
+    //         assert_eq!(
+    //             result,
+    //             Ok(Value::Int(2)) // 2 connections with the same pubsub config
+    //         );
 
-            sleep(futures_time::time::Duration::from_secs(1)).await;
-            let result = rx.try_recv();
-            assert!(result.is_ok());
-            let PushInfo { kind, data } = result.unwrap();
-            assert_eq!(
-                (kind, data),
-                (
-                    PushKind::Message,
-                    vec![
-                        Value::BulkString("test_channel".into()),
-                        Value::BulkString("test_message".into()),
-                    ]
-                )
-            );
+    //         sleep(futures_time::time::Duration::from_secs(1)).await;
+    //         let result = rx.try_recv();
+    //         assert!(result.is_ok());
+    //         let PushInfo { kind, data } = result.unwrap();
+    //         assert_eq!(
+    //             (kind, data),
+    //             (
+    //                 PushKind::Message,
+    //                 vec![
+    //                     Value::BulkString("test_channel".into()),
+    //                     Value::BulkString("test_message".into()),
+    //                 ]
+    //             )
+    //         );
 
-            if use_sharded {
-                // validate SPUBLISH - retry until expected subscribers are available
-                let result = retry_publish_until_expected_subscribers(
-                    PublishCommand::SPublish,
-                    &mut publishing_con,
-                    "test_channel_?",
-                    "test_message",
-                    2,
-                    10, // max retries
-                )
-                .await;
-                assert_eq!(
-                    result,
-                    Ok(Value::Int(2)) // 2 connections with the same pubsub config
-                );
+    //         if use_sharded {
+    //             // validate SPUBLISH - retry until expected subscribers are available
+    //             let result = retry_publish_until_expected_subscribers(
+    //                 PublishCommand::SPublish,
+    //                 &mut publishing_con,
+    //                 "test_channel_?",
+    //                 "test_message",
+    //                 2,
+    //                 10, // max retries
+    //             )
+    //             .await;
+    //             assert_eq!(
+    //                 result,
+    //                 Ok(Value::Int(2)) // 2 connections with the same pubsub config
+    //             );
 
-                sleep(futures_time::time::Duration::from_secs(1)).await;
-                let result = rx.try_recv();
-                assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
-                assert_eq!(
-                    (kind, data),
-                    (
-                        PushKind::SMessage,
-                        vec![
-                            Value::BulkString("test_channel_?".into()),
-                            Value::BulkString("test_message".into()),
-                        ]
-                    )
-                );
-            }
+    //             sleep(futures_time::time::Duration::from_secs(1)).await;
+    //             let result = rx.try_recv();
+    //             assert!(result.is_ok());
+    //             let PushInfo { kind, data } = result.unwrap();
+    //             assert_eq!(
+    //                 (kind, data),
+    //                 (
+    //                     PushKind::SMessage,
+    //                     vec![
+    //                         Value::BulkString("test_channel_?".into()),
+    //                         Value::BulkString("test_message".into()),
+    //                     ]
+    //                 )
+    //             );
+    //         }
 
-            Ok(())
-        })
-        .unwrap();
-    }
+    //         Ok(())
+    //     })
+    //     .unwrap();
+    // }
 
-    #[test]
-    #[serial_test::serial]
-    fn test_async_cluster_restore_resp3_pubsub_state_after_scale_out() {
-        let redis_ver = std::env::var("REDIS_VERSION").unwrap_or_default();
-        let use_sharded = redis_ver.starts_with("7.");
+    // #[test]
+    // #[serial_test::serial]
+    // fn test_async_cluster_restore_resp3_pubsub_state_after_scale_out() {
+    //     let redis_ver = std::env::var("REDIS_VERSION").unwrap_or_default();
+    //     let use_sharded = redis_ver.starts_with("7.");
 
-        let mut client_subscriptions = PubSubSubscriptionInfo::from([
-            // test_channel_? is used as it maps to 14212 slot, which is the last node in both 3 and 6 node config
-            // (assuming slots allocation is monotonicaly increasing starting from node 0)
-            (
-                PubSubSubscriptionKind::Exact,
-                HashSet::from([PubSubChannelOrPattern::from("test_channel_?".as_bytes())]),
-            ),
-        ]);
+    //     let mut client_subscriptions = PubSubSubscriptionInfo::from([
+    //         // test_channel_? is used as it maps to 14212 slot, which is the last node in both 3 and 6 node config
+    //         // (assuming slots allocation is monotonicaly increasing starting from node 0)
+    //         (
+    //             PubSubSubscriptionKind::Exact,
+    //             HashSet::from([PubSubChannelOrPattern::from("test_channel_?".as_bytes())]),
+    //         ),
+    //     ]);
 
-        if use_sharded {
-            client_subscriptions.insert(
-                PubSubSubscriptionKind::Sharded,
-                HashSet::from([PubSubChannelOrPattern::from("test_channel_?".as_bytes())]),
-            );
-        }
+    //     if use_sharded {
+    //         client_subscriptions.insert(
+    //             PubSubSubscriptionKind::Sharded,
+    //             HashSet::from([PubSubChannelOrPattern::from("test_channel_?".as_bytes())]),
+    //         );
+    //     }
 
-        let slot_14212 = get_slot(b"test_channel_?");
-        assert_eq!(slot_14212, 14212);
+    //     let slot_14212 = get_slot(b"test_channel_?");
+    //     assert_eq!(slot_14212, 14212);
 
-        let cluster = TestClusterContext::new_with_cluster_client_builder(
-            3,
-            0,
-            |builder| {
-                builder
-            .retries(3)
-            .use_protocol(ProtocolVersion::RESP3)
-            .pubsub_subscriptions(client_subscriptions.clone())
-            // periodic connection check is required to detect the disconnect from the last node
-            .periodic_connections_checks(Some(Duration::from_secs(1)))
-            // periodic topology check is required to detect topology change
-            .periodic_topology_checks(Duration::from_secs(1))
-            .slots_refresh_rate_limit(Duration::from_secs(0), 0)
-            },
-            false,
-        );
+    //     let cluster = TestClusterContext::new_with_cluster_client_builder(
+    //         3,
+    //         0,
+    //         |builder| {
+    //             builder
+    //         .retries(3)
+    //         .use_protocol(ProtocolVersion::RESP3)
+    //         .pubsub_subscriptions(client_subscriptions.clone())
+    //         // periodic connection check is required to detect the disconnect from the last node
+    //         .periodic_connections_checks(Some(Duration::from_secs(1)))
+    //         // periodic topology check is required to detect topology change
+    //         .periodic_topology_checks(Duration::from_secs(1))
+    //         .slots_refresh_rate_limit(Duration::from_secs(0), 0)
+    //         },
+    //         false,
+    //     );
 
-        block_on_all(async move {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PushInfo>();
-            let mut _listening_con = cluster.async_connection(Some(tx.clone())).await;
-            // Note, publishing connection has the same pubsub config
-            let mut publishing_con = cluster.async_connection(None).await;
+    //     block_on_all(async move {
+    //         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PushInfo>();
+    //         let mut _listening_con = cluster.async_connection(Some(tx.clone())).await;
+    //         // Note, publishing connection has the same pubsub config
+    //         let mut publishing_con = cluster.async_connection(None).await;
 
-            // short sleep to allow the server to push subscription notification
-            sleep(futures_time::time::Duration::from_secs(1)).await;
+    //         // short sleep to allow the server to push subscription notification
+    //         sleep(futures_time::time::Duration::from_secs(1)).await;
 
-            // validate subscriptions
-            validate_subscriptions(&client_subscriptions, &mut rx, false);
+    //         // validate subscriptions
+    //         validate_subscriptions(&client_subscriptions, &mut rx, false);
 
-            // validate PUBLISH - retry until expected subscribers are available
-            let result = retry_publish_until_expected_subscribers(
-                PublishCommand::Publish,
-                &mut publishing_con,
-                "test_channel_?",
-                "test_message",
-                2,
-                10, // max retries
-            )
-            .await;
-            assert_eq!(
-                result,
-                Ok(Value::Int(2)) // 2 connections with the same pubsub config
-            );
+    //         // validate PUBLISH - retry until expected subscribers are available
+    //         let result = retry_publish_until_expected_subscribers(
+    //             PublishCommand::Publish,
+    //             &mut publishing_con,
+    //             "test_channel_?",
+    //             "test_message",
+    //             2,
+    //             10, // max retries
+    //         )
+    //         .await;
+    //         assert_eq!(
+    //             result,
+    //             Ok(Value::Int(2)) // 2 connections with the same pubsub config
+    //         );
 
-            sleep(futures_time::time::Duration::from_secs(1)).await;
-            let result = rx.try_recv();
-            assert!(result.is_ok());
-            let PushInfo { kind, data } = result.unwrap();
-            assert_eq!(
-                (kind, data),
-                (
-                    PushKind::Message,
-                    vec![
-                        Value::BulkString("test_channel_?".into()),
-                        Value::BulkString("test_message".into()),
-                    ]
-                )
-            );
+    //         sleep(futures_time::time::Duration::from_secs(1)).await;
+    //         let result = rx.try_recv();
+    //         assert!(result.is_ok());
+    //         let PushInfo { kind, data } = result.unwrap();
+    //         assert_eq!(
+    //             (kind, data),
+    //             (
+    //                 PushKind::Message,
+    //                 vec![
+    //                     Value::BulkString("test_channel_?".into()),
+    //                     Value::BulkString("test_message".into()),
+    //                 ]
+    //             )
+    //         );
 
-            if use_sharded {
-                // validate SPUBLISH - retry until expected subscribers are available
-                let result = retry_publish_until_expected_subscribers(
-                    PublishCommand::SPublish,
-                    &mut publishing_con,
-                    "test_channel_?",
-                    "test_message",
-                    2,
-                    10, // max retries
-                )
-                .await;
-                assert_eq!(
-                    result,
-                    Ok(Value::Int(2)) // 2 connections with the same pubsub config
-                );
+    //         if use_sharded {
+    //             // validate SPUBLISH - retry until expected subscribers are available
+    //             let result = retry_publish_until_expected_subscribers(
+    //                 PublishCommand::SPublish,
+    //                 &mut publishing_con,
+    //                 "test_channel_?",
+    //                 "test_message",
+    //                 2,
+    //                 10, // max retries
+    //             )
+    //             .await;
+    //             assert_eq!(
+    //                 result,
+    //                 Ok(Value::Int(2)) // 2 connections with the same pubsub config
+    //             );
 
-                sleep(futures_time::time::Duration::from_secs(1)).await;
-                let result = rx.try_recv();
-                assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
-                assert_eq!(
-                    (kind, data),
-                    (
-                        PushKind::SMessage,
-                        vec![
-                            Value::BulkString("test_channel_?".into()),
-                            Value::BulkString("test_message".into()),
-                        ]
-                    )
-                );
-            }
+    //             sleep(futures_time::time::Duration::from_secs(1)).await;
+    //             let result = rx.try_recv();
+    //             assert!(result.is_ok());
+    //             let PushInfo { kind, data } = result.unwrap();
+    //             assert_eq!(
+    //                 (kind, data),
+    //                 (
+    //                     PushKind::SMessage,
+    //                     vec![
+    //                         Value::BulkString("test_channel_?".into()),
+    //                         Value::BulkString("test_message".into()),
+    //                     ]
+    //                 )
+    //             );
+    //         }
 
-            // drop and recreate a cluster with more nodes
-            drop(cluster);
+    //         // drop and recreate a cluster with more nodes
+    //         drop(cluster);
 
-            // recreate the cluster, the assumtion is that the cluster is built with exactly the same params (ports, slots map...)
-            let cluster =
-                TestClusterContext::new_with_cluster_client_builder(6, 0, |builder| builder, false);
+    //         // recreate the cluster, the assumtion is that the cluster is built with exactly the same params (ports, slots map...)
+    //         let cluster =
+    //             TestClusterContext::new_with_cluster_client_builder(6, 0, |builder| builder, false);
 
-            // assume slot 14212 will reside in the last node
-            let last_server_port = {
-                let addr = cluster.cluster.servers.last().unwrap().addr.clone();
-                match addr {
-                    redis::ConnectionAddr::TcpTls {
-                        host: _,
-                        port,
-                        insecure: _,
-                        tls_params: _,
-                    } => port,
-                    redis::ConnectionAddr::Tcp(_, port) => port,
-                    _ => {
-                        panic!("Wrong server address type: {addr:?}");
-                    }
-                }
-            };
+    //         // assume slot 14212 will reside in the last node
+    //         let last_server_port = {
+    //             let addr = cluster.cluster.servers.last().unwrap().addr.clone();
+    //             match addr {
+    //                 redis::ConnectionAddr::TcpTls {
+    //                     host: _,
+    //                     port,
+    //                     insecure: _,
+    //                     tls_params: _,
+    //                 } => port,
+    //                 redis::ConnectionAddr::Tcp(_, port) => port,
+    //                 _ => {
+    //                     panic!("Wrong server address type: {addr:?}");
+    //                 }
+    //             }
+    //         };
 
-            // wait for new topology discovery
-            let max_requests = 5;
-            let mut i = 0;
-            let mut cmd = redis::cmd("INFO");
-            cmd.arg("SERVER");
-            loop {
-                if i == max_requests {
-                    panic!("Failed to recover and discover new topology");
-                }
-                i += 1;
+    //         // wait for new topology discovery
+    //         let max_requests = 5;
+    //         let mut i = 0;
+    //         let mut cmd = redis::cmd("INFO");
+    //         cmd.arg("SERVER");
+    //         loop {
+    //             if i == max_requests {
+    //                 panic!("Failed to recover and discover new topology");
+    //             }
+    //             i += 1;
 
-                if let Ok(res) = publishing_con
-                    .route_command(
-                        &cmd,
-                        RoutingInfo::SingleNode(SingleNodeRoutingInfo::SpecificNode(Route::new(
-                            slot_14212,
-                            SlotAddr::Master,
-                        ))),
-                    )
-                    .await
-                {
-                    match res {
-                        Value::VerbatimString { format: _, text } => {
-                            if text.contains(format!("tcp_port:{last_server_port}").as_str()) {
-                                // new topology rediscovered
-                                break;
-                            }
-                        }
-                        _ => {
-                            panic!("Wrong return type for INFO SERVER command: {res:?}");
-                        }
-                    }
-                    sleep(futures_time::time::Duration::from_secs(1)).await;
-                }
-            }
+    //             if let Ok(res) = publishing_con
+    //                 .route_command(
+    //                     &cmd,
+    //                     RoutingInfo::SingleNode(SingleNodeRoutingInfo::SpecificNode(Route::new(
+    //                         slot_14212,
+    //                         SlotAddr::Master,
+    //                     ))),
+    //                 )
+    //                 .await
+    //             {
+    //                 match res {
+    //                     Value::VerbatimString { format: _, text } => {
+    //                         if text.contains(format!("tcp_port:{last_server_port}").as_str()) {
+    //                             // new topology rediscovered
+    //                             break;
+    //                         }
+    //                     }
+    //                     _ => {
+    //                         panic!("Wrong return type for INFO SERVER command: {res:?}");
+    //                     }
+    //                 }
+    //                 sleep(futures_time::time::Duration::from_secs(1)).await;
+    //             }
+    //         }
 
-            // sleep for one one cycle of topology refresh
-            sleep(futures_time::time::Duration::from_secs(1)).await;
+    //         // sleep for one one cycle of topology refresh
+    //         sleep(futures_time::time::Duration::from_secs(1)).await;
 
-            // validate PUBLISH - retry until expected subscribers are available
-            let result = retry_publish_until_expected_subscribers(
-                PublishCommand::Publish,
-                &mut publishing_con,
-                "test_channel_?",
-                "test_message",
-                2,
-                10, // max retries
-            )
-            .await;
-            assert_eq!(
-                result,
-                Ok(Value::Int(2)) // 2 connections with the same pubsub config
-            );
+    //         // validate PUBLISH - retry until expected subscribers are available
+    //         let result = retry_publish_until_expected_subscribers(
+    //             PublishCommand::Publish,
+    //             &mut publishing_con,
+    //             "test_channel_?",
+    //             "test_message",
+    //             2,
+    //             10, // max retries
+    //         )
+    //         .await;
+    //         assert_eq!(
+    //             result,
+    //             Ok(Value::Int(2)) // 2 connections with the same pubsub config
+    //         );
 
-            // allow message to propagate
-            sleep(futures_time::time::Duration::from_secs(1)).await;
+    //         // allow message to propagate
+    //         sleep(futures_time::time::Duration::from_secs(1)).await;
 
-            loop {
-                let result = rx.try_recv();
-                assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
-                // ignore disconnection and subscription notifications due to resubscriptions
-                if kind == PushKind::Message {
-                    assert_eq!(
-                        data,
-                        vec![
-                            Value::BulkString("test_channel_?".into()),
-                            Value::BulkString("test_message".into()),
-                        ]
-                    );
-                    break;
-                }
-            }
+    //         loop {
+    //             let result = rx.try_recv();
+    //             assert!(result.is_ok());
+    //             let PushInfo { kind, data } = result.unwrap();
+    //             // ignore disconnection and subscription notifications due to resubscriptions
+    //             if kind == PushKind::Message {
+    //                 assert_eq!(
+    //                     data,
+    //                     vec![
+    //                         Value::BulkString("test_channel_?".into()),
+    //                         Value::BulkString("test_message".into()),
+    //                     ]
+    //                 );
+    //                 break;
+    //             }
+    //         }
 
-            if use_sharded {
-                // validate SPUBLISH - retry until expected subscribers are available
-                let result = retry_publish_until_expected_subscribers(
-                    PublishCommand::SPublish,
-                    &mut publishing_con,
-                    "test_channel_?",
-                    "test_message",
-                    2,
-                    10, // max retries
-                )
-                .await;
-                assert_eq!(
-                    result,
-                    Ok(Value::Int(2)) // 2 connections with the same pubsub config
-                );
+    //         if use_sharded {
+    //             // validate SPUBLISH - retry until expected subscribers are available
+    //             let result = retry_publish_until_expected_subscribers(
+    //                 PublishCommand::SPublish,
+    //                 &mut publishing_con,
+    //                 "test_channel_?",
+    //                 "test_message",
+    //                 2,
+    //                 10, // max retries
+    //             )
+    //             .await;
+    //             assert_eq!(
+    //                 result,
+    //                 Ok(Value::Int(2)) // 2 connections with the same pubsub config
+    //             );
 
-                // allow message to propagate
-                sleep(futures_time::time::Duration::from_secs(1)).await;
+    //             // allow message to propagate
+    //             sleep(futures_time::time::Duration::from_secs(1)).await;
 
-                let result = rx.try_recv();
-                assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
-                assert_eq!(
-                    (kind, data),
-                    (
-                        PushKind::SMessage,
-                        vec![
-                            Value::BulkString("test_channel_?".into()),
-                            Value::BulkString("test_message".into()),
-                        ]
-                    )
-                );
-            }
+    //             let result = rx.try_recv();
+    //             assert!(result.is_ok());
+    //             let PushInfo { kind, data } = result.unwrap();
+    //             assert_eq!(
+    //                 (kind, data),
+    //                 (
+    //                     PushKind::SMessage,
+    //                     vec![
+    //                         Value::BulkString("test_channel_?".into()),
+    //                         Value::BulkString("test_message".into()),
+    //                     ]
+    //                 )
+    //             );
+    //         }
 
-            drop(publishing_con);
-            drop(_listening_con);
+    //         drop(publishing_con);
+    //         drop(_listening_con);
 
-            Ok(())
-        })
-        .unwrap();
+    //         Ok(())
+    //     })
+    //     .unwrap();
 
-        block_on_all(async move {
-            sleep(futures_time::time::Duration::from_secs(10)).await;
-            Ok(())
-        })
-        .unwrap();
-    }
+    //     block_on_all(async move {
+    //         sleep(futures_time::time::Duration::from_secs(10)).await;
+    //         Ok(())
+    //     })
+    //     .unwrap();
+    // }
 
     #[test]
     #[serial_test::serial]

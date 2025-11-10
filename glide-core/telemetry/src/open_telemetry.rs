@@ -890,7 +890,6 @@ impl GlideOpenTelemetry {
                     "OpenTelemetry error: Failed to initialize subscription last sync gauge".to_owned(),
                 )
             })?;
-
         Ok(())
     }
 

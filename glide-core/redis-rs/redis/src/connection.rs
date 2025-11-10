@@ -207,6 +207,27 @@ pub enum PubSubSubscriptionKind {
     Sharded = 2,
 }
 
+impl PubSubSubscriptionKind {
+    /// Convert a PushKind (subscribe, unsubscribe, or message) to a PubSubSubscriptionKind
+    pub(crate) fn from_push(kind: &PushKind) -> Option<Self> {
+        match kind {
+            PushKind::Subscribe
+            | PushKind::Unsubscribe
+            | PushKind::Message => Some(PubSubSubscriptionKind::Exact),
+
+            PushKind::PSubscribe
+            | PushKind::PUnsubscribe
+            | PushKind::PMessage => Some(PubSubSubscriptionKind::Pattern),
+
+            PushKind::SSubscribe
+            | PushKind::SUnsubscribe
+            | PushKind::SMessage => Some(PubSubSubscriptionKind::Sharded),
+
+            _ => None,
+        }
+    }
+}
+
 impl From<PubSubSubscriptionKind> for usize {
     fn from(val: PubSubSubscriptionKind) -> Self {
         val as usize

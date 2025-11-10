@@ -40,7 +40,7 @@ use crate::{
     cmd,
     commands::cluster_scan::{cluster_scan, ClusterScanArgs, ScanStateRC},
     types::ServerError,
-    FromRedisValue, InfoDict, PipelineRetryStrategy,
+    FromRedisValue, InfoDict, PipelineRetryStrategy, PushKind,
 };
 use connections_container::{RefreshTaskNotifier, RefreshTaskState, RefreshTaskStatus};
 use dashmap::DashMap;
@@ -83,7 +83,7 @@ use crate::{
         self, MultipleNodeRoutingInfo, Redirect, ResponsePolicy, Route, SingleNodeRoutingInfo,
         SlotAddr,
     },
-    connection::{PubSubSubscriptionInfo, PubSubSubscriptionKind},
+    connection::{PubSubChannelOrPattern, PubSubSubscriptionInfo, PubSubSubscriptionKind},
     push_manager::PushInfo,
     Cmd, ConnectionInfo, ErrorKind, IntoConnectionInfo, RedisError, RedisFuture, RedisResult,
     Value,
@@ -121,6 +121,8 @@ use self::{
 };
 use crate::types::RetryMethod;
 
+const PUBSUB_SYNC_TIMEOUT_SECS: u64 = 60;
+/// Timeout threshold for pubsub out of sync metric (in seconds)
 pub(crate) const MUTEX_READ_ERR: &str = "Failed to obtain read lock. Poisoned mutex?";
 const MUTEX_WRITE_ERR: &str = "Failed to obtain write lock. Poisoned mutex?";
 /// This represents an async Cluster connection. It stores the
@@ -138,20 +140,29 @@ where
         cluster_params: ClusterParams,
         push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
     ) -> RedisResult<ClusterConnection<C>> {
-        ClusterConnInner::new(initial_nodes, cluster_params, push_sender)
-            .await
-            .map(|inner| {
-                let (tx, mut rx) = mpsc::channel::<Message<_>>(100);
-                let stream = async move {
-                    let _ = stream::poll_fn(move |cx| rx.poll_recv(cx))
-                        .map(Ok)
-                        .forward(inner)
-                        .await;
-                };
-                #[cfg(feature = "tokio-comp")]
-                tokio::spawn(stream);
-                ClusterConnection(tx)
-            })
+        // Create the message channel FIRST
+        let (tx, mut rx) = mpsc::channel::<Message<_>>(100);
+        
+        // Pass the sender to ClusterConnInner::new()
+        let inner = ClusterConnInner::new(
+            initial_nodes,
+            cluster_params,
+            push_sender,
+            tx.clone(),  // Pass the sender
+        )
+        .await?;
+        
+        // Spawn the message processing stream
+        let stream = async move {
+            let _ = stream::poll_fn(move |cx| rx.poll_recv(cx))
+                .map(Ok)
+                .forward(inner)
+                .await;
+        };
+        #[cfg(feature = "tokio-comp")]
+        tokio::spawn(stream);
+        
+        Ok(ClusterConnection(tx))
     }
 
     /// Special handling for `SCAN` command, using `cluster_scan_with_pattern`.
@@ -383,6 +394,265 @@ where
                 Response::ClusterScanResult(..) | Response::Multiple(_) => unreachable!(),
             })
     }
+
+    /// Subscribes to one or more channels (lazy mode - non-blocking).
+    /// Returns immediately after updating the internal desired state.
+    pub async fn subscribe_lazy(&mut self, channels: Vec<PubSubChannelOrPattern>) -> RedisResult<Value> {
+        if channels.is_empty() {
+            return Ok(Value::Okay);
+        }
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Exact,
+            channels,
+            action: SubscriptionAction::Subscribe,
+            mode: SubscriptionMode::Lazy,
+        })
+        .await
+    }
+
+    /// Subscribes to one or more channels (blocking mode).
+    /// Waits indefinitely until the subscription is confirmed on the server.
+    pub async fn subscribe(&mut self, channels: Vec<PubSubChannelOrPattern>) -> RedisResult<Value> {
+        if channels.is_empty() {
+            return Ok(Value::Okay);
+        }
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Exact,
+            channels,
+            action: SubscriptionAction::Subscribe,
+            mode: SubscriptionMode::Blocking,
+        })
+        .await
+    }
+
+    /// Unsubscribes from one or more channels (lazy mode - non-blocking).
+    /// If `None`, unsubscribes from all channels.
+    /// Returns immediately after updating the internal desired state.
+    pub async fn unsubscribe_lazy(&mut self, channels: Option<Vec<PubSubChannelOrPattern>>) -> RedisResult<Value> {
+        let channels = channels.unwrap_or_default();
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Exact,
+            channels,
+            action: SubscriptionAction::Unsubscribe,
+            mode: SubscriptionMode::Lazy,
+        })
+        .await
+    }
+
+    /// Unsubscribes from one or more channels (blocking mode).
+    /// If `None`, unsubscribes from all channels.
+    /// Waits indefinitely until the unsubscription is confirmed on the server.
+    pub async fn unsubscribe(&mut self, channels: Option<Vec<PubSubChannelOrPattern>>) -> RedisResult<Value> {
+        let channels = channels.unwrap_or_default();
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Exact,
+            channels,
+            action: SubscriptionAction::Unsubscribe,
+            mode: SubscriptionMode::Blocking,
+        })
+        .await
+    }
+
+    /// Subscribes to one or more channel patterns (lazy mode - non-blocking).
+    /// Returns immediately after updating the internal desired state.
+    pub async fn psubscribe_lazy(&mut self, patterns: Vec<PubSubChannelOrPattern>) -> RedisResult<Value> {
+        if patterns.is_empty() {
+            return Ok(Value::Okay);
+        }
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Pattern,
+            channels: patterns,
+            action: SubscriptionAction::Subscribe,
+            mode: SubscriptionMode::Lazy,
+        })
+        .await
+    }
+
+    /// Subscribes to one or more channel patterns (blocking mode).
+    /// Waits indefinitely until the subscription is confirmed on the server.
+    pub async fn psubscribe(&mut self, patterns: Vec<PubSubChannelOrPattern>) -> RedisResult<Value> {
+        if patterns.is_empty() {
+            return Ok(Value::Okay);
+        }
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Pattern,
+            channels: patterns,
+            action: SubscriptionAction::Subscribe,
+            mode: SubscriptionMode::Blocking,
+        })
+        .await
+    }
+
+    /// Unsubscribes from one or more channel patterns (lazy mode - non-blocking).
+    /// If `None`, unsubscribes from all patterns.
+    /// Returns immediately after updating the internal desired state.
+    pub async fn punsubscribe_lazy(&mut self, patterns: Option<Vec<PubSubChannelOrPattern>>) -> RedisResult<Value> {
+        let patterns = patterns.unwrap_or_default();
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Pattern,
+            channels: patterns,
+            action: SubscriptionAction::Unsubscribe,
+            mode: SubscriptionMode::Lazy,
+        })
+        .await
+    }
+
+    /// Unsubscribes from one or more channel patterns (blocking mode).
+    /// If `None`, unsubscribes from all patterns.
+    /// Waits indefinitely until the unsubscription is confirmed on the server.
+    pub async fn punsubscribe(&mut self, patterns: Option<Vec<PubSubChannelOrPattern>>) -> RedisResult<Value> {
+        let patterns = patterns.unwrap_or_default();
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Pattern,
+            channels: patterns,
+            action: SubscriptionAction::Unsubscribe,
+            mode: SubscriptionMode::Blocking,
+        })
+        .await
+    }
+
+    /// Subscribes to one or more sharded channels (lazy mode - non-blocking).
+    /// Returns immediately after updating the internal desired state.
+    pub async fn ssubscribe_lazy(&mut self, channels: Vec<PubSubChannelOrPattern>) -> RedisResult<Value> {
+        if channels.is_empty() {
+            return Ok(Value::Okay);
+        }
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Sharded,
+            channels,
+            action: SubscriptionAction::Subscribe,
+            mode: SubscriptionMode::Lazy,
+        })
+        .await
+    }
+
+    /// Subscribes to one or more sharded channels (blocking mode).
+    /// Waits indefinitely until the subscription is confirmed on the server.
+    pub async fn ssubscribe(&mut self, channels: Vec<PubSubChannelOrPattern>) -> RedisResult<Value> {
+        if channels.is_empty() {
+            return Ok(Value::Okay);
+        }
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Sharded,
+            channels,
+            action: SubscriptionAction::Subscribe,
+            mode: SubscriptionMode::Blocking,
+        })
+        .await
+    }
+
+    /// Unsubscribes from one or more sharded channels (lazy mode - non-blocking).
+    /// If `None`, unsubscribes from all sharded channels.
+    /// Returns immediately after updating the internal desired state.
+    pub async fn sunsubscribe_lazy(&mut self, channels: Option<Vec<PubSubChannelOrPattern>>) -> RedisResult<Value> {
+        let channels = channels.unwrap_or_default();
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Sharded,
+            channels,
+            action: SubscriptionAction::Unsubscribe,
+            mode: SubscriptionMode::Lazy,
+        })
+        .await
+    }
+
+    /// Unsubscribes from one or more sharded channels (blocking mode).
+    /// If `None`, unsubscribes from all sharded channels.
+    /// Waits indefinitely until the unsubscription is confirmed on the server.
+    pub async fn sunsubscribe(&mut self, channels: Option<Vec<PubSubChannelOrPattern>>) -> RedisResult<Value> {
+        let channels = channels.unwrap_or_default();
+
+        self.route_operation_request(Operation::SubscriptionUpdate {
+            kind: PubSubSubscriptionKind::Sharded,
+            channels,
+            action: SubscriptionAction::Unsubscribe,
+            mode: SubscriptionMode::Blocking,
+        })
+        .await
+    }
+
+    /// Gets both the desired and current subscriptions tracked by the client.
+    ///
+    /// # Returns
+    /// A tuple of (desired_subscriptions, current_subscriptions) where each is a map
+    /// of subscription types to sets of channels/patterns:
+    /// - "channels": Set of exact channel names
+    /// - "patterns": Set of channel patterns  
+    /// - "sharded_channels": Set of sharded channel names
+    ///
+    /// The desired subscriptions represent what the client intends to be subscribed to,
+    /// while current subscriptions represent what is actually active on the server.
+    pub async fn get_subscriptions(
+        &mut self,
+    ) -> RedisResult<(
+        HashMap<String, HashSet<PubSubChannelOrPattern>>,
+        HashMap<String, HashSet<PubSubChannelOrPattern>>,
+    )> {
+        let (sender, receiver) = oneshot::channel();
+        self.0
+            .send(Message {
+                cmd: CmdArg::OperationRequest(Operation::GetSubscriptions),
+                sender,
+            })
+            .await
+            .map_err(|e| {
+                RedisError::from(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("Failed to send get_subscriptions request: {e:?}"),
+                ))
+            })?;
+
+        receiver
+            .await
+            .unwrap_or_else(|e| {
+                Err(RedisError::from(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("Failed to receive get_subscriptions response: {e:?}"),
+                )))
+            })
+            .and_then(|response| match response {
+                Response::Single(Value::Array(values)) if values.len() == 2 => {
+                    // First element is desired, second is current
+                    let parse_map = |val: &Value| -> RedisResult<HashMap<String, HashSet<PubSubChannelOrPattern>>> {
+                        match val {
+                            Value::Map(pairs) => {
+                                let mut result = HashMap::new();
+                                for (key, value) in pairs {
+                                    if let (Value::BulkString(key_bytes), Value::Array(channels)) = (key, value) {
+                                        let key_str = String::from_utf8_lossy(key_bytes).to_string();
+                                        let channel_set: HashSet<PubSubChannelOrPattern> = channels
+                                            .iter()
+                                            .filter_map(|v| match v {
+                                                Value::BulkString(bytes) => Some(bytes.clone()),
+                                                _ => None,
+                                            })
+                                            .collect();
+                                        result.insert(key_str, channel_set);
+                                    }
+                                }
+                                Ok(result)
+                            }
+                            _ => Ok(HashMap::new()),
+                        }
+                    };
+                    
+                    let desired = parse_map(&values[0])?;
+                    let current = parse_map(&values[1])?;
+                    Ok((desired, current))
+                }
+                _ => Ok((HashMap::new(), HashMap::new())),
+            })
+    }
 }
 
 #[cfg(feature = "tokio-comp")]
@@ -396,6 +666,7 @@ struct TokioDisconnectNotifier {
 impl DisconnectNotifier for TokioDisconnectNotifier {
     fn notify_disconnect(&mut self) {
         self.disconnect_notifier.notify_one();
+        eprintln!("notifying diconnect");
     }
 
     async fn wait_for_disconnect_with_timeout(&self, max_wait: &Duration) {
@@ -429,9 +700,15 @@ pub(crate) struct InnerCore<C> {
     pending_requests: Mutex<Vec<PendingRequest<C>>>,
     slot_refresh_state: SlotRefreshState,
     initial_nodes: Vec<ConnectionInfo>,
-    subscriptions_by_address: TokioRwLock<HashMap<String, PubSubSubscriptionInfo>>,
-    unassigned_subscriptions: TokioRwLock<PubSubSubscriptionInfo>,
+    current_subscriptions: TokioRwLock<HashMap<String, PubSubSubscriptionInfo>>,
+    desired_subscriptions: TokioRwLock<PubSubSubscriptionInfo>,
+    in_flight_subscriptions: TokioRwLock<HashMap<String, PubSubSubscriptionInfo>>,
+    last_desired_subscriptions_update: TokioRwLock<Option<SystemTime>>,
+    push_notification_receiver: Arc<TokioRwLock<mpsc::UnboundedReceiver<PushInfo>>>,
     glide_connection_options: GlideConnectionOptions,
+    pubsub_refresh_notifier: Arc<Notify>,
+    pubsub_refresh_done: Arc<Notify>,
+    message_sender: mpsc::Sender<Message<C>>, 
 }
 
 pub(crate) type Core<C> = Arc<InnerCore<C>>;
@@ -665,6 +942,19 @@ enum CmdArg<C> {
     OperationRequest(Operation),
 }
 
+#[derive(Clone)]
+enum SubscriptionAction {
+    Subscribe,
+    Unsubscribe,
+}
+
+
+#[derive(Clone)]
+enum SubscriptionMode {
+    Lazy,      // Return immediately after updating desired state
+    Blocking,  // Wait for confirmation in current state (indefinitely)
+}
+
 // Operation requests which are connected to the internal state of the connection and not send as a command to the server.
 #[derive(Clone)]
 enum Operation {
@@ -672,6 +962,13 @@ enum Operation {
     UpdateConnectionDatabase(i64),
     UpdateConnectionClientName(Option<String>),
     GetUsername,
+    GetSubscriptions,
+    SubscriptionUpdate {
+        kind: PubSubSubscriptionKind,
+        channels: Vec<PubSubChannelOrPattern>,
+        action: SubscriptionAction,
+        mode: SubscriptionMode,
+    },
 }
 
 fn boxed_sleep(duration: Duration) -> BoxFuture<'static, ()> {
@@ -1032,6 +1329,7 @@ impl<C> Future for Request<C> {
                             err.redirect_node()
                                 .map(|(node, _slot)| Redirect::Moved(node.to_string())),
                         );
+                        eprintln!("in moved redirect");
                         Next::RefreshSlots {
                             request: Some(request),
                             sleep_duration: None,
@@ -1108,6 +1406,7 @@ where
         initial_nodes: &[ConnectionInfo],
         cluster_params: ClusterParams,
         push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
+        message_sender: mpsc::Sender<Message<C>>,
     ) -> RedisResult<Disposable<Self>> {
         let disconnect_notifier = {
             #[cfg(feature = "tokio-comp")]
@@ -1126,12 +1425,16 @@ where
 
         let connection_retry_strategy = cluster_params.reconnect_retry_strategy.unwrap_or_default();
 
+        let (cluster_pubsub_push_sender, cluster_pubsub_push_receiver) =
+            mpsc::unbounded_channel::<PushInfo>();
+
         let glide_connection_options = GlideConnectionOptions {
             push_sender,
             disconnect_notifier,
             discover_az,
             connection_timeout: Some(cluster_params.connection_timeout),
             connection_retry_strategy: Some(connection_retry_strategy),
+            cluster_pubsub_push_sender: Some(cluster_pubsub_push_sender),
         };
 
         let connections = Self::create_initial_connections(
@@ -1154,15 +1457,20 @@ where
             pending_requests: Mutex::new(Vec::new()),
             slot_refresh_state: SlotRefreshState::new(slots_refresh_rate_limiter),
             initial_nodes: initial_nodes.to_vec(),
-            unassigned_subscriptions: TokioRwLock::new(
-                if let Some(subs) = cluster_params.pubsub_subscriptions {
-                    subs.clone()
-                } else {
-                    PubSubSubscriptionInfo::new()
-                },
+            desired_subscriptions: TokioRwLock::new(
+                cluster_params
+                    .pubsub_subscriptions
+                    .clone()
+                    .unwrap_or_else(PubSubSubscriptionInfo::new),
             ),
-            subscriptions_by_address: TokioRwLock::new(Default::default()),
+            current_subscriptions: TokioRwLock::new(HashMap::new()),
+            in_flight_subscriptions: TokioRwLock::new(HashMap::new()), 
+            last_desired_subscriptions_update: TokioRwLock::new(None),
+            push_notification_receiver: Arc::new(TokioRwLock::new(cluster_pubsub_push_receiver)),
             glide_connection_options,
+            pubsub_refresh_notifier: Arc::new(Notify::new()),
+            pubsub_refresh_done: Arc::new(Notify::new()),
+            message_sender,
         });
         let mut connection = ClusterConnInner {
             inner,
@@ -1196,6 +1504,25 @@ where
                 connection.connections_validation_handler =
                     Some(tokio::spawn(connections_validation_handler));
             }
+        }
+
+        // Only start PubSub refresh task if RESP3
+        if cluster_params.protocol == crate::types::ProtocolVersion::RESP3 {
+            let pubsub_refresh_interval = Duration::from_secs(5);
+            let pubsub_refresh_task = 
+                ClusterConnInner::refresh_pubsub_subscriptions_task(connection.inner.clone(), pubsub_refresh_interval);
+            #[cfg(feature = "tokio-comp")]
+            {
+                tokio::spawn(pubsub_refresh_task);
+            }
+            // Trigger initial reconciliation immediately if there are desired subscriptions
+            if !connection.inner.desired_subscriptions.read().await.is_empty() {
+                let wait_future = connection.inner.pubsub_refresh_done.notified();
+                connection.inner.pubsub_refresh_notifier.notify_one();
+                wait_future.await;
+            }
+        } else {
+            debug!("Skipping PubSub refresh task - RESP3 required");
         }
 
         // New client added
@@ -1398,13 +1725,23 @@ where
 
         if !addrs_to_refresh.is_empty() {
             // don't try existing nodes since we know a. it does not exist. b. exist but its connection is closed
-            Self::trigger_refresh_connection_tasks(
+            let refresh_notifiers = Self::trigger_refresh_connection_tasks(
                 inner.clone(),
                 addrs_to_refresh,
                 RefreshConnectionType::AllConnections,
                 false,
             )
             .await;
+
+            // Wait for ALL connections to be restored
+            eprintln!("🔔 Waiting for {} connection refresh tasks to complete", refresh_notifiers.len());
+            futures::future::join_all(refresh_notifiers.iter().map(|n| n.notified())).await;
+            eprintln!("🔔 All connection refresh tasks completed");
+            
+            // notify PubSub - connections are ready for resubscription!
+            eprintln!("🔔 [validate_all_user_connections] Notifying PubSub - connections restored");
+            inner.pubsub_refresh_notifier.notify_waiters();
+            
         }
     }
 
@@ -1434,10 +1771,10 @@ where
         .await;
     }
 
-    // Triggers a reconnection Tokio task for each supplied address.
-    // If a refresh task is already running for an address, no new task is created;
-    // instead, the notifier from the existing task is returned.
-    // Returns a vector of notifiers for the refresh tasks (new or existing) corresponding to the supplied addresses.
+    /// Triggers a reconnection Tokio task for each supplied address.
+    /// If a refresh task is already running for an address, no new task is created;
+    /// instead, the notifier from the existing task is returned.
+    /// Returns a vector of notifiers for the refresh tasks (new or existing) corresponding to the supplied addresses.
     async fn trigger_refresh_connection_tasks(
         inner: Arc<InnerCore<C>>,
         addresses: HashSet<String>,
@@ -1445,6 +1782,18 @@ where
         check_existing_conn: bool,
     ) -> Vec<Arc<Notify>> {
         debug!("Triggering refresh connections tasks to {:?} ", addresses);
+
+        // Remove subscriptions for these addresses from current_subscriptions
+        // So that they will be re-established after reconnection
+        {
+            let mut current_guard = inner.current_subscriptions.write().await;
+            let mut in_flight_subs_guard = inner.in_flight_subscriptions.write().await;
+
+            for address in &addresses {
+                current_guard.remove(address);
+                in_flight_subs_guard.remove(address);
+            }
+        }
 
         let mut notifiers = Vec::<Arc<Notify>>::new();
 
@@ -1458,11 +1807,10 @@ where
                 .get(&address)
             {
                 if let RefreshTaskStatus::Reconnecting(ref notifier) = existing_task.status {
-                    // Store the notifier
                     notifiers.push(notifier.get_notifier());
                 }
                 debug!("Skipping refresh for {}: already in progress", address);
-                continue; // Skip creating a new refresh task
+                continue;
             }
 
             let inner_clone = inner.clone();
@@ -1484,7 +1832,6 @@ where
                     address_clone_for_task
                 );
 
-                // We run infinite retries to reconnect until it succeeds or it's aborted from outside.
                 let infinite_backoff_iter = inner_clone
                     .glide_connection_options
                     .connection_retry_strategy
@@ -1496,16 +1843,28 @@ where
                     "No attempts performed",
                 )));
                 let mut first_attempt = true;
+
                 for backoff_duration in infinite_backoff_iter {
-                    let mut cluster_params = inner_clone
-                        .cluster_params
-                        .read()
-                        .expect(MUTEX_READ_ERR)
-                        .clone();
-                    let subs_guard = inner_clone.subscriptions_by_address.read().await;
-                    cluster_params.pubsub_subscriptions =
-                        subs_guard.get(&address_clone_for_task).cloned();
-                    drop(subs_guard);
+                    let cluster_params = {
+                        let params = {
+                            let params_guard =
+                                inner_clone.cluster_params.read().expect(MUTEX_READ_ERR);
+                            params_guard.clone()
+                        };
+
+                        let desired_guard = inner_clone.desired_subscriptions.read().await;
+
+                        let mut params = params;
+
+                        // params.pubsub_subscriptions isn't supposed to be used at the
+                        // connection level, but we keep it for the sake of consistency
+                        params.pubsub_subscriptions = if desired_guard.is_empty() {
+                            None
+                        } else {
+                            Some(desired_guard.clone())
+                        };
+                        params
+                    };
 
                     node_result = get_or_create_conn(
                         &address_clone_for_task,
@@ -1532,7 +1891,6 @@ where
                                 {
                                     conn_state.status.flip_status_to_too_long();
                                 }
-
                                 first_attempt = false;
                             }
                             debug!(
@@ -2025,9 +2383,6 @@ where
             .await;
         }
         in_progress.store(false, Ordering::Relaxed);
-
-        Self::refresh_pubsub_subscriptions(inner).await;
-
         res
     }
 
@@ -2064,15 +2419,6 @@ where
                     true
                 }
             };
-
-            // Refresh pubsub subscriptions if topology wasn't changed or an error occurred.
-            // This serves as a safety measure for validating pubsub subscriptions state in case it has drifted
-            // while topology stayed the same.
-            // For example, a failed attempt to refresh a connection which is triggered from refresh_pubsub_subscriptions(),
-            // might leave a node unconnected indefinitely in case topology is stable and no request are attempted to this node.
-            if should_refresh_pubsub {
-                Self::refresh_pubsub_subscriptions(inner.clone()).await;
-            }
         }
     }
 
@@ -2092,90 +2438,832 @@ where
         }
     }
 
-    async fn refresh_pubsub_subscriptions(inner: Arc<InnerCore<C>>) {
-        if inner.cluster_params.read().expect(MUTEX_READ_ERR).protocol
-            != crate::types::ProtocolVersion::RESP3
-        {
+    async fn refresh_pubsub_subscriptions_task(
+        inner: Arc<InnerCore<C>>,
+        interval_duration: Duration,
+    ) {
+        trace!("=== PubSub refresh task started, interval: {:?} ===", interval_duration);
+        
+        loop {
+            let mut first_push_opt: Option<PushInfo> = None;
+
+            // Wait for trigger or push notification
+            {
+                let mut rx_guard = inner.push_notification_receiver.write().await;
+                tokio::select! {
+                    _ = inner.pubsub_refresh_notifier.notified() => {
+                        eprintln!("[PubSub Task] Triggered by notifier");
+                    }
+                    Some(first_push) = rx_guard.recv() => {
+                        eprintln!("[PubSub Task] Triggered by push notification: {:?}", first_push.kind);
+                        first_push_opt = Some(first_push);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    _ = tokio::time::sleep(interval_duration) => {
+                        eprintln!("[PubSub Task] Triggered by periodic timeout");
+                    }
+                }
+            }
+
+            // Drain and process push notifications
+            let mut all_pushes = Vec::new();
+            if let Some(first_push) = first_push_opt {
+                all_pushes.push(first_push);
+            }
+            all_pushes.extend(Self::drain_push_notifications(&inner).await);
+
+            if !all_pushes.is_empty() {
+                Self::process_all_push_notifications(inner.clone(), all_pushes).await;
+            }
+
+            // Reconcile subscriptions - queue commands, existing infrastructure handles the rest
+            Self::reconcile_subscriptions(inner.clone()).await;
+
+            // Wait for any immediate push responses
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            // Drain and process push notifications again
+            let post_reconcile_pushes = Self::drain_push_notifications(&inner).await;
+            if !post_reconcile_pushes.is_empty() {
+                Self::process_all_push_notifications(inner.clone(), post_reconcile_pushes).await;
+            }
+
+            // Check for desync and cleanup stale in-flight
+            Self::check_and_update_desync_metric(inner.clone()).await;
+
+            // Notify waiters
+            inner.pubsub_refresh_done.notify_waiters();
+        }
+    }
+
+    /// Drains all pending push notifications from the queue without blocking
+    async fn drain_push_notifications(inner: &Arc<InnerCore<C>>) -> Vec<PushInfo> {
+        let mut pushes = Vec::new();
+        let mut rx_guard = inner.push_notification_receiver.write().await;
+        
+        while let Ok(push) = rx_guard.try_recv() {
+            pushes.push(push);
+        }
+        
+        eprintln!("[Drain Push] Drained {} notifications", pushes.len());
+        
+        drop(rx_guard);
+        pushes
+    }
+
+
+    /// Process a batch of push notifications
+    async fn process_all_push_notifications(
+        inner: Arc<InnerCore<C>>,
+        pushes: Vec<PushInfo>,
+    ) {
+        eprintln!("[Process Push] Processing {} notifications", pushes.len());
+        
+        let mut current_guard = inner.current_subscriptions.write().await;
+        
+        for (idx, push_info) in pushes.iter().enumerate() {
+            eprintln!("[Process Push] [{}/{}] {:?}", idx + 1, pushes.len(), push_info.kind);
+            
+            match push_info.kind {
+                PushKind::Subscribe | 
+                PushKind::PSubscribe | 
+                PushKind::SSubscribe => {
+                    Self::handle_subscribe_push(&mut current_guard, &inner, push_info.clone()).await;
+                }
+                PushKind::Unsubscribe | 
+                PushKind::PUnsubscribe | 
+                PushKind::SUnsubscribe => {
+                    Self::handle_unsubscribe_push(&mut current_guard, push_info.clone()).await;
+                }
+                PushKind::Message |
+                PushKind::PMessage |
+                PushKind::SMessage => {
+                    // Self::handle_message_push(&mut current_guard, &inner, push_info.clone()).await;
+                }
+                _ => {
+                    eprintln!("[Process Push] Ignoring push kind: {:?}", push_info.kind);
+                }
+            }
+        }
+        
+        drop(current_guard);
+        eprintln!("[Process Push] Completed processing");
+    }
+
+
+    /// Handle a subscribe push notification - lock already held by caller
+    async fn handle_subscribe_push(
+        current_guard: &mut HashMap<String, PubSubSubscriptionInfo>,
+        inner: &Arc<InnerCore<C>>,
+        push_info: PushInfo,
+    ) {
+        if push_info.data.is_empty() {
+            return;
+        }
+        
+        let Ok(channel_pattern): Result<Vec<u8>, _> = FromRedisValue::from_redis_value(&push_info.data[0]) else {
+            return;
+        };
+        
+        let Some(kind) = PubSubSubscriptionKind::from_push(&push_info.kind) else {
+            return;
+        };
+
+        let slot = get_slot(&channel_pattern);
+        let address = {
+            let conn_guard = inner.conn_lock.read().expect(MUTEX_READ_ERR);
+            conn_guard
+                .connection_for_route(&Route::new(slot, SlotAddr::Master))
+                .map(|(addr, _)| addr.clone())
+        };
+        
+        if let Some(address) = address {
+            // Update current subscriptions
+            current_guard
+                .entry(address.clone())
+                .or_insert_with(PubSubSubscriptionInfo::new)
+                .entry(kind)
+                .or_insert_with(HashSet::new)
+                .insert(channel_pattern.clone());
+
+            // Clear in-flight flag
+            let mut in_flight_guard = inner.in_flight_subscriptions.write().await;
+            if let Some(addr_subs) = in_flight_guard.get_mut(&address) {
+                if let Some(kind_channels) = addr_subs.get_mut(&kind) {
+                    kind_channels.remove(&channel_pattern);
+                    
+                    if kind_channels.is_empty() {
+                        addr_subs.remove(&kind);
+                    }
+                }
+                if addr_subs.is_empty() {
+                    in_flight_guard.remove(&address);
+                }
+            }
+        }
+    }
+
+    /// Handle an unsubscribe push notification - lock already held by caller
+    async fn handle_unsubscribe_push(
+        current_guard: &mut HashMap<String, PubSubSubscriptionInfo>,
+        push_info: PushInfo,
+    ) {
+        if push_info.data.is_empty() {
+            eprintln!("[Handle Unsubscribe Push] ⚠️ Empty data");
+            return;
+        }
+        
+        let Ok(channel_pattern): Result<Vec<u8>, _> = FromRedisValue::from_redis_value(&push_info.data[0]) else {
+            eprintln!("[Handle Unsubscribe Push] ❌ Failed to parse channel");
+            return;
+        };
+        
+        let channel_str = String::from_utf8_lossy(&channel_pattern);
+        
+        let Some(kind) = PubSubSubscriptionKind::from_push(&push_info.kind) else {
+            eprintln!("[Handle Unsubscribe Push] ⚠️ Unknown kind: {:?}", push_info.kind);
+            return;
+        };
+        
+        // Collect addresses that need cleanup
+        let mut addresses_to_remove = Vec::new();
+        
+        for (address, subs) in current_guard.iter_mut() {
+            if let Some(channels) = subs.get_mut(&kind) {
+                if channels.remove(&channel_pattern) {
+                    eprintln!("[Handle Unsubscribe Push] ✓ Removed {:?} - {} from {}", 
+                        kind, channel_str, address);
+                    
+                    // If this kind's channel set is now empty, remove the kind entry
+                    if channels.is_empty() {
+                        subs.remove(&kind);
+                        eprintln!("[Handle Unsubscribe Push] Removed empty {:?} set from {}", 
+                            kind, address);
+                    }
+                }
+            }
+            
+            // If this address has no subscriptions left, mark it for removal
+            if subs.is_empty() {
+                addresses_to_remove.push(address.clone());
+            }
+        }
+        
+        // Remove addresses with no subscriptions
+        for address in addresses_to_remove {
+            current_guard.remove(&address);
+            eprintln!("[Handle Unsubscribe Push] Removed empty address entry: {}", address);
+        }
+    }
+
+    /// Handle a message push notification - lock already held by caller
+    async fn handle_message_push(
+        current_guard: &mut HashMap<String, PubSubSubscriptionInfo>,
+        inner: &Arc<InnerCore<C>>,
+        push_info: PushInfo,
+    ) {
+        // Convert push kind (Message/PMessage/SMessage) to PubSubSubscriptionKind
+        let kind = match PubSubSubscriptionKind::from_push(&push_info.kind) {
+            Some(kind) => kind,
+            None => return, 
+        };
+
+        // Get the first element of data as the channel/pattern name
+        if push_info.data.is_empty() {
             return;
         }
 
-        let mut addrs_to_refresh: HashSet<String> = HashSet::new();
-        {
-            let mut subs_by_address_guard = inner.subscriptions_by_address.write().await;
-            let mut unassigned_subs_guard = inner.unassigned_subscriptions.write().await;
-            let conns_read_guard = inner.conn_lock.read().expect(MUTEX_READ_ERR);
-            // validate active subscriptions location
-            subs_by_address_guard.retain(|current_address, address_subs| {
-                address_subs.retain(|kind, channels_patterns| {
-                    channels_patterns.retain(|channel_pattern| {
-                        let new_slot = get_slot(channel_pattern);
-                        let valid = if let Some((new_address, _)) = conns_read_guard
-                            .connection_for_route(&Route::new(new_slot, SlotAddr::Master))
-                        {
-                            *new_address == *current_address
-                        } else {
-                            false
-                        };
-                        // no new address or new address differ - move to unassigned and store this address for connection reset
-                        if !valid {
-                            // need to drop the original connection for clearing the subscription in the server, avoiding possible double-receivers
-                            if conns_read_guard
-                                .connection_for_address(current_address)
-                                .is_some()
-                            {
-                                addrs_to_refresh.insert(current_address.clone());
-                            }
+        let Ok(channel_pattern): Result<Vec<u8>, _> = FromRedisValue::from_redis_value(&push_info.data[0]) else {
+            return;
+        };
 
-                            unassigned_subs_guard
-                                .entry(*kind)
-                                .and_modify(|channels_patterns| {
-                                    channels_patterns.insert(channel_pattern.clone());
-                                })
-                                .or_insert(HashSet::from([channel_pattern.clone()]));
-                        }
-                        valid
-                    });
-                    !channels_patterns.is_empty()
-                });
-                !address_subs.is_empty()
-            });
+        let slot = get_slot(&channel_pattern);
+        let address = {
+            let conn_guard = inner.conn_lock.read().expect(MUTEX_READ_ERR);
+            conn_guard
+                .connection_for_route(&Route::new(slot, SlotAddr::Master))
+                .map(|(addr, _)| addr.clone())
+        };
 
-            // try to assign new addresses
-            unassigned_subs_guard.retain(|kind: &PubSubSubscriptionKind, channels_patterns| {
-                channels_patterns.retain(|channel_pattern| {
-                    let new_slot = get_slot(channel_pattern);
-                    if let Some((new_address, _)) = conns_read_guard
-                        .connection_for_route(&Route::new(new_slot, SlotAddr::Master))
-                    {
-                        // need to drop the new connection so the subscription will be picked up in setup_connection()
-                        addrs_to_refresh.insert(new_address.clone());
+        if let Some(address) = address {
+            let needs_adding = current_guard
+                .get(&address)
+                .and_then(|subs| subs.get(&kind))
+                .map(|channels| !channels.contains(&channel_pattern))
+                .unwrap_or(true);
 
-                        let e = subs_by_address_guard
-                            .entry(new_address.clone())
-                            .or_insert(PubSubSubscriptionInfo::new());
+            if needs_adding {
+                current_guard
+                    .entry(address)
+                    .or_insert_with(PubSubSubscriptionInfo::new)
+                    .entry(kind)
+                    .or_insert_with(HashSet::new)
+                    .insert(channel_pattern.clone());
 
-                        e.entry(*kind)
-                            .or_insert(HashSet::new())
+                trace!(
+                    "Message received for untracked channel, added: {:?} - {}",
+                    kind,
+                    String::from_utf8_lossy(&channel_pattern)
+                );
+            }
+        }
+    }
+
+    /// Check if subscriptions have been out of sync for too long and update metric
+    async fn check_and_update_desync_metric(inner: Arc<InnerCore<C>>) {
+        let last_update_guard = inner.last_desired_subscriptions_update.read().await;
+        let Some(last_update_time) = *last_update_guard else {
+            return;
+        };
+        drop(last_update_guard);
+
+        let elapsed = SystemTime::now()
+            .duration_since(last_update_time)
+            .unwrap_or(Duration::from_secs(0));
+
+        if elapsed.as_secs() < PUBSUB_SYNC_TIMEOUT_SECS {
+            return;
+        }
+
+        if !Self::subscriptions_aligned(inner.clone()).await {
+            if let Err(e) = telemetrylib::GlideOpenTelemetry::record_pubsub_out_of_sync() {
+                log_error(
+                    "OpenTelemetry:pubsub_desync",
+                    format!("Failed to record pubsub desynchronization: {e}"),
+                );
+            }
+        }
+    }
+
+    /// Check if desired and current subscriptions are aligned
+    async fn subscriptions_aligned(inner: Arc<InnerCore<C>>) -> bool {
+        let desired_guard = inner.desired_subscriptions.read().await;
+        let current_guard = inner.current_subscriptions.read().await;
+
+        let all_current = Self::flatten_current_subscriptions(&current_guard);
+
+        *desired_guard == all_current
+    }
+
+    async fn reconcile_subscriptions(inner: Arc<InnerCore<C>>) {
+        eprintln!("[Reconcile] Starting reconciliation");
+        
+        // Just do one pass - infrastructure will handle MOVED/retries
+        Self::reconcile_subscriptions_once(inner.clone()).await;
+        
+        eprintln!("[Reconcile] Reconciliation complete");
+    }
+
+
+    /// Single reconciliation pass with detailed logging
+    async fn reconcile_subscriptions_once(inner: Arc<InnerCore<C>>) {
+        eprintln!("[Reconcile Once] ========== Starting reconciliation pass ==========");
+        
+        let desired_guard = inner.desired_subscriptions.read().await;
+        let current_guard = inner.current_subscriptions.read().await;
+        let in_flight_guard = inner.in_flight_subscriptions.read().await;
+
+        let desired_clone: PubSubSubscriptionInfo = desired_guard.clone();
+        let current_clone: HashMap<String, PubSubSubscriptionInfo> = current_guard.clone();
+        let in_flight_clone: HashMap<String, PubSubSubscriptionInfo> = in_flight_guard.clone();
+
+        drop(desired_guard);
+        drop(current_guard);
+        drop(in_flight_guard);
+
+        eprintln!("[Reconcile Once] State snapshot:");
+        eprintln!("  Desired: {} kinds", desired_clone.len());
+        for (kind, channels) in desired_clone.iter() {
+            eprintln!("    {:?}: {} channels", kind, channels.len());
+            for channel in channels {
+                eprintln!("      - {}", String::from_utf8_lossy(channel));
+            }
+        }
+        
+        eprintln!("  Current: {} addresses", current_clone.len());
+        for (addr, subs) in current_clone.iter() {
+            eprintln!("    {}: {} kinds", addr, subs.len());
+            for (kind, channels) in subs.iter() {
+                eprintln!("      {:?}: {} channels", kind, channels.len());
+            }
+        }
+        
+        eprintln!("  In-flight: {} addresses", in_flight_clone.len());
+        for (addr, subs) in in_flight_clone.iter() {
+            eprintln!("    {}: {} kinds", addr, subs.len());
+            for (kind, channels) in subs.iter() {
+                eprintln!("      {:?}: {} channels", kind, channels.len());
+            }
+        }
+
+        let mut subscribe_count = 0;
+        let mut unsubscribe_count = 0;
+        let mut skip_count = 0;
+
+        // 1. Find missing subscriptions and queue them
+        eprintln!("[Reconcile Once] ===== Phase 1: Finding missing subscriptions =====");
+        for (kind, channels) in desired_clone.iter() {
+            for channel_pattern in channels {
+                let slot = get_slot(channel_pattern);
+                let channel_str = String::from_utf8_lossy(channel_pattern);
+
+                eprintln!("[Reconcile Once] Checking desired {:?} - {} (slot {})", kind, channel_str, slot);
+
+                let address = {
+                    let conn_guard = inner.conn_lock.read().expect(MUTEX_READ_ERR);
+                    let route_result = conn_guard.connection_for_route(&Route::new(slot, SlotAddr::Master));
+                    eprintln!("[Reconcile Once]   Route lookup for slot {}: {}", 
+                        slot, 
+                        if route_result.is_some() { "FOUND" } else { "NOT FOUND" }
+                    );
+                    route_result.map(|(addr, _)| addr.clone())
+                };
+
+                let Some(address) = address else {
+                    eprintln!("[Reconcile Once]   ❌ No address for slot {}, skipping", slot);
+                    skip_count += 1;
+                    continue;
+                };
+
+                eprintln!("[Reconcile Once]   Address: {}", address);
+
+                // Check if already subscribed
+                let already_subscribed = current_clone
+                    .get(&address)
+                    .and_then(|subs| subs.get(kind))
+                    .map(|chans| chans.contains(channel_pattern))
+                    .unwrap_or(false);
+
+                eprintln!("[Reconcile Once]   Already subscribed: {}", already_subscribed);
+
+                // Check if already in-flight
+                let already_in_flight = in_flight_clone
+                    .get(&address)
+                    .and_then(|subs| subs.get(kind))
+                    .map(|chans| chans.contains(channel_pattern))
+                    .unwrap_or(false);
+
+                eprintln!("[Reconcile Once]   Already in-flight: {}", already_in_flight);
+
+                if !already_subscribed && !already_in_flight {
+                    eprintln!("[Reconcile Once]   ➕ WILL SUBSCRIBE: {:?} - {} on {}", kind, channel_str, address);
+
+                    let mut subs = PubSubSubscriptionInfo::new();
+                    subs.entry(*kind)
+                        .or_insert_with(HashSet::new)
+                        .insert(channel_pattern.clone());
+
+                    // Mark as in-flight BEFORE queueing
+                    eprintln!("[Reconcile Once]   Marking as in-flight...");
+                    Self::mark_subscriptions_in_flight(
+                        inner.clone(),
+                        &address,
+                        *kind,
+                        subs.get(kind).unwrap(),
+                    )
+                    .await;
+                    eprintln!("[Reconcile Once]   Marked as in-flight ✓");
+
+                    // Queue the subscription command
+                    eprintln!("[Reconcile Once]   Queueing subscribe command...");
+                    Self::queue_subscribe_commands(inner.clone(), address.clone(), &subs).await;
+                    eprintln!("[Reconcile Once]   Queued subscribe command ✓");
+                    
+                    subscribe_count += 1;
+                } else {
+                    eprintln!("[Reconcile Once]   ⏭️ Skipping (already handled)");
+                    skip_count += 1;
+                }
+            }
+        }
+
+        // 2. Handle subscriptions on wrong address or unwanted subscriptions
+        eprintln!("[Reconcile Once] ===== Phase 2: Checking current subscriptions =====");
+        for (address, subs) in current_clone.iter() {
+            eprintln!("[Reconcile Once] Checking current subscriptions on {}", address);
+            for (kind, channels) in subs.iter() {
+                for channel_pattern in channels {
+                    let channel_str = String::from_utf8_lossy(channel_pattern);
+                    eprintln!("[Reconcile Once]   Checking current {:?} - {}", kind, channel_str);
+                    
+                    // Check if still desired
+                    let still_desired = desired_clone
+                        .get(kind)
+                        .map(|chans| chans.contains(channel_pattern))
+                        .unwrap_or(false);
+
+                    eprintln!("[Reconcile Once]     Still desired: {}", still_desired);
+
+                    if !still_desired {
+                        eprintln!("[Reconcile Once]     ➖ WILL UNSUBSCRIBE: {:?} - {} on {}", kind, channel_str, address);
+
+                        let mut subs_to_remove = PubSubSubscriptionInfo::new();
+                        subs_to_remove
+                            .entry(*kind)
+                            .or_insert_with(HashSet::new)
                             .insert(channel_pattern.clone());
 
-                        return false;
+                        Self::queue_unsubscribe_commands(inner.clone(), address.clone(), &subs_to_remove).await;
+                        unsubscribe_count += 1;
                     }
-                    true
-                });
-                !channels_patterns.is_empty()
-            });
+
+                    // Check if on correct address
+                    let slot = get_slot(channel_pattern);
+                    let correct_address = {
+                        let conn_guard = inner.conn_lock.read().expect(MUTEX_READ_ERR);
+                        conn_guard
+                            .connection_for_route(&Route::new(slot, SlotAddr::Master))
+                            .map(|(addr, _)| addr.clone())
+                    };
+
+                    eprintln!("[Reconcile Once]     Correct address for slot {}: {:?}", slot, correct_address);
+
+                    match correct_address {
+                        Some(correct_addr) if correct_addr == *address => {
+                            eprintln!("[Reconcile Once]     ✓ On correct address");
+                        }
+                        Some(correct_addr) => {
+                            eprintln!("[Reconcile Once]     🔄 Address mismatch: {} -> {}", address, correct_addr);
+
+                            let already_in_flight = in_flight_clone
+                                .get(&correct_addr)
+                                .and_then(|subs| subs.get(kind))
+                                .map(|chans| chans.contains(channel_pattern))
+                                .unwrap_or(false);
+
+                            if !already_in_flight {
+                                eprintln!("[Reconcile Once]     Will move subscription to new address");
+                                
+                                // Remove from current
+                                {
+                                    let mut current_guard = inner.current_subscriptions.write().await;
+                                    if let Some(addr_subs) = current_guard.get_mut(address) {
+                                        if let Some(kind_channels) = addr_subs.get_mut(kind) {
+                                            kind_channels.remove(channel_pattern);
+                                            if kind_channels.is_empty() {
+                                                addr_subs.remove(kind);
+                                            }
+                                        }
+                                        if addr_subs.is_empty() {
+                                            current_guard.remove(address);
+                                        }
+                                    }
+                                }
+
+                                // Subscribe to new address
+                                let mut subs_to_add = PubSubSubscriptionInfo::new();
+                                subs_to_add
+                                    .entry(*kind)
+                                    .or_insert_with(HashSet::new)
+                                    .insert(channel_pattern.clone());
+
+                                Self::mark_subscriptions_in_flight(
+                                    inner.clone(),
+                                    &correct_addr,
+                                    *kind,
+                                    subs_to_add.get(kind).unwrap(),
+                                )
+                                .await;
+
+                                Self::queue_subscribe_commands(inner.clone(), correct_addr, &subs_to_add).await;
+                                subscribe_count += 1;
+                            } else {
+                                eprintln!("[Reconcile Once]     Already in-flight to new address");
+                            }
+                        }
+                        None => {
+                            eprintln!("[Reconcile Once]     ⚠️ No valid address found, removing from current");
+
+                            let mut current_guard = inner.current_subscriptions.write().await;
+                            if let Some(addr_subs) = current_guard.get_mut(address) {
+                                if let Some(kind_channels) = addr_subs.get_mut(kind) {
+                                    kind_channels.remove(channel_pattern);
+                                    if kind_channels.is_empty() {
+                                        addr_subs.remove(kind);
+                                    }
+                                }
+                                if addr_subs.is_empty() {
+                                    current_guard.remove(address);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        if !addrs_to_refresh.is_empty() {
-            // immediately trigger connection reestablishment
-            Self::refresh_and_update_connections(
-                inner.clone(),
-                addrs_to_refresh,
-                RefreshConnectionType::AllConnections,
-                false,
-            )
-            .await;
+        eprintln!("[Reconcile Once] ========== Reconciliation summary ==========");
+        eprintln!("[Reconcile Once]   Subscribed: {}", subscribe_count);
+        eprintln!("[Reconcile Once]   Unsubscribed: {}", unsubscribe_count);
+        eprintln!("[Reconcile Once]   Skipped: {}", skip_count);
+        eprintln!("[Reconcile Once] ================================================");
+    }
+
+    /// Queue subscription commands to be processed by existing infrastructure.
+    /// Spawns a task to handle the response and update in-flight state.
+    /// Queue subscription commands using slot-based routing (more robust)
+    async fn queue_subscribe_commands(
+        inner: Arc<InnerCore<C>>,
+        address: String,
+        subs: &PubSubSubscriptionInfo,
+    ) {
+        eprintln!("[Queue Subscribe] Called for address: {}", address);
+        
+        for (kind, channels) in subs.iter() {
+            if channels.is_empty() {
+                continue;
+            }
+
+            let cmd_name = match kind {
+                PubSubSubscriptionKind::Exact => "SUBSCRIBE",
+                PubSubSubscriptionKind::Pattern => "PSUBSCRIBE",
+                PubSubSubscriptionKind::Sharded => "SSUBSCRIBE",
+            };
+
+            for channel in channels {
+                let mut cmd = cmd(cmd_name);
+                cmd.arg(&channel[..]);
+
+                let (sender, receiver) = oneshot::channel::<RedisResult<Response>>();
+
+                let inner_clone = inner.clone();
+                let address_clone = address.clone();
+                let kind_clone = *kind;
+                let channel_clone = channel.clone();
+
+                // Spawn #1: REQUIRED - keep receiver alive
+                #[cfg(feature = "tokio-comp")]
+                tokio::spawn(async move {
+                    match receiver.await {
+                        Ok(Ok(_response)) => {
+                            // Update current_subscriptions
+                            {
+                                let mut current_guard = inner_clone.current_subscriptions.write().await;
+                                current_guard
+                                    .entry(address_clone.clone())
+                                    .or_insert_with(PubSubSubscriptionInfo::new)
+                                    .entry(kind_clone)
+                                    .or_insert_with(HashSet::new)
+                                    .insert(channel_clone.clone());
+                            }
+                            
+                            // Clear in_flight
+                            let channels = HashSet::from([channel_clone]);
+                            Self::clear_in_flight_subscriptions(
+                                inner_clone,
+                                &address_clone,
+                                kind_clone,
+                                &channels,
+                            )
+                            .await;
+                        }
+                        Ok(Err(err)) => {
+                            warn!("Subscribe failed: {:?}", err);
+                            let channels = HashSet::from([channel_clone]);
+                            Self::clear_in_flight_subscriptions(
+                                inner_clone,
+                                &address_clone,
+                                kind_clone,
+                                &channels,
+                            )
+                            .await;
+                        }
+                        Err(_) => {
+                            warn!("Subscribe sender dropped");
+                            let channels = HashSet::from([channel_clone]);
+                            Self::clear_in_flight_subscriptions(
+                                inner_clone,
+                                &address_clone,
+                                kind_clone,
+                                &channels,
+                            )
+                            .await;
+                        }
+                    }
+                });
+
+                let message = Message {
+                    cmd: CmdArg::Cmd {
+                        cmd: Arc::new(cmd),
+                        routing: InternalSingleNodeRouting::SpecificNode(Route::new(
+                            get_slot(channel),
+                            SlotAddr::Master,
+                        ))
+                        .into(),
+                    },
+                    sender,
+                };
+
+                // Spawn #2: REMOVED - just await
+                if let Err(e) = inner.message_sender.send(message).await {
+                    warn!("Failed to send subscribe message: {:?}", e);
+                }
+            }
         }
+    }
+
+    /// Queue unsubscribe commands using slot-based routing
+    async fn queue_unsubscribe_commands(
+        inner: Arc<InnerCore<C>>,
+        address: String,
+        subs: &PubSubSubscriptionInfo,
+    ) {
+        eprintln!("[Queue Unsubscribe] Called for address: {}", address);
+        
+        for (kind, channels) in subs.iter() {
+            if channels.is_empty() {
+                continue;
+            }
+
+            let cmd_name = match kind {
+                PubSubSubscriptionKind::Exact => "UNSUBSCRIBE",
+                PubSubSubscriptionKind::Pattern => "PUNSUBSCRIBE",
+                PubSubSubscriptionKind::Sharded => "SUNSUBSCRIBE",
+            };
+
+            for channel in channels {
+                let channel_str = String::from_utf8_lossy(channel);
+                eprintln!("[Queue Unsubscribe]   Channel: {}", channel_str);
+                
+                let mut cmd = cmd(cmd_name);
+                cmd.arg(&channel[..]);
+                
+                // Only fence SUNSUBSCRIBE commands to handle unprompted sunsubscribe push notifications
+                // that can occur during slot migration/deletion
+                let is_fenced = matches!(kind, PubSubSubscriptionKind::Sharded);
+                if is_fenced {
+                    cmd.set_fenced(true);
+                }
+
+                let (sender, receiver) = oneshot::channel::<RedisResult<Response>>();
+
+                let inner_clone = inner.clone();
+                let address_clone = address.clone();
+                let kind_clone = *kind;
+                let channel_clone = channel.clone();
+
+                let slot = get_slot(channel);
+
+                // Spawn task to handle response
+                #[cfg(feature = "tokio-comp")]
+                tokio::spawn(async move {
+                    match receiver.await {
+                        Ok(Ok(_response)) => {
+                            eprintln!("[Unsubscribe Task] ✅ SUCCESS for {:?} - {} on {}",
+                                kind_clone,
+                                String::from_utf8_lossy(&channel_clone),
+                                address_clone
+                            );
+                            
+                            // Update current_subscriptions - remove the channel
+                            {
+                                let mut current_guard = inner_clone.current_subscriptions.write().await;
+                                if let Some(addr_subs) = current_guard.get_mut(&address_clone) {
+                                    if let Some(kind_channels) = addr_subs.get_mut(&kind_clone) {
+                                        kind_channels.remove(&channel_clone);
+                                        eprintln!("[Unsubscribe Task]   Removed from current_subscriptions");
+                                        
+                                        // Clean up empty entries
+                                        if kind_channels.is_empty() {
+                                            addr_subs.remove(&kind_clone);
+                                            eprintln!("[Unsubscribe Task]   Removed empty kind");
+                                        }
+                                    }
+                                    
+                                    if addr_subs.is_empty() {
+                                        current_guard.remove(&address_clone);
+                                        eprintln!("[Unsubscribe Task]   Removed empty address");
+                                    }
+                                }
+                            }
+                        }
+                        Ok(Err(err)) => {
+                            eprintln!("[Unsubscribe Task] ❌ ERROR for {:?} - {} on {}: {:?}",
+                                kind_clone,
+                                String::from_utf8_lossy(&channel_clone),
+                                address_clone,
+                                err
+                            );
+                            // Don't remove from current_subscriptions on error
+                            // Next reconciliation will retry if still not desired
+                        }
+                        Err(_) => {
+                            eprintln!("[Unsubscribe Task] ⚠️ SENDER DROPPED for {:?} - {} on {}",
+                                kind_clone,
+                                String::from_utf8_lossy(&channel_clone),
+                                address_clone
+                            );
+                            // Connection dropped - current_subscriptions will be cleared by disconnect handler
+                        }
+                    }
+                });
+
+                let message = Message {
+                    cmd: CmdArg::Cmd {
+                        cmd: Arc::new(cmd),
+                        routing: InternalSingleNodeRouting::SpecificNode(Route::new(
+                            slot,
+                            SlotAddr::Master,
+                        ))
+                        .into(),
+                    },
+                    sender,
+                };
+
+                // Send message directly (no spawn)
+                if let Err(e) = inner.message_sender.send(message).await {
+                    eprintln!("[Queue Unsubscribe] ❌ Failed to send message: {:?}", e);
+                } else {
+                    eprintln!("[Queue Unsubscribe]   ✅ Message sent successfully");
+                }
+            }
+        }
+        
+        eprintln!("[Queue Unsubscribe] Completed for address: {}", address);
+    }
+
+    /// Helper to clear in-flight subscription state after command completes
+    async fn clear_in_flight_subscriptions(
+        inner: Arc<InnerCore<C>>,
+        address: &str,
+        kind: PubSubSubscriptionKind,
+        channels: &HashSet<PubSubChannelOrPattern>,
+    ) {
+        let mut in_flight_guard = inner.in_flight_subscriptions.write().await;
+        
+        if let Some(addr_subs) = in_flight_guard.get_mut(address) {
+            if let Some(kind_channels) = addr_subs.get_mut(&kind) {
+                for channel in channels {
+                    kind_channels.remove(channel);
+                }
+                
+                // Clean up empty entries
+                if kind_channels.is_empty() {
+                    addr_subs.remove(&kind);
+                }
+            }
+            
+            if addr_subs.is_empty() {
+                in_flight_guard.remove(address);
+            }
+        }
+    }
+
+    /// Helper to mark subscriptions as in-flight before sending commands
+    async fn mark_subscriptions_in_flight(
+        inner: Arc<InnerCore<C>>,
+        address: &str,
+        kind: PubSubSubscriptionKind,
+        channels: &HashSet<PubSubChannelOrPattern>,
+    ) {
+        let mut in_flight_guard = inner.in_flight_subscriptions.write().await;
+        
+        in_flight_guard
+            .entry(address.to_string())
+            .or_insert_with(PubSubSubscriptionInfo::new)
+            .entry(kind)
+            .or_insert_with(HashSet::new)
+            .extend(channels.clone());
     }
 
     /// Queries log2n nodes (where n represents the number of cluster nodes) to determine whether their
@@ -2287,9 +3375,39 @@ where
                     let mut cluster_params = inner
                         .get_cluster_param(|params| params.clone())
                         .expect(MUTEX_READ_ERR);
-                    let subs_guard = inner.subscriptions_by_address.read().await;
-                    cluster_params.pubsub_subscriptions = subs_guard.get(&addr).cloned();
-                    drop(subs_guard);
+
+                    // Get subscriptions for this specific address from desired_subscriptions
+                    let subs_for_address = {
+                        let desired_guard = inner.desired_subscriptions.read().await;
+                        let mut subs = PubSubSubscriptionInfo::new();
+
+                        // Calculate which channels should be on this address based on slot routing
+                        for (kind, channels) in desired_guard.iter() {
+                            for channel in channels {
+                                let slot = get_slot(channel);
+                                // Check if this slot would route to this address in the NEW topology
+                                if let Some(target_addr) = new_slots
+                                    .slot_addr_for_route(&Route::new(slot, SlotAddr::Master))
+                                {
+                                    if target_addr.to_string() == addr {
+                                        subs.entry(*kind)
+                                            .or_insert_with(HashSet::new)
+                                            .insert(channel.clone());
+                                    }
+                                }
+                            }
+                        }
+
+                        subs
+                    };
+
+                    // Set subscriptions for this address
+                    cluster_params.pubsub_subscriptions = if subs_for_address.is_empty() {
+                        None
+                    } else {
+                        Some(subs_for_address)
+                    };
+
                     let node = get_or_create_conn(
                         &addr,
                         node,
@@ -2307,10 +3425,16 @@ where
             .await;
 
         info!("refresh_slots found nodes:\n{new_connections}");
+
+        // Clear current_subscriptions since we're replacing all connections
+        {
+            let mut current_guard = inner.current_subscriptions.write().await;
+            current_guard.clear();
+        }
+
         // Reset the current slot map and connection vector with the new ones
         let mut write_guard = inner.conn_lock.write().expect(MUTEX_WRITE_ERR);
         // Clear the refresh tasks of the prev instance
-        // TODO - Maybe we can take the running refresh tasks and use them instead of running new connection creation
         write_guard.refresh_conn_state.clear_refresh_state();
         let read_from_replicas = inner
             .get_cluster_param(|params| params.read_from_replicas.clone())
@@ -2321,6 +3445,7 @@ where
             read_from_replicas,
             topology_hash,
         );
+        
         Ok(())
     }
 
@@ -2628,6 +3753,27 @@ where
                     };
                     Ok(Response::Single(username))
                 }
+                Operation::GetSubscriptions => {
+                    let desired_guard = core.desired_subscriptions.read().await;
+                    let current_guard = core.current_subscriptions.read().await;
+                    
+                    let desired_map = Self::subscription_info_to_value_map(&desired_guard);
+                    let flattened_current = Self::flatten_current_subscriptions(&current_guard);
+                    let current_map = Self::subscription_info_to_value_map(&flattened_current);
+                    
+                    Ok(Response::Single(Value::Array(vec![
+                        Value::Map(desired_map),
+                        Value::Map(current_map),
+                    ])))
+                }
+                Operation::SubscriptionUpdate {
+                    kind,
+                    channels,
+                    action,
+                    mode,
+                } => {
+                    Self::handle_desired_subscription_update(core, kind, channels, action, mode).await
+                }
             },
         }
     }
@@ -2770,6 +3916,211 @@ where
         }
 
         final_responses
+    }
+
+    async fn handle_desired_subscription_update(
+        core: Core<C>,
+        kind: PubSubSubscriptionKind,
+        channels: Vec<PubSubChannelOrPattern>,
+        action: SubscriptionAction,
+        mode: SubscriptionMode,
+    ) -> OperationResult {
+        let protocol = core.cluster_params.read().expect(MUTEX_READ_ERR).protocol;
+        if protocol != crate::types::ProtocolVersion::RESP3 {
+            return Ok(Response::Single(Value::BulkString(b"Failed".to_vec())));
+        }
+
+        let mut desired_guard = core.desired_subscriptions.write().await;
+        match action {
+            SubscriptionAction::Subscribe => {
+                desired_guard
+                    .entry(kind)
+                    .or_insert_with(HashSet::new)
+                    .extend(channels.clone());
+            }
+            SubscriptionAction::Unsubscribe => {
+                if channels.is_empty() {
+                    desired_guard.remove(&kind);
+                } else {
+                    if let Some(set) = desired_guard.get_mut(&kind) {
+                        for channel in &channels {
+                            set.remove(channel);
+                        }
+                        if set.is_empty() {
+                            desired_guard.remove(&kind);
+                        }
+                    }
+                }
+            }
+        }
+        
+        drop(desired_guard);
+
+        // Update timestamp for desync tracking
+        *core.last_desired_subscriptions_update.write().await = Some(SystemTime::now());
+        
+        // Trigger PubSub refresh
+        trace!("Triggering PubSub refresh from subscription update");
+        core.pubsub_refresh_notifier.notify_one();
+
+        // If lazy mode, return immediately
+        if matches!(mode, SubscriptionMode::Lazy) {
+            return Ok(Response::Single(Value::Okay));
+        }
+        
+        // Blocking mode: wait for confirmation indefinitely
+        trace!("Waiting for subscription confirmation (blocking mode)");
+        Self::wait_for_subscription_confirmation(core, kind, &channels, action)
+            .await
+            .map(|_| Response::Single(Value::Okay))
+            .map_err(|err| (OperationTarget::FatalError, err))
+    }
+
+    /// Wait indefinitely for subscription to be confirmed in current state.
+    /// This function will keep checking and triggering reconciliation until
+    /// the subscription is confirmed or the operation is timed out externally
+    async fn wait_for_subscription_confirmation(
+        core: Arc<InnerCore<C>>,
+        kind: PubSubSubscriptionKind,
+        channels: &[PubSubChannelOrPattern],
+        action: SubscriptionAction,
+    ) -> RedisResult<()> {
+        const CHECK_INTERVAL_MS: u64 = 50;
+
+        loop {
+            // Wait for a refresh cycle to complete
+            let wait_future = core.pubsub_refresh_done.notified();
+            wait_future.await;
+
+            // Check if subscription is confirmed
+            if Self::check_subscription_status(
+                core.clone(),
+                kind,
+                channels,
+                &action,
+            )
+            .await
+            {
+                trace!("Subscription confirmed successfully");
+                return Ok(());
+            }
+
+            trace!("Subscription not yet confirmed, retrying...");
+
+            // Not confirmed yet, wait a bit before next check
+            tokio::time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
+            
+            // Trigger another refresh cycle
+            core.pubsub_refresh_notifier.notify_one();
+        }
+    }
+
+    /// Check if subscription status matches expectations.
+    /// Returns true if the desired state is reflected in current state, false otherwise.
+    async fn check_subscription_status(
+        core: Arc<InnerCore<C>>,
+        kind: PubSubSubscriptionKind,
+        channels: &[PubSubChannelOrPattern],
+        action: &SubscriptionAction,
+    ) -> bool {
+        let current_guard = core.current_subscriptions.read().await;
+
+        match action {
+            SubscriptionAction::Subscribe => {
+                // For subscribe, verify all channels are present in current state
+                for channel in channels {
+                    let slot = get_slot(channel);
+
+                    let expected_address = {
+                        let conn_guard = core.conn_lock.read().expect(MUTEX_READ_ERR);
+                        conn_guard
+                            .connection_for_route(&Route::new(slot, SlotAddr::Master))
+                            .map(|(addr, _)| addr.clone())
+                    };
+
+                    if let Some(address) = expected_address {
+                        let is_subscribed = current_guard
+                            .get(&address)
+                            .and_then(|subs| subs.get(&kind))
+                            .map(|chans| chans.contains(channel))
+                            .unwrap_or(false);
+
+                        if !is_subscribed {
+                            return false;
+                        }
+                    } else {
+                        // No valid address found for this slot
+                        return false;
+                    }
+                }
+                true
+            }
+
+            SubscriptionAction::Unsubscribe => {
+                if channels.is_empty() {
+                    // Unsubscribe from all - verify no channels of this kind exist
+                    for subs in current_guard.values() {
+                        if let Some(chans) = subs.get(&kind) {
+                            if !chans.is_empty() {
+                                return false;
+                            }
+                        }
+                    }
+                } else {
+                    // Unsubscribe from specific channels - verify they're not present
+                    for channel in channels {
+                        for subs in current_guard.values() {
+                            if let Some(chans) = subs.get(&kind) {
+                                if chans.contains(channel) {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+                true
+            }
+        }
+    }
+    /// Converts PubSubSubscriptionInfo to a Value::Map format suitable for serialization
+    fn subscription_info_to_value_map(subs: &PubSubSubscriptionInfo) -> Vec<(Value, Value)> {
+        let mut map_pairs = Vec::new();
+        
+        for (kind, kind_str) in [
+            (PubSubSubscriptionKind::Exact, "channels"),
+            (PubSubSubscriptionKind::Pattern, "patterns"),
+            (PubSubSubscriptionKind::Sharded, "sharded_channels"),
+        ] {
+            let channels = subs.get(&kind);
+            let channel_values: Vec<Value> = channels
+                .map(|chans| chans.iter().map(|c| Value::BulkString(c.clone())).collect())
+                .unwrap_or_default();
+            
+            map_pairs.push((
+                Value::BulkString(kind_str.as_bytes().to_vec()),
+                Value::Array(channel_values),
+            ));
+        }
+        
+        map_pairs
+    }
+
+    /// Flattens per-address subscriptions into a single PubSubSubscriptionInfo
+    fn flatten_current_subscriptions(
+        current: &HashMap<String, PubSubSubscriptionInfo>
+    ) -> PubSubSubscriptionInfo {
+        let mut flattened = PubSubSubscriptionInfo::new();
+        
+        for subs in current.values() {
+            for (kind, channels) in subs.iter() {
+                flattened
+                    .entry(*kind)
+                    .or_insert_with(HashSet::new)
+                    .extend(channels.clone());
+            }
+        }
+        
+        flattened
     }
 
     async fn get_connection(
@@ -3185,6 +4536,7 @@ where
                     sleep_duration,
                     moved_redirect,
                 } => {
+                    eprintln!("in refresh slots");
                     poll_flush_action =
                         poll_flush_action.change_state(PollFlushAction::RebuildSlots);
                     let future: Option<
@@ -3345,6 +4697,7 @@ where
                 PollFlushAction::None => return Poll::Ready(Ok(())),
                 PollFlushAction::RebuildSlots => {
                     // Spawn refresh task
+                    eprintln!("spawning refresh");
                     let task_handle = ClusterConnInner::spawn_refresh_slots_task(
                         self.inner.clone(),
                         &RefreshPolicy::Throttable,
