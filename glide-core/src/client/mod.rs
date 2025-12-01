@@ -509,6 +509,316 @@ impl Client {
         Ok(())
     }
 
+    /// Checks if the given command is a PubSub subscription command
+    fn is_pubsub_command(&self, cmd: &Cmd) -> bool {
+        cmd.command().is_some_and(|bytes| {
+            matches!(
+                bytes.as_slice(),
+                b"SUBSCRIBE" | b"UNSUBSCRIBE" | b"PSUBSCRIBE" | b"PUNSUBSCRIBE" 
+                | b"SSUBSCRIBE" | b"SUNSUBSCRIBE" | b"SUBSCRIBE_LAZY" 
+                | b"UNSUBSCRIBE_LAZY" | b"PSUBSCRIBE_LAZY" | b"PUNSUBSCRIBE_LAZY"
+                | b"SSUBSCRIBE_LAZY" | b"SUNSUBSCRIBE_LAZY" | b"GET_SUBSCRIPTIONS"
+            )
+        })
+    }
+
+    /// Determines the subscription kind from the command
+    fn get_subscription_kind(&self, cmd: &Cmd) -> Option<redis::PubSubSubscriptionKind> {
+        cmd.command().and_then(|bytes| match bytes.as_slice() {
+            b"SUBSCRIBE" | b"UNSUBSCRIBE" | b"SUBSCRIBE_LAZY" | b"UNSUBSCRIBE_LAZY" => {
+                Some(redis::PubSubSubscriptionKind::Exact)
+            }
+            b"PSUBSCRIBE" | b"PUNSUBSCRIBE" | b"PSUBSCRIBE_LAZY" | b"PUNSUBSCRIBE_LAZY" => {
+                Some(redis::PubSubSubscriptionKind::Pattern)
+            }
+            b"SSUBSCRIBE" | b"SUNSUBSCRIBE" | b"SSUBSCRIBE_LAZY" | b"SUNSUBSCRIBE_LAZY" => {
+                Some(redis::PubSubSubscriptionKind::Sharded)
+            }
+            _ => None,
+        })
+    }
+
+    /// Checks if the command is a lazy (non-blocking) subscription command
+    fn is_lazy_subscription(&self, cmd: &Cmd) -> bool {
+        cmd.command().is_some_and(|bytes| {
+            matches!(
+                bytes.as_slice(),
+                b"SUBSCRIBE_LAZY" | b"UNSUBSCRIBE_LAZY" | b"PSUBSCRIBE_LAZY" 
+                | b"PUNSUBSCRIBE_LAZY" | b"SSUBSCRIBE_LAZY" | b"SUNSUBSCRIBE_LAZY"
+            )
+        })
+    }
+
+    /// Checks if the command is GET_SUBSCRIPTIONS
+    fn is_get_subscriptions_command(&self, cmd: &Cmd) -> bool {
+        cmd.command().is_some_and(|bytes| bytes == b"GET_SUBSCRIPTIONS")
+    }
+
+    /// Extracts channels from the command arguments.
+    /// For blocking commands, the last arg is timeout, so we skip it.
+    /// For unsubscribe commands with no channels (unsubscribe all), returns None.
+    fn extract_channels_from_pubsub_cmd(
+        &self,
+        cmd: &Cmd,
+        is_blocking: bool,
+    ) -> Option<Vec<redis::PubSubChannelOrPattern>> {
+        let args_count = cmd.args_iter().len();
+        
+        // Skip command name (index 0)
+        let start_idx = 1;
+        
+        // For blocking commands, last arg is timeout
+        let end_idx = if is_blocking {
+            args_count.saturating_sub(1)
+        } else {
+            args_count
+        };
+
+        // If no channels provided (e.g., UNSUBSCRIBE with no args = unsubscribe all)
+        if end_idx <= start_idx {
+            return None;
+        }
+
+        let channels: Vec<redis::PubSubChannelOrPattern> = (start_idx..end_idx)
+            .filter_map(|idx| cmd.arg_idx(idx).map(|bytes| bytes.to_vec()))
+            .collect();
+
+        if channels.is_empty() {
+            None
+        } else {
+            Some(channels)
+        }
+    }
+
+    /// Extracts timeout from blocking subscription commands.
+    /// Timeout is always the last argument.
+    fn extract_timeout_from_blocking_cmd(&self, cmd: &Cmd) -> RedisResult<Option<Duration>> {
+        let args_count = cmd.args_iter().len();
+        if args_count < 2 {
+            // No timeout provided (shouldn't happen, but handle gracefully)
+            return Ok(None);
+        }
+
+        let timeout_idx = args_count - 1;
+        let timeout_ms = parse_timeout_to_f64(cmd, timeout_idx)? as u64;
+
+        if timeout_ms == 0 {
+            // 0 means wait indefinitely
+            Ok(None)
+        } else {
+            Ok(Some(Duration::from_millis(timeout_ms)))
+        }
+    }
+
+
+    /// Checks if the command is an unsubscribe command
+    fn is_unsubscribe_command(&self, cmd: &Cmd) -> bool {
+        cmd.command().is_some_and(|bytes| {
+            matches!(
+                bytes.as_slice(),
+                b"UNSUBSCRIBE" | b"PUNSUBSCRIBE" | b"SUNSUBSCRIBE" 
+                | b"UNSUBSCRIBE_LAZY" | b"PUNSUBSCRIBE_LAZY" | b"SUNSUBSCRIBE_LAZY"
+            )
+        })
+    }
+
+    /// Handles GET_SUBSCRIPTIONS command
+    async fn handle_get_subscriptions(&mut self) -> RedisResult<Value> {
+        let client = self.get_or_initialize_client().await?;
+
+        match client {
+            ClientWrapper::Cluster { mut client } => {
+                let (desired, current) = client.get_subscriptions().await?;
+                
+                // Convert to Value format expected by Python
+                Ok(Value::Array(vec![
+                    Value::BulkString(b"desired".to_vec()),
+                    self.subscription_map_to_value(desired, true),
+                    Value::BulkString(b"actual".to_vec()),
+                    self.subscription_map_to_value(current, true),
+                ]))
+            }
+            ClientWrapper::Standalone(mut _client) => {
+                return Err(RedisError::from((
+                    ErrorKind::ClientError,
+                    "dynamic pubsub not yet implemented for standalone client",
+                )));
+            }
+            ClientWrapper::Lazy(_) => {
+                unreachable!("Lazy client should have been initialized")
+            }
+        }
+    }
+
+    /// Converts subscription map to Value::Map format
+    fn subscription_map_to_value(
+        &self,
+        subs: std::collections::HashMap<String, std::collections::HashSet<redis::PubSubChannelOrPattern>>,
+        is_cluster: bool,
+    ) -> Value {
+        let mut pairs = Vec::new();
+
+        // Helper to create map entry
+        let make_entry = |key: &str, channels: &std::collections::HashSet<redis::PubSubChannelOrPattern>| {
+            let channel_values: Vec<Value> = channels
+                .iter()
+                .map(|c| Value::BulkString(c.clone()))
+                .collect();
+            
+            (
+                Value::BulkString(key.as_bytes().to_vec()),
+                Value::Array(channel_values),
+            )
+        };
+
+        // Add "Exact" channels
+        if let Some(channels) = subs.get("channels") {
+            pairs.push(make_entry("Exact", channels));
+        } else {
+            pairs.push((
+                Value::BulkString(b"Exact".to_vec()),
+                Value::Array(vec![]),
+            ));
+        }
+
+        // Add "Pattern" patterns
+        if let Some(patterns) = subs.get("patterns") {
+            pairs.push(make_entry("Pattern", patterns));
+        } else {
+            pairs.push((
+                Value::BulkString(b"Pattern".to_vec()),
+                Value::Array(vec![]),
+            ));
+        }
+
+        // Add "Sharded" channels (cluster only)
+        if is_cluster {
+            if let Some(sharded) = subs.get("sharded_channels") {
+                pairs.push(make_entry("Sharded", sharded));
+            } else {
+                pairs.push((
+                    Value::BulkString(b"Sharded".to_vec()),
+                    Value::Array(vec![]),
+                ));
+            }
+        }
+
+        Value::Map(pairs)
+    }
+
+    /// Simplified handler - no longer needs timeout parameter
+    async fn handle_pubsub_command(&mut self, cmd: &Cmd) -> RedisResult<Value> {
+        // Check if GET_SUBSCRIPTIONS
+        if self.is_get_subscriptions_command(cmd) {
+            return self.handle_get_subscriptions().await;
+        }
+
+        let is_lazy = self.is_lazy_subscription(cmd);
+        let is_unsubscribe = self.is_unsubscribe_command(cmd);
+        
+        // Extract channels (None means "unsubscribe all" for unsubscribe commands)
+        let channels = self.extract_channels_from_pubsub_cmd(cmd, !is_lazy);
+        
+        // Extract subscription kind
+        let kind = self.get_subscription_kind(cmd).ok_or_else(|| {
+            RedisError::from((
+                ErrorKind::ClientError,
+                "Unknown subscription command type",
+            ))
+        })?;
+
+        // Get the client
+        let mut client = self.get_or_initialize_client().await?;
+
+        // Route to the appropriate client method
+        // No timeout handling here - it's done in send_command()
+        match client {
+            ClientWrapper::Cluster { ref mut client } => {
+                self.handle_cluster_pubsub_command(
+                    client,
+                    kind,
+                    channels,
+                    is_unsubscribe,
+                    is_lazy,
+                )
+                .await
+            }
+            ClientWrapper::Standalone(ref mut _client) => {
+                return Err(RedisError::from((
+                    ErrorKind::ClientError,
+                    "dynamic pubsub not yet implemented for standalone client",
+                )));
+            }
+            ClientWrapper::Lazy(_) => {
+                unreachable!("Lazy client should have been initialized")
+            }
+        }
+    }
+
+    async fn handle_cluster_pubsub_command(
+        &self,
+        client: &mut ClusterConnection,
+        kind: redis::PubSubSubscriptionKind,
+        channels: Option<Vec<redis::PubSubChannelOrPattern>>,
+        is_unsubscribe: bool,
+        is_lazy: bool,
+    ) -> RedisResult<Value> {
+        if is_unsubscribe {
+            // Unsubscribe commands
+            match (kind, is_lazy) {
+                (redis::PubSubSubscriptionKind::Exact, true) => {
+                    client.unsubscribe_lazy(channels).await
+                }
+                (redis::PubSubSubscriptionKind::Exact, false) => {
+                    client.unsubscribe(channels).await
+                }
+                (redis::PubSubSubscriptionKind::Pattern, true) => {
+                    client.punsubscribe_lazy(channels).await
+                }
+                (redis::PubSubSubscriptionKind::Pattern, false) => {
+                    client.punsubscribe(channels).await
+                }
+                (redis::PubSubSubscriptionKind::Sharded, true) => {
+                    client.sunsubscribe_lazy(channels).await
+                }
+                (redis::PubSubSubscriptionKind::Sharded, false) => {
+                    client.sunsubscribe(channels).await
+                }
+            }
+        } else {
+            // Subscribe commands - channels must be provided
+            let channels = channels.ok_or_else(|| {
+                RedisError::from((
+                    ErrorKind::ClientError,
+                    "Subscribe command requires at least one channel",
+                ))
+            })?;
+
+            match (kind, is_lazy) {
+                (redis::PubSubSubscriptionKind::Exact, true) => {
+                    client.subscribe_lazy(channels).await
+                }
+                (redis::PubSubSubscriptionKind::Exact, false) => {
+                    client.subscribe(channels).await
+                }
+                (redis::PubSubSubscriptionKind::Pattern, true) => {
+                    client.psubscribe_lazy(channels).await
+                }
+                (redis::PubSubSubscriptionKind::Pattern, false) => {
+                    client.psubscribe(channels).await
+                }
+                (redis::PubSubSubscriptionKind::Sharded, true) => {
+                    client.ssubscribe_lazy(channels).await
+                }
+                (redis::PubSubSubscriptionKind::Sharded, false) => {
+                    client.ssubscribe(channels).await
+                }
+            }
+        }
+    }
+
+
+
     /// Updates the stored client name for different client types.
     /// Handles standalone, cluster, and lazy clients appropriately.
     /// Ensures thread-safe updates using existing synchronization mechanisms.
@@ -593,9 +903,26 @@ impl Client {
         Box::pin(async move {
             let client = self.get_or_initialize_client().await?;
 
-            // SUNSUBSCRIBE requires setting the fenced flag, so we must create a mutable copy
-            if self.is_sunsubscribe_command(cmd) {
-                cmd.set_fenced(true);
+            let request_timeout = match get_request_timeout(cmd, self.request_timeout) {
+                Ok(request_timeout) => request_timeout,
+                Err(err) => return Err(err),
+            };
+
+            if self.is_pubsub_command(cmd) {
+                // Determine timeout for the operation
+                let timeout = if self.is_lazy_subscription(cmd) {
+                    request_timeout
+                } else if self.is_get_subscriptions_command(cmd) {
+                    request_timeout
+                } else {
+                    // Blocking mode: extract timeout from command args
+                    self.extract_timeout_from_blocking_cmd(cmd)?
+                };
+
+                return run_with_timeout(timeout, async move {
+                    self.handle_pubsub_command(cmd).await
+                })
+                .await;
             }
 
             if mock_pubsub::is_mock_enabled()
@@ -605,11 +932,6 @@ impl Client {
                 let client_id = self.get_client_id();
                 return broker.handle_pubsub_command(&client_id, cmd).await;
             }
-
-            let request_timeout = match get_request_timeout(cmd, self.request_timeout) {
-                Ok(request_timeout) => request_timeout,
-                Err(err) => return Err(err),
-            };
 
             let result = run_with_timeout(request_timeout, async move {
                 let expected_type = expected_type_for_cmd(cmd);

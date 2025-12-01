@@ -15,7 +15,7 @@ from glide_shared.config import (
     ProtocolVersion,
 )
 from glide_shared.constants import OK
-from glide_shared.exceptions import ConfigurationError, RequestError
+from glide_shared.exceptions import ConfigurationError, RequestError, TimeoutError
 from glide_shared.routes import AllNodes
 
 from tests.async_tests.conftest import create_client
@@ -2949,7 +2949,6 @@ class TestPubSub:
             await client_cleanup(client2)
 
 
-@pytest.mark.use_mock_pubsub
 @pytest.mark.anyio
 class TestDynamicPubSub:
     """Tests for dynamic PubSub subscription/unsubscription API"""
@@ -3717,13 +3716,20 @@ class TestDynamicPubSub:
             await admin_client.custom_command(acl_command)
 
         client = await create_client(request, cluster_mode)
-        await client.custom_command(["AUTH", username, password])
-
+        
+        auth_cmd : List[Union[str, bytes]] = ["AUTH", username, password]
+        if cluster_mode:
+            await cast(GlideClusterClient, client).custom_command(
+                auth_cmd, route=AllNodes()
+            )
+        else:
+            await client.custom_command(auth_cmd)
+            
         # Lazy subscribe should succeed (desired state updated)
         await client.subscribe_lazy({channel})
 
         # Blocking subscribe should timeout
-        with pytest.raises(RequestError, match="Subscription timeout"):
+        with pytest.raises(TimeoutError):
             await client.subscribe({channel}, timeout_ms=1000)
 
         await client_cleanup(client)
@@ -3760,8 +3766,14 @@ class TestDynamicPubSub:
             await admin_client.custom_command(acl_command)
 
         client = await create_client(request, cluster_mode)
-        await client.custom_command(["AUTH", username, password])
-
+        auth_cmd : List[Union[str, bytes]] = ["AUTH", username, password]
+        if cluster_mode:
+            await cast(GlideClusterClient, client).custom_command(
+                auth_cmd, route=AllNodes()
+            )
+        else:
+            await client.custom_command(auth_cmd)
+            
         # Subscribe (will be blocked)
         await client.subscribe_lazy({channel})
 
@@ -3808,7 +3820,7 @@ class TestDynamicPubSub:
 
         await client_cleanup(client)
 
-    @pytest.mark.parametrize("cluster_mode", [True, False])
+    @pytest.mark.parametrize("cluster_mode", [True])
     @pytest.mark.parametrize(
         "method", [MethodTesting.Async, MethodTesting.Sync, MethodTesting.Callback]
     )

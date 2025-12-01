@@ -2723,7 +2723,7 @@ where
         }
 
         if !Self::subscriptions_aligned(inner.clone()).await {
-            if let Err(e) = telemetrylib::GlideOpenTelemetry::record_pubsub_out_of_sync() {
+            if let Err(e) = telemetrylib::GlideOpenTelemetry::record_subscription_out_of_sync() {
                 log_error(
                     "OpenTelemetry:pubsub_desync",
                     format!("Failed to record pubsub desynchronization: {e}"),
@@ -3010,7 +3010,7 @@ where
                     sender,
                 };
 
-                // Send the command to the suink
+                // Send the command to the sink
                 if let Err(e) = inner.message_sender.send(message).await {
                     warn!("Failed to send subscribe message: {:?}", e);
                 }

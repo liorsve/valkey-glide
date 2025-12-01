@@ -942,5 +942,5 @@ fn create_push_info(
     data.push(Value::BulkString(channel.as_bytes().to_vec()));
     data.push(Value::BulkString(message.to_vec()));
 
-    PushInfo { kind, data }
+    PushInfo { kind, data, address: None }
 }
