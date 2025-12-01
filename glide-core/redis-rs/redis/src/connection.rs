@@ -1241,7 +1241,8 @@ impl Connection {
                 self.push_manager.try_send_raw(&Value::Push {
                     kind: PushKind::Disconnection,
                     data: vec![],
-                });
+                },
+            None);
                 match self.con {
                     ActualConnection::Tcp(ref mut connection) => {
                         let _ = connection.reader.shutdown(net::Shutdown::Both);
@@ -1276,7 +1277,9 @@ impl Connection {
                     self.push_manager.try_send_raw(&Value::Push {
                         kind: PushKind::Disconnection,
                         data: vec![],
-                    });
+                    },
+                    None,
+                );
                 }
             }
         }

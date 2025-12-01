@@ -702,7 +702,6 @@ pub(crate) struct InnerCore<C> {
     initial_nodes: Vec<ConnectionInfo>,
     current_subscriptions: TokioRwLock<HashMap<String, PubSubSubscriptionInfo>>,
     desired_subscriptions: TokioRwLock<PubSubSubscriptionInfo>,
-    in_flight_subscriptions: TokioRwLock<HashMap<String, PubSubSubscriptionInfo>>,
     last_desired_subscriptions_update: TokioRwLock<Option<SystemTime>>,
     push_notification_receiver: Arc<TokioRwLock<mpsc::UnboundedReceiver<PushInfo>>>,
     glide_connection_options: GlideConnectionOptions,
@@ -1464,7 +1463,6 @@ where
                     .unwrap_or_else(PubSubSubscriptionInfo::new),
             ),
             current_subscriptions: TokioRwLock::new(HashMap::new()),
-            in_flight_subscriptions: TokioRwLock::new(HashMap::new()), 
             last_desired_subscriptions_update: TokioRwLock::new(None),
             push_notification_receiver: Arc::new(TokioRwLock::new(cluster_pubsub_push_receiver)),
             glide_connection_options,
@@ -1787,11 +1785,9 @@ where
         // So that they will be re-established after reconnection
         {
             let mut current_guard = inner.current_subscriptions.write().await;
-            let mut in_flight_subs_guard = inner.in_flight_subscriptions.write().await;
 
             for address in &addresses {
                 current_guard.remove(address);
-                in_flight_subs_guard.remove(address);
             }
         }
 
@@ -2538,7 +2534,7 @@ where
                 PushKind::Message |
                 PushKind::PMessage |
                 PushKind::SMessage => {
-                    // Self::handle_message_push(&mut current_guard, &inner, push_info.clone()).await;
+                    Self::handle_message_push(&mut current_guard, &inner, push_info.clone()).await;
                 }
                 _ => {
                     eprintln!("[Process Push] Ignoring push kind: {:?}", push_info.kind);
@@ -2569,38 +2565,29 @@ where
             return;
         };
 
-        let slot = get_slot(&channel_pattern);
-        let address = {
+        let address = if let Some(addr) = push_info.address {
+            addr
+        } else {
+            // Fallback to slot-based routing if address not available
+            let slot = get_slot(&channel_pattern);
             let conn_guard = inner.conn_lock.read().expect(MUTEX_READ_ERR);
-            conn_guard
-                .connection_for_route(&Route::new(slot, SlotAddr::Master))
-                .map(|(addr, _)| addr.clone())
-        };
-        
-        if let Some(address) = address {
-            // Update current subscriptions
-            current_guard
-                .entry(address.clone())
-                .or_insert_with(PubSubSubscriptionInfo::new)
-                .entry(kind)
-                .or_insert_with(HashSet::new)
-                .insert(channel_pattern.clone());
-
-            // Clear in-flight flag
-            let mut in_flight_guard = inner.in_flight_subscriptions.write().await;
-            if let Some(addr_subs) = in_flight_guard.get_mut(&address) {
-                if let Some(kind_channels) = addr_subs.get_mut(&kind) {
-                    kind_channels.remove(&channel_pattern);
-                    
-                    if kind_channels.is_empty() {
-                        addr_subs.remove(&kind);
-                    }
-                }
-                if addr_subs.is_empty() {
-                    in_flight_guard.remove(&address);
+            match conn_guard.connection_for_route(&Route::new(slot, SlotAddr::Master)) {
+                Some((addr, _)) => addr.clone(),
+                None => {
+                    warn!("No connection found for slot {} when handling subscribe push", slot);
+                    return;  // Can't process without address
                 }
             }
-        }
+        };
+        
+        // Update current subscriptions using the address from the push
+        current_guard
+            .entry(address.clone())
+            .or_insert_with(PubSubSubscriptionInfo::new)
+            .entry(kind)
+            .or_insert_with(HashSet::new)
+            .insert(channel_pattern.clone());
+
     }
 
     /// Handle an unsubscribe push notification - lock already held by caller
@@ -2657,18 +2644,13 @@ where
     }
 
     /// Handle a message push notification - lock already held by caller
+    /// This tracks which channels are actually receiving messages, allowing us to
+    /// discover subscriptions that weren't explicitly tracked (e.g., from config)
     async fn handle_message_push(
         current_guard: &mut HashMap<String, PubSubSubscriptionInfo>,
         inner: &Arc<InnerCore<C>>,
         push_info: PushInfo,
     ) {
-        // Convert push kind (Message/PMessage/SMessage) to PubSubSubscriptionKind
-        let kind = match PubSubSubscriptionKind::from_push(&push_info.kind) {
-            Some(kind) => kind,
-            None => return, 
-        };
-
-        // Get the first element of data as the channel/pattern name
         if push_info.data.is_empty() {
             return;
         }
@@ -2677,35 +2659,50 @@ where
             return;
         };
 
-        let slot = get_slot(&channel_pattern);
-        let address = {
-            let conn_guard = inner.conn_lock.read().expect(MUTEX_READ_ERR);
-            conn_guard
-                .connection_for_route(&Route::new(slot, SlotAddr::Master))
-                .map(|(addr, _)| addr.clone())
+        let Some(kind) = PubSubSubscriptionKind::from_push(&push_info.kind) else {
+            return;
         };
 
-        if let Some(address) = address {
-            let needs_adding = current_guard
-                .get(&address)
-                .and_then(|subs| subs.get(&kind))
-                .map(|channels| !channels.contains(&channel_pattern))
-                .unwrap_or(true);
-
-            if needs_adding {
-                current_guard
-                    .entry(address)
-                    .or_insert_with(PubSubSubscriptionInfo::new)
-                    .entry(kind)
-                    .or_insert_with(HashSet::new)
-                    .insert(channel_pattern.clone());
-
-                trace!(
-                    "Message received for untracked channel, added: {:?} - {}",
-                    kind,
-                    String::from_utf8_lossy(&channel_pattern)
-                );
+        // Use address directly from push_info
+        let address = if let Some(addr) = push_info.address {
+            addr
+        } else {
+            // Fallback to slot-based routing if address not available (backward compatibility)
+            let slot = get_slot(&channel_pattern);
+            let conn_guard = inner.conn_lock.read().expect(MUTEX_READ_ERR);
+            match conn_guard.connection_for_route(&Route::new(slot, SlotAddr::Master)) {
+                Some((addr, _)) => addr.clone(),
+                None => {
+                    trace!(
+                        "Message received but no connection found for channel: {:?}",
+                        String::from_utf8_lossy(&channel_pattern)
+                    );
+                    return;
+                }
             }
+        };
+
+        // Check if we're already tracking this subscription
+        let needs_adding = current_guard
+            .get(&address)
+            .and_then(|subs| subs.get(&kind))
+            .map(|channels| !channels.contains(&channel_pattern))
+            .unwrap_or(true);
+
+        if needs_adding {
+            current_guard
+                .entry(address.clone())
+                .or_insert_with(PubSubSubscriptionInfo::new)
+                .entry(kind)
+                .or_insert_with(HashSet::new)
+                .insert(channel_pattern.clone());
+
+            trace!(
+                "Message received for untracked channel, added: {:?} - {} on {}",
+                kind,
+                String::from_utf8_lossy(&channel_pattern),
+                address
+            );
         }
     }
 
@@ -2761,15 +2758,12 @@ where
         
         let desired_guard = inner.desired_subscriptions.read().await;
         let current_guard = inner.current_subscriptions.read().await;
-        let in_flight_guard = inner.in_flight_subscriptions.read().await;
 
         let desired_clone: PubSubSubscriptionInfo = desired_guard.clone();
         let current_clone: HashMap<String, PubSubSubscriptionInfo> = current_guard.clone();
-        let in_flight_clone: HashMap<String, PubSubSubscriptionInfo> = in_flight_guard.clone();
 
         drop(desired_guard);
         drop(current_guard);
-        drop(in_flight_guard);
 
         eprintln!("[Reconcile Once] State snapshot:");
         eprintln!("  Desired: {} kinds", desired_clone.len());
@@ -2788,13 +2782,6 @@ where
             }
         }
         
-        eprintln!("  In-flight: {} addresses", in_flight_clone.len());
-        for (addr, subs) in in_flight_clone.iter() {
-            eprintln!("    {}: {} kinds", addr, subs.len());
-            for (kind, channels) in subs.iter() {
-                eprintln!("      {:?}: {} channels", kind, channels.len());
-            }
-        }
 
         let mut subscribe_count = 0;
         let mut unsubscribe_count = 0;
@@ -2836,33 +2823,13 @@ where
 
                 eprintln!("[Reconcile Once]   Already subscribed: {}", already_subscribed);
 
-                // Check if already in-flight
-                let already_in_flight = in_flight_clone
-                    .get(&address)
-                    .and_then(|subs| subs.get(kind))
-                    .map(|chans| chans.contains(channel_pattern))
-                    .unwrap_or(false);
-
-                eprintln!("[Reconcile Once]   Already in-flight: {}", already_in_flight);
-
-                if !already_subscribed && !already_in_flight {
+                if !already_subscribed {
                     eprintln!("[Reconcile Once]   ➕ WILL SUBSCRIBE: {:?} - {} on {}", kind, channel_str, address);
 
                     let mut subs = PubSubSubscriptionInfo::new();
                     subs.entry(*kind)
                         .or_insert_with(HashSet::new)
                         .insert(channel_pattern.clone());
-
-                    // Mark as in-flight BEFORE queueing
-                    eprintln!("[Reconcile Once]   Marking as in-flight...");
-                    Self::mark_subscriptions_in_flight(
-                        inner.clone(),
-                        &address,
-                        *kind,
-                        subs.get(kind).unwrap(),
-                    )
-                    .await;
-                    eprintln!("[Reconcile Once]   Marked as in-flight ✓");
 
                     // Queue the subscription command
                     eprintln!("[Reconcile Once]   Queueing subscribe command...");
@@ -2924,52 +2891,29 @@ where
                         }
                         Some(correct_addr) => {
                             eprintln!("[Reconcile Once]     🔄 Address mismatch: {} -> {}", address, correct_addr);
-
-                            let already_in_flight = in_flight_clone
-                                .get(&correct_addr)
-                                .and_then(|subs| subs.get(kind))
-                                .map(|chans| chans.contains(channel_pattern))
-                                .unwrap_or(false);
-
-                            if !already_in_flight {
-                                eprintln!("[Reconcile Once]     Will move subscription to new address");
-                                
-                                // Remove from current
-                                {
-                                    let mut current_guard = inner.current_subscriptions.write().await;
-                                    if let Some(addr_subs) = current_guard.get_mut(address) {
-                                        if let Some(kind_channels) = addr_subs.get_mut(kind) {
-                                            kind_channels.remove(channel_pattern);
-                                            if kind_channels.is_empty() {
-                                                addr_subs.remove(kind);
-                                            }
-                                        }
-                                        if addr_subs.is_empty() {
-                                            current_guard.remove(address);
-                                        }
+                            // Remove from current
+                            let mut current_guard = inner.current_subscriptions.write().await;
+                            if let Some(addr_subs) = current_guard.get_mut(address) {
+                                if let Some(kind_channels) = addr_subs.get_mut(kind) {
+                                    kind_channels.remove(channel_pattern);
+                                    if kind_channels.is_empty() {
+                                        addr_subs.remove(kind);
                                     }
                                 }
-
-                                // Subscribe to new address
-                                let mut subs_to_add = PubSubSubscriptionInfo::new();
-                                subs_to_add
-                                    .entry(*kind)
-                                    .or_insert_with(HashSet::new)
-                                    .insert(channel_pattern.clone());
-
-                                Self::mark_subscriptions_in_flight(
-                                    inner.clone(),
-                                    &correct_addr,
-                                    *kind,
-                                    subs_to_add.get(kind).unwrap(),
-                                )
-                                .await;
-
-                                Self::queue_subscribe_commands(inner.clone(), correct_addr, &subs_to_add).await;
-                                subscribe_count += 1;
-                            } else {
-                                eprintln!("[Reconcile Once]     Already in-flight to new address");
+                                if addr_subs.is_empty() {
+                                    current_guard.remove(address);
+                                }
                             }
+
+                            // Subscribe to new address
+                            let mut subs_to_add = PubSubSubscriptionInfo::new();
+                            subs_to_add
+                                .entry(*kind)
+                                .or_insert_with(HashSet::new)
+                                .insert(channel_pattern.clone());
+
+                            Self::queue_subscribe_commands(inner.clone(), correct_addr, &subs_to_add).await;
+                            subscribe_count += 1;
                         }
                         None => {
                             eprintln!("[Reconcile Once]     ⚠️ No valid address found, removing from current");
@@ -3037,47 +2981,19 @@ where
                     match receiver.await {
                         Ok(Ok(_response)) => {
                             // Update current_subscriptions
-                            {
-                                let mut current_guard = inner_clone.current_subscriptions.write().await;
-                                current_guard
-                                    .entry(address_clone.clone())
-                                    .or_insert_with(PubSubSubscriptionInfo::new)
-                                    .entry(kind_clone)
-                                    .or_insert_with(HashSet::new)
-                                    .insert(channel_clone.clone());
-                            }
-                            
-                            // Clear in_flight
-                            let channels = HashSet::from([channel_clone]);
-                            Self::clear_in_flight_subscriptions(
-                                inner_clone,
-                                &address_clone,
-                                kind_clone,
-                                &channels,
-                            )
-                            .await;
+                            let mut current_guard = inner_clone.current_subscriptions.write().await;
+                            current_guard
+                                .entry(address_clone.clone())
+                                .or_insert_with(PubSubSubscriptionInfo::new)
+                                .entry(kind_clone)
+                                .or_insert_with(HashSet::new)
+                                .insert(channel_clone.clone());
                         }
                         Ok(Err(err)) => {
                             warn!("Subscribe failed: {:?}", err);
-                            let channels = HashSet::from([channel_clone]);
-                            Self::clear_in_flight_subscriptions(
-                                inner_clone,
-                                &address_clone,
-                                kind_clone,
-                                &channels,
-                            )
-                            .await;
                         }
                         Err(_) => {
                             warn!("Subscribe sender dropped");
-                            let channels = HashSet::from([channel_clone]);
-                            Self::clear_in_flight_subscriptions(
-                                inner_clone,
-                                &address_clone,
-                                kind_clone,
-                                &channels,
-                            )
-                            .await;
                         }
                     }
                 });
@@ -3094,7 +3010,7 @@ where
                     sender,
                 };
 
-                // Spawn #2: REMOVED - just await
+                // Send the command to the suink
                 if let Err(e) = inner.message_sender.send(message).await {
                     warn!("Failed to send subscribe message: {:?}", e);
                 }
@@ -3222,49 +3138,6 @@ where
         eprintln!("[Queue Unsubscribe] Completed for address: {}", address);
     }
 
-    /// Helper to clear in-flight subscription state after command completes
-    async fn clear_in_flight_subscriptions(
-        inner: Arc<InnerCore<C>>,
-        address: &str,
-        kind: PubSubSubscriptionKind,
-        channels: &HashSet<PubSubChannelOrPattern>,
-    ) {
-        let mut in_flight_guard = inner.in_flight_subscriptions.write().await;
-        
-        if let Some(addr_subs) = in_flight_guard.get_mut(address) {
-            if let Some(kind_channels) = addr_subs.get_mut(&kind) {
-                for channel in channels {
-                    kind_channels.remove(channel);
-                }
-                
-                // Clean up empty entries
-                if kind_channels.is_empty() {
-                    addr_subs.remove(&kind);
-                }
-            }
-            
-            if addr_subs.is_empty() {
-                in_flight_guard.remove(address);
-            }
-        }
-    }
-
-    /// Helper to mark subscriptions as in-flight before sending commands
-    async fn mark_subscriptions_in_flight(
-        inner: Arc<InnerCore<C>>,
-        address: &str,
-        kind: PubSubSubscriptionKind,
-        channels: &HashSet<PubSubChannelOrPattern>,
-    ) {
-        let mut in_flight_guard = inner.in_flight_subscriptions.write().await;
-        
-        in_flight_guard
-            .entry(address.to_string())
-            .or_insert_with(PubSubSubscriptionInfo::new)
-            .entry(kind)
-            .or_insert_with(HashSet::new)
-            .extend(channels.clone());
-    }
 
     /// Queries log2n nodes (where n represents the number of cluster nodes) to determine whether their
     /// topology view differs from the one currently stored in the connection manager.
@@ -4006,9 +3879,6 @@ where
             }
 
             trace!("Subscription not yet confirmed, retrying...");
-
-            // Not confirmed yet, wait a bit before next check
-            tokio::time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
             
             // Trigger another refresh cycle
             core.pubsub_refresh_notifier.notify_one();

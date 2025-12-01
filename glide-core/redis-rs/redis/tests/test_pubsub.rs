@@ -202,7 +202,7 @@ mod cluster_async_pubsub {
         for _ in 0..(subscribe_cnt + psubscribe_cnt + ssubscribe_cnt) {
             let result = notifications_rx.try_recv();
             assert!(result.is_ok());
-            let PushInfo { kind, data: _ } = result.unwrap();
+            let PushInfo { kind, data: _ , address: _} = result.unwrap();
             assert!(
                 kind == PushKind::Subscribe
                     || kind == PushKind::PSubscribe
@@ -1165,7 +1165,7 @@ mod cluster_async_pubsub {
             
             let result = rx.try_recv();
             assert!(result.is_ok());
-            let PushInfo { kind, data } = result.unwrap();
+            let PushInfo { kind, data, address: _ } = result.unwrap();
             assert_eq!(
                 (kind, data),
                 (
@@ -1197,9 +1197,6 @@ mod cluster_async_pubsub {
             // sleep for 1 periodic_connections_checks + overhead
             sleep(futures_time::time::Duration::from_secs(1 + 1)).await;
 
-            // new subscription notifications due to resubscriptions
-            validate_subscriptions(&client_subscriptions, &mut rx, true);
-
             // validate PUBLISH - retry until expected subscribers are available
             let result = retry_publish_until_expected_subscribers(
                 PublishCommand::Publish,
@@ -1211,12 +1208,15 @@ mod cluster_async_pubsub {
             )
             .await;
             assert_eq!(result, Ok(Value::Int(2)));
+
+            // new subscription notifications due to resubscriptions
+            validate_subscriptions(&client_subscriptions, &mut rx, true);
             
             sleep(futures_time::time::Duration::from_secs(1)).await;
             
             let result = rx.try_recv();
             assert!(result.is_ok());
-            let PushInfo { kind, data } = result.unwrap();
+            let PushInfo { kind, data, address: _} = result.unwrap();
             assert_eq!(
                 (kind, data),
                 (
@@ -1493,7 +1493,7 @@ mod cluster_async_pubsub {
             sleep(futures_time::time::Duration::from_secs(1)).await;
             let result = rx.try_recv();
             assert!(result.is_ok());
-            let PushInfo { kind, data } = result.unwrap();
+            let PushInfo { kind, data, address: _ } = result.unwrap();
             assert_eq!(
                 (kind, data),
                 (
@@ -1524,7 +1524,7 @@ mod cluster_async_pubsub {
                 sleep(futures_time::time::Duration::from_secs(1)).await;
                 let result = rx.try_recv();
                 assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
+                let PushInfo { kind, data, address: _ } = result.unwrap();
                 assert_eq!(
                     (kind, data),
                     (
@@ -1569,7 +1569,7 @@ mod cluster_async_pubsub {
             sleep(futures_time::time::Duration::from_secs(1)).await;
             let result = rx.try_recv();
             assert!(result.is_ok());
-            let PushInfo { kind, data } = result.unwrap();
+            let PushInfo { kind, data, address: _ } = result.unwrap();
             assert_eq!(
                 (kind, data),
                 (
@@ -1600,7 +1600,7 @@ mod cluster_async_pubsub {
                 sleep(futures_time::time::Duration::from_secs(1)).await;
                 let result = rx.try_recv();
                 assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
+                let PushInfo { kind, data, address: _ } = result.unwrap();
                 assert_eq!(
                     (kind, data),
                     (
@@ -1697,7 +1697,7 @@ mod cluster_async_pubsub {
             eprintln!("📌 [TEST] Receiving message from rx...");
             let result = rx.try_recv();
             assert!(result.is_ok());
-            let PushInfo { kind, data } = result.unwrap();
+            let PushInfo { kind, data, address: _ } = result.unwrap();
             eprintln!("✅ [TEST] Received message: kind={:?}", kind);
             assert_eq!(
                 (kind, data),
@@ -1727,7 +1727,7 @@ mod cluster_async_pubsub {
                 sleep(futures_time::time::Duration::from_secs(1)).await;
                 let result = rx.try_recv();
                 assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
+                let PushInfo { kind, data, address: _ } = result.unwrap();
                 eprintln!("✅ [TEST] Received sharded message: kind={:?}", kind);
                 assert_eq!(
                     (kind, data),
@@ -1862,7 +1862,7 @@ mod cluster_async_pubsub {
                         result.as_ref().map(|p| &p.kind));
                 
                 assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
+                let PushInfo { kind, data, address: _ } = result.unwrap();
                 
                 if kind == PushKind::Message {
                     eprintln!("✅ [TEST] Received Message push after scale-out");
@@ -1896,7 +1896,7 @@ mod cluster_async_pubsub {
                 sleep(futures_time::time::Duration::from_secs(1)).await;
                 let result = rx.try_recv();
                 assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
+                let PushInfo { kind, data, address: _ } = result.unwrap();
                 eprintln!("✅ [TEST] Received sharded message after scale-out: kind={:?}", kind);
                 assert_eq!(
                     (kind, data),
@@ -2005,7 +2005,7 @@ mod cluster_async_pubsub {
             for _ in 0..3 {
                 let result = rx.try_recv();
                 assert!(result.is_ok());
-                let PushInfo { kind, data: _ } = result.unwrap();
+                let PushInfo { kind, data: _, address: _ } = result.unwrap();
                 assert!(kind == PushKind::Message || kind == PushKind::PMessage);
                 if kind == PushKind::Message {
                     msg_cnt += 1;
@@ -2027,7 +2027,7 @@ mod cluster_async_pubsub {
                 sleep(Duration::from_secs(1).into()).await;
                 let result = rx.try_recv();
                 assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
+                let PushInfo { kind, data, address: _ } = result.unwrap();
                 assert_eq!(
                     (kind, data),
                     (

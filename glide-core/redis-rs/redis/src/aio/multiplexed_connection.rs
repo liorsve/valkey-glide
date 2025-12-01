@@ -112,6 +112,7 @@ pin_project! {
         disconnect_notifier: Option<Box<dyn DisconnectNotifier>>,
         is_stream_closed: Arc<AtomicBool>,
         response_sync_lost: bool,
+        address: Option<String>,
     }
 }
 
@@ -124,6 +125,7 @@ where
         push_manager: Arc<ArcSwap<PushManager>>,
         disconnect_notifier: Option<Box<dyn DisconnectNotifier>>,
         is_stream_closed: Arc<AtomicBool>,
+        address: Option<String>,
     ) -> Self
     where
         T: Sink<SinkItem, Error = RedisError> + Stream<Item = RedisResult<Value>> + 'static,
@@ -136,6 +138,7 @@ where
             disconnect_notifier,
             is_stream_closed,
             response_sync_lost: false,
+            address,
         }
     }
 
@@ -177,7 +180,7 @@ where
 
         if let Ok(res) = &result {
             if let Value::Push { kind, data: _data } = res {
-                self_.push_manager.load().try_send_raw(res);
+                self_.push_manager.load().try_send_raw(res, self_.address.clone());
                 if !kind.has_reply() {
                     return;
                 }
@@ -450,6 +453,7 @@ where
     fn new<T>(
         sink_stream: T,
         disconnect_notifier: Option<Box<dyn DisconnectNotifier>>,
+        address: Option<String>,
     ) -> (Self, impl Future<Output = ()>)
     where
         T: Sink<SinkItem, Error = RedisError> + Stream<Item = RedisResult<Value>> + 'static,
@@ -468,6 +472,7 @@ where
             push_manager.clone(),
             disconnect_notifier,
             is_stream_closed.clone(),
+            address,
         );
         let f = stream::poll_fn(move |cx| receiver.poll_recv(cx))
             .map(Ok)
@@ -561,6 +566,7 @@ pub struct MultiplexedConnection {
     push_manager: PushManager,
     availability_zone: Option<String>,
     password: Option<String>,
+    address: Option<String>,
 }
 
 impl Debug for MultiplexedConnection {
@@ -606,8 +612,9 @@ impl MultiplexedConnection {
         let codec = ValueCodec::default()
             .framed(stream)
             .and_then(|msg| async move { msg });
+        let address = Some(connection_info.addr.to_string());
         let (mut pipeline, driver) =
-            Pipeline::new(codec, glide_connection_options.disconnect_notifier);
+            Pipeline::new(codec, glide_connection_options.disconnect_notifier, address.clone());
         let driver = Box::pin(driver);
         let pm = PushManager::default();
         if let Some(sender) = glide_connection_options.push_sender {
@@ -678,7 +685,9 @@ impl MultiplexedConnection {
                     self.push_manager.try_send_raw(&Value::Push {
                         kind: PushKind::Disconnection,
                         data: vec![],
-                    });
+                    },
+                    None,
+                );
                 }
             }
         }
@@ -712,7 +721,9 @@ impl MultiplexedConnection {
                     self.push_manager.try_send_raw(&Value::Push {
                         kind: PushKind::Disconnection,
                         data: vec![],
-                    });
+                    },
+                    None,
+                );
                 }
             }
         }
@@ -763,6 +774,7 @@ pub struct MultiplexedConnectionBuilder {
     password: Option<String>,
     /// Represents the node's availability zone
     availability_zone: Option<String>,
+    address: Option<String>,
 }
 
 impl MultiplexedConnectionBuilder {
@@ -776,6 +788,7 @@ impl MultiplexedConnectionBuilder {
             protocol: None,
             password: None,
             availability_zone: None,
+            address: None,
         }
     }
 
@@ -815,6 +828,12 @@ impl MultiplexedConnectionBuilder {
         self
     }
 
+    pub fn with_address(mut self, address: Option<String>) -> Self {
+        self.address = address;
+        self
+    }
+
+
     /// Builds and returns a new `MultiplexedConnection` instance using the configured settings.
     pub async fn build(self) -> RedisResult<MultiplexedConnection> {
         let db = self.db.unwrap_or_default();
@@ -833,6 +852,7 @@ impl MultiplexedConnectionBuilder {
             protocol,
             password,
             availability_zone: self.availability_zone,
+            address: self.address,
         };
 
         Ok(con)

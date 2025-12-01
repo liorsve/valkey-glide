@@ -128,7 +128,7 @@ mod cluster_async {
         for _ in 0..(subscribe_cnt + psubscribe_cnt + ssubscribe_cnt) {
             let result = notifications_rx.try_recv();
             assert!(result.is_ok());
-            let PushInfo { kind, data: _ } = result.unwrap();
+            let PushInfo { kind, data: _, address: _ } = result.unwrap();
             assert!(
                 kind == PushKind::Subscribe
                     || kind == PushKind::PSubscribe
@@ -5469,7 +5469,7 @@ mod cluster_async {
             for _ in 0..3 {
                 let result = rx.try_recv();
                 assert!(result.is_ok());
-                let PushInfo { kind, data: _ } = result.unwrap();
+                let PushInfo { kind, data: _, address: _ } = result.unwrap();
                 assert!(kind == PushKind::Message || kind == PushKind::PMessage);
                 if kind == PushKind::Message {
                     msg_cnt += 1;
@@ -5491,7 +5491,7 @@ mod cluster_async {
                 sleep(futures_time::time::Duration::from_secs(1)).await;
                 let result = rx.try_recv();
                 assert!(result.is_ok());
-                let PushInfo { kind, data } = result.unwrap();
+                let PushInfo { kind, data, address: _ } = result.unwrap();
                 assert_eq!(
                     (kind, data),
                     (

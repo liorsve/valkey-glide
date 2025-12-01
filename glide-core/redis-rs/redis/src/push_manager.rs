@@ -10,6 +10,8 @@ pub struct PushInfo {
     pub kind: PushKind,
     /// Data from push message
     pub data: Vec<Value>,
+    /// Address of the node that sent this push (if known)
+    pub address: Option<String>,
 }
 
 /// Manages Push messages for single tokio channel
@@ -23,17 +25,18 @@ impl PushManager {
     /// then invokes `try_send_raw` method
     pub(crate) fn try_send(&self, value: &RedisResult<Value>) {
         if let Ok(value) = &value {
-            self.try_send_raw(value);
+            self.try_send_raw(value, None);
         }
     }
 
     /// It checks if value's type is Push and there is a provided sender
     /// then creates PushInfo and invokes `send` method of sender
-    pub(crate) fn try_send_raw(&self, value: &Value) {
+    pub(crate) fn try_send_raw(&self, value: &Value, address: Option<String>) {
         if let Value::Push { kind, data } = value {
             let push_info = PushInfo {
                 kind: kind.clone(),
                 data: data.clone(),
+                address,
             };
 
             // Send to client sender

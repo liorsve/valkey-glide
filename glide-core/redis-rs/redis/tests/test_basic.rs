@@ -1557,7 +1557,7 @@ mod basic {
         for _ in 0..10 {
             let _: RedisResult<()> = pipe.query(&mut con);
             let _: i32 = con.get("key_1").unwrap();
-            let PushInfo { kind, data } = rx.try_recv().unwrap();
+            let PushInfo { kind, data, address: _ } = rx.try_recv().unwrap();
             assert_eq!(
                 (
                     PushKind::Invalidate,
@@ -1573,7 +1573,7 @@ mod basic {
         drop(rx);
         let _: RedisResult<()> = pipe.query(&mut con);
         let _: i32 = con.get("key_1").unwrap();
-        let PushInfo { kind, data } = new_rx.try_recv().unwrap();
+        let PushInfo { kind, data, address: _ } = new_rx.try_recv().unwrap();
         assert_eq!(
             (
                 PushKind::Invalidate,
