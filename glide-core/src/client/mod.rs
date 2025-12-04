@@ -532,7 +532,7 @@ impl Client {
             // Create the appropriate client based on configuration
             let real_client = if config.cluster_mode_enabled {
                 // Create cluster client
-                let client = create_cluster_client(config, push_sender, iam_manager_ref).await?;
+                let client = create_cluster_client(config, push_sender, iam_manager_ref, self.pubsub_synchronizer.clone(),).await?;
                 ClientWrapper::Cluster { client }
             } else {
                 // Create standalone client
@@ -1180,6 +1180,7 @@ async fn create_cluster_client(
     request: ConnectionRequest,
     push_sender: Option<mpsc::UnboundedSender<PushInfo>>,
     iam_token_manager: Option<&Arc<crate::iam::IAMTokenManager>>,
+    pubsub_synchronizer: Option<Arc<dyn redis::pubsub_synchronizer::PubSubSynchronizer>>,
 ) -> RedisResult<redis::cluster_async::ClusterConnection> {
     let tls_mode = request.tls_mode.unwrap_or_default();
 
@@ -1286,7 +1287,7 @@ async fn create_cluster_client(
     builder = builder.periodic_connections_checks(Some(CONNECTION_CHECKS_INTERVAL));
 
     let client = builder.build()?;
-    let mut con = client.get_async_connection(push_sender).await?;
+    let mut con = client.get_async_connection(push_sender, pubsub_synchronizer).await?;
 
     // This validation ensures that sharded subscriptions are not applied to Redis engines older than version 7.0,
     // preventing scenarios where the client becomes inoperable or, worse, unaware that sharded pubsub messages are not being received.
@@ -1521,7 +1522,7 @@ impl Client {
                 request_timeout,
                 inflight_requests_allowed,
                 iam_token_manager: None,
-                pubsub_synchronizer,
+                pubsub_synchronizer: pubsub_synchronizer.clone(),
             };
 
             let client_arc = Arc::new(RwLock::new(client));
@@ -1546,7 +1547,7 @@ impl Client {
                 }))
             } else if is_cluster {
                 let client =
-                    create_cluster_client(request, push_sender, iam_token_manager.as_ref())
+                    create_cluster_client(request, push_sender, iam_token_manager.as_ref(), pubsub_synchronizer.clone(),)
                         .await
                         .map_err(ConnectionError::Cluster)?;
                 ClientWrapper::Cluster { client }

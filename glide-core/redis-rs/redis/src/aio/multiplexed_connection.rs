@@ -452,6 +452,7 @@ where
     fn new<T>(
         sink_stream: T,
         disconnect_notifier: Option<Box<dyn DisconnectNotifier>>,
+        push_manager: Arc<ArcSwap<PushManager>>,
     ) -> (Self, impl Future<Output = ()>)
     where
         T: Sink<SinkItem, Error = RedisError> + Stream<Item = RedisResult<Value>> + 'static,
@@ -462,15 +463,15 @@ where
     {
         const BUFFER_SIZE: usize = 50;
         let (sender, mut receiver) = mpsc::channel(BUFFER_SIZE);
-        let push_manager: Arc<ArcSwap<PushManager>> =
-            Arc::new(ArcSwap::new(Arc::new(PushManager::default())));
         let is_stream_closed = Arc::new(AtomicBool::new(false));
+        
         let sink = PipelineSink::new::<SinkItem>(
             sink_stream,
             push_manager.clone(),
             disconnect_notifier,
             is_stream_closed.clone(),
         );
+        
         let f = stream::poll_fn(move |cx| receiver.poll_recv(cx))
             .map(Ok)
             .forward(sink)
@@ -608,13 +609,18 @@ impl MultiplexedConnection {
         let codec = ValueCodec::default()
             .framed(stream)
             .and_then(|msg| async move { msg });
-        let (mut pipeline, driver) =
-            Pipeline::new(codec, glide_connection_options.disconnect_notifier);
-        let driver = Box::pin(driver);
-        let pm = PushManager::default();
+        let pm = PushManager::new(glide_connection_options.pubsub_synchronizer.clone());
         if let Some(sender) = glide_connection_options.push_sender {
             pm.replace_sender(sender);
         }
+        let push_manager_arc = Arc::new(ArcSwap::new(Arc::new(pm.clone())));
+        let (mut pipeline, driver) = Pipeline::new(
+            codec,
+            glide_connection_options.disconnect_notifier,
+            push_manager_arc,
+        );
+        let driver = Box::pin(driver);
+
 
         pipeline.set_push_manager(pm.clone()).await;
 

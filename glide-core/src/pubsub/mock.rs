@@ -431,6 +431,15 @@ impl PubSubSynchronizer for MockPubSubSynchronizer {
         // Update metrics
         self.broker.check_and_record_sync_state(self).await;
     }
+
+    async fn remove_current_subscriptions_for_address(&self, address: &str) {
+        // For mock, we don't track by address, so just trigger reconciliation
+        // The mock doesn't simulate address-specific subscriptions
+        let _ = address;
+        
+        // Mock doesn't need to do anything special here
+        // The reconciliation will handle it
+    }
 }
 
 /// Client-specific data stored in the broker

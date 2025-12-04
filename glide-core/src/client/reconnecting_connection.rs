@@ -140,6 +140,7 @@ async fn create_connection(
         discover_az,
         connection_timeout: Some(connection_timeout),
         connection_retry_strategy: Some(retry_strategy),
+        pubsub_synchronizer: None,
     };
 
     let action = || async {

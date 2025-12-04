@@ -16,6 +16,7 @@ pub struct PushInfo {
 #[derive(Clone, Default)]
 pub struct PushManager {
     sender: Arc<ArcSwap<Option<mpsc::UnboundedSender<PushInfo>>>>,
+    pubsub_synchronizer: Option<Arc<dyn crate::pubsub_synchronizer::PubSubSynchronizer>>,
 }
 impl PushManager {
     /// It checks if value's type is Push
@@ -30,6 +31,9 @@ impl PushManager {
     /// then creates PushInfo and invokes `send` method of sender
     pub(crate) fn try_send_raw(&self, value: &Value) {
         if let Value::Push { kind, data } = value {
+            if let Some(sync) = &self.pubsub_synchronizer {
+                Self::handle_subscription_push(sync, kind, data);
+            }
             let guard = self.sender.load();
             if let Some(sender) = guard.as_ref() {
                 let push_info = PushInfo {
@@ -42,15 +46,55 @@ impl PushManager {
             }
         }
     }
+
+    fn handle_subscription_push(
+        sync: &Arc<dyn crate::pubsub_synchronizer::PubSubSynchronizer>,
+        kind: &PushKind,
+        data: &[Value],
+    ) {
+        use crate::pubsub_synchronizer::SubscriptionType;
+        use std::collections::HashSet;
+        
+        // Only process subscription-related pushes
+        let (subscription_type, is_subscribe) = match kind {
+            PushKind::Subscribe => (SubscriptionType::Exact, true),
+            PushKind::Unsubscribe => (SubscriptionType::Exact, false),
+            PushKind::PSubscribe => (SubscriptionType::Pattern, true),
+            PushKind::PUnsubscribe => (SubscriptionType::Pattern, false),
+            PushKind::SSubscribe => (SubscriptionType::Sharded, true),
+            PushKind::SUnsubscribe => (SubscriptionType::Sharded, false),
+            _ => return, // Not a subscription change, just a message
+        };
+        
+        // Extract channel/pattern from push data
+        let channel_or_pattern = match data.first() {
+            Some(Value::BulkString(bytes)) => String::from_utf8_lossy(bytes).to_string(),
+            _ => return,
+        };
+        
+        let channels = HashSet::from([channel_or_pattern]);
+        
+        // Spawn async task to update synchronizer (we're in a sync context)
+        let sync = Arc::clone(sync);
+        tokio::spawn(async move {
+            if is_subscribe {
+                sync.add_current_subscriptions(channels, subscription_type).await;
+            } else {
+                sync.remove_current_subscriptions(channels, subscription_type).await;
+            }
+        });
+    }
+
     /// Replace mpsc channel of `PushManager` with provided sender.
     pub fn replace_sender(&self, sender: mpsc::UnboundedSender<PushInfo>) {
         self.sender.store(Arc::new(Some(sender)));
     }
 
     /// Creates new `PushManager`
-    pub fn new() -> Self {
+    pub fn new(pubsub_synchronizer: Option<Arc<dyn crate::pubsub_synchronizer::PubSubSynchronizer>>,) -> Self {
         PushManager {
             sender: Arc::from(ArcSwap::from(Arc::new(None))),
+            pubsub_synchronizer,
         }
     }
 }
@@ -61,7 +105,7 @@ mod tests {
 
     #[test]
     fn test_send_and_receive_push_info() {
-        let push_manager = PushManager::new();
+        let push_manager = PushManager::new(None);
         let (tx, mut rx) = mpsc::unbounded_channel();
         push_manager.replace_sender(tx);
 
@@ -81,7 +125,7 @@ mod tests {
     }
     #[test]
     fn test_push_manager_receiver_dropped() {
-        let push_manager = PushManager::new();
+        let push_manager = PushManager::new(None);
         let (tx, rx) = mpsc::unbounded_channel();
         push_manager.replace_sender(tx);
 
@@ -98,7 +142,7 @@ mod tests {
     }
     #[test]
     fn test_push_manager_without_sender() {
-        let push_manager = PushManager::new();
+        let push_manager = PushManager::new(None);
 
         push_manager.try_send(&Ok(Value::Push {
             kind: PushKind::Message,
@@ -119,7 +163,7 @@ mod tests {
     }
     #[test]
     fn test_push_manager_multiple_channels_and_messages() {
-        let push_manager = PushManager::new();
+        let push_manager = PushManager::new(None);
         let (tx1, mut rx1) = mpsc::unbounded_channel();
         let (tx2, mut rx2) = mpsc::unbounded_channel();
         push_manager.replace_sender(tx1);
@@ -159,7 +203,7 @@ mod tests {
         // In this test we create 4 channels and send 1000 message, it switchs channels for each message we sent.
         // Then we check if all messages are received and sum of messages are equal to expected sum.
         // We also check if all channels are used.
-        let push_manager = PushManager::new();
+        let push_manager = PushManager::new(None);
         let (tx1, mut rx1) = mpsc::unbounded_channel();
         let (tx2, mut rx2) = mpsc::unbounded_channel();
         let (tx3, mut rx3) = mpsc::unbounded_channel();
