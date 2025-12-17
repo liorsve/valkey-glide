@@ -14,6 +14,7 @@ function install_mkdocs() {
         pip3 install --upgrade pip
         pip3 install                           \
             mkdocs                             \
+            mkdocstrings==0.30.0              \
             mkdocstrings-python==1.13.0        \
             pymdown-extensions                 \
             mkdocs-breadcrumbs-plugin          \
@@ -29,7 +30,9 @@ function build_docs() {
 
     # Python - should be last, since Python docs are generated using mkdocs plugin
     # Set PYTHONPATH so python classes are found
-    export PYTHONPATH=${BASE_DIR}/python/python:$PYTHONPATH
+    export PYTHONPATH=${BASE_DIR}/python/glide-shared:$PYTHONPATH
+    export PYTHONPATH=${BASE_DIR}/python/glide-async/python:$PYTHONPATH
+    export PYTHONPATH=${BASE_DIR}/python/glide-sync:$PYTHONPATH
     (cd ${BASE_DIR}/docs && python3 -m mkdocs ${TARGET})
 }
 
