@@ -9781,32 +9781,50 @@ export class BaseClient {
         desiredSubscriptions: Partial<Record<T, Set<GlideString>>>;
         actualSubscriptions: Partial<Record<T, Set<GlideString>>>;
     } {
-        // Response format: ["desired", {...}, "actual", {...}]
+        // Response format: ["desired", GlideRecord, "actual", GlideRecord]
+        // where GlideRecord is [{key: "Exact"|"Pattern"|"Sharded", value: [channels...]}, ...]
         if (!Array.isArray(response) || response.length !== 4) {
             throw new Error(
                 `Invalid GetSubscriptions response format: expected array of length 4, got ${response}`,
             );
         }
 
-        const desiredData = response[1] as Record<string, GlideString[]>;
-        const actualData = response[3] as Record<string, GlideString[]>;
+        const modeNameToKey: Record<string, number> = {
+            Exact: 0,
+            Pattern: 1,
+            Sharded: 2,
+        };
 
-        const desiredSubscriptions: Partial<Record<T, Set<GlideString>>> = {};
-        const actualSubscriptions: Partial<Record<T, Set<GlideString>>> = {};
+        const parseGlideRecord = (
+            data: unknown,
+        ): Partial<Record<T, Set<GlideString>>> => {
+            const result: Partial<Record<T, Set<GlideString>>> = {};
 
-        // Parse desired subscriptions
-        for (const [mode, channels] of Object.entries(desiredData)) {
-            const modeKey = parseInt(mode) as T;
-            desiredSubscriptions[modeKey] = new Set(channels);
-        }
+            if (!Array.isArray(data)) return result;
 
-        // Parse actual subscriptions
-        for (const [mode, channels] of Object.entries(actualData)) {
-            const modeKey = parseInt(mode) as T;
-            actualSubscriptions[modeKey] = new Set(channels);
-        }
+            for (const entry of data) {
+                const key = String(
+                    (entry as { key: GlideString }).key,
+                );
+                const value = (
+                    entry as { value: GlideString[] }
+                ).value;
+                const modeKey = modeNameToKey[key];
 
-        return { desiredSubscriptions, actualSubscriptions };
+                if (modeKey !== undefined) {
+                    result[modeKey as T] = new Set(
+                        Array.isArray(value) ? value : [],
+                    );
+                }
+            }
+
+            return result;
+        };
+
+        return {
+            desiredSubscriptions: parseGlideRecord(response[1]),
+            actualSubscriptions: parseGlideRecord(response[3]),
+        };
     }
 
     /**
